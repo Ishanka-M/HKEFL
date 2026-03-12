@@ -239,15 +239,38 @@ if login_section():
                     ws_hist = get_or_create_sheet(sh, "Load_History", ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'])
                     hist_df = pd.DataFrame(ws_hist.get_all_records())
                     
-                    req['Group'] = req['SO Number'].astype(str) + "_" + req['Country Name'] + "_" + req['SHIP MODE: (SEA/AIR)']
+                    # Convert necessary columns to string to avoid errors and strip spaces
+                    req['SO Number'] = req['SO Number'].astype(str).str.strip()
+                    req['Country Name'] = req['Country Name'].astype(str).str.strip()
+                    req['SHIP MODE: (SEA/AIR)'] = req['SHIP MODE: (SEA/AIR)'].astype(str).str.strip()
+                    
+                    # Group key logic based on SO Number, Country Name, and Ship Mode
+                    req['Group'] = req['SO Number'] + "_" + req['Country Name'] + "_" + req['SHIP MODE: (SEA/AIR)']
                     new_hist_entries = []
                     load_id_map = {}
+                    so_counts = {}
+                    
+                    # Track counts per SO Number from previous historical data to ensure accurate increment (+1)
+                    if not hist_df.empty:
+                        for so in hist_df['SO Number'].astype(str).unique():
+                            so_history = hist_df[hist_df['SO Number'].astype(str) == so]
+                            so_counts[so] = len(so_history['Generated Load ID'].unique())
                     
                     for group, data in req.groupby('Group'):
-                        so_num = str(data['SO Number'].iloc[0])
-                        count = len(hist_df[hist_df['SO Number'].astype(str) == so_num]) + 1 if not hist_df.empty else 1
+                        so_num = data['SO Number'].iloc[0]
+                        
+                        # Initialize count if new SO Number
+                        if so_num not in so_counts:
+                            so_counts[so_num] = 0
+                            
+                        # Increment count for each unique group
+                        so_counts[so_num] += 1
+                        count = so_counts[so_num]
+                        
+                        # Generate structured Load ID (e.g., SO-23387-001, SO-23387-002)
                         lid = f"SO-{so_num}-{count:03d}"
                         load_id_map[group] = lid
+                        
                         new_hist_entries.append([batch_id, lid, so_num, data['Country Name'].iloc[0], data['SHIP MODE: (SEA/AIR)'].iloc[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Pending"])
                     
                     req['Generated Load ID'] = req['Group'].map(load_id_map)
