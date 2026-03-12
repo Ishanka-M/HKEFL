@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import streamlit as st
 import pandas as pd
 import gspread
@@ -6,11 +8,7 @@ from datetime import datetime
 import time
 import io
 
-# — 1. System Config & Auth —
-
 st.set_page_config(page_title=“Advanced WMS Picking System”, layout=“wide”, page_icon=“📦”)
-
-# Headers Definitions
 
 SHEET_HEADERS = {
 “Users”: [“Username”, “Password”, “Role”],
@@ -19,12 +17,6 @@ SHEET_HEADERS = {
 “Master_Partial_Data”: [“Batch ID”, “SO Number”, “Pallet”, “Supplier”, “Load ID”, “Country Name”, “Actual Qty”, “Partial Qty”, “Gen Pallet ID”],
 “Summary_Data”: [“Batch ID”, “SO Number”, “Load ID”, “UPC”, “Country”, “Ship Mode”, “Requested”, “Picked”, “Variance”, “Status”]
 }
-
-# ============================================================
-
-# UI Helpers
-
-# ============================================================
 
 def footer_branding():
 st.markdown(”””
@@ -35,12 +27,6 @@ padding: 10px; font-weight: bold; }
 </style>
 <div class="footer">Developed by Ishanka Madusanka</div>
 “””, unsafe_allow_html=True)
-
-# ============================================================
-
-# Google Sheets Helpers
-
-# ============================================================
 
 @st.cache_resource
 def get_gsheet_client():
@@ -111,12 +97,6 @@ if sheet_name == “Master_Pick_Data”:
 continue
 get_or_create_sheet(sh, sheet_name, headers)
 
-# ============================================================
-
-# User Management & Login
-
-# ============================================================
-
 def init_users_sheet(sh):
 ws = get_or_create_sheet(sh, “Users”, SHEET_HEADERS[“Users”])
 users_df = get_safe_dataframe(sh, “Users”)
@@ -131,54 +111,42 @@ def login_section():
 st.sidebar.title(“WMS Login”)
 if “logged_in” not in st.session_state:
 st.session_state[“logged_in”] = False
-
-```
-if not st.session_state["logged_in"]:
-    try:
-        sh = get_master_workbook()
-        users_df = init_users_sheet(sh)
-        user = st.sidebar.text_input("Username")
-        pw = st.sidebar.text_input("Password", type="password")
-        if st.sidebar.button("Login", type="primary"):
-            match = users_df[
-                (users_df["Username"] == user) &
-                (users_df["Password"] == str(pw))
-            ]
-            if not match.empty:
-                st.session_state.update({
-                    "logged_in": True,
-                    "role": match.iloc[0]["Role"],
-                    "username": user
-                })
-                st.rerun()
-            else:
-                st.sidebar.error("Invalid Username or Password!")
-    except Exception as e:
-        st.sidebar.error(f"Google Sheets connection error: {e}")
-    return False
+if not st.session_state[“logged_in”]:
+try:
+sh = get_master_workbook()
+users_df = init_users_sheet(sh)
+user = st.sidebar.text_input(“Username”)
+pw = st.sidebar.text_input(“Password”, type=“password”)
+if st.sidebar.button(“Login”, type=“primary”):
+match = users_df[
+(users_df[“Username”] == user) &
+(users_df[“Password”] == str(pw))
+]
+if not match.empty:
+st.session_state.update({
+“logged_in”: True,
+“role”: match.iloc[0][“Role”],
+“username”: user
+})
+st.rerun()
+else:
+st.sidebar.error(“Invalid Username or Password!”)
+except Exception as e:
+st.sidebar.error(“Google Sheets connection error: “ + str(e))
+return False
 return True
-```
-
-# ============================================================
-
-# Inventory & Picking Logic
-
-# ============================================================
 
 def reconcile_inventory(inv_df, sh):
 try:
 pick_history = get_safe_dataframe(sh, “Master_Pick_Data”)
 if not pick_history.empty and “Actual Qty” in pick_history.columns:
-pick_history[“Actual Qty”] = pd.to_numeric(
-pick_history[“Actual Qty”], errors=“coerce”
-).fillna(0)
+pick_history[“Actual Qty”] = pd.to_numeric(pick_history[“Actual Qty”], errors=“coerce”).fillna(0)
 pick_summary = pick_history.groupby(“Pallet”)[“Actual Qty”].sum().reset_index()
 pick_summary.columns = [“Pallet”, “Total_Picked”]
 inv_df = pd.merge(inv_df, pick_summary, on=“Pallet”, how=“left”)
 inv_df[“Total_Picked”] = inv_df[“Total_Picked”].fillna(0)
 inv_df[“Actual Qty”] = (
-pd.to_numeric(inv_df[“Actual Qty”], errors=“coerce”).fillna(0)
-- inv_df[“Total_Picked”]
+pd.to_numeric(inv_df[“Actual Qty”], errors=“coerce”).fillna(0) - inv_df[“Total_Picked”]
 )
 inv_df = inv_df[inv_df[“Actual Qty”] > 0].drop(columns=[“Total_Picked”])
 except Exception:
@@ -186,15 +154,10 @@ pass
 return inv_df
 
 def process_picking(inv_df, req_df, batch_id):
-“””
-Returns: pick_df, partial_df, summary_df, verify_df
-- All inventory columns preserved as-is
-- Pick ID generated and stored in ‘Pick ID’ or ‘Gen Pallet ID’ column
-“””
-pick_rows  = []
+pick_rows = []
 partial_rows = []
 summary_rows = []
-verify_rows  = []
+verify_rows = []
 
 ```
 temp_inv = inv_df.copy()
@@ -202,19 +165,16 @@ temp_inv["Actual Qty"] = pd.to_numeric(temp_inv["Actual Qty"], errors="coerce").
 
 for lid in req_df["Generated Load ID"].unique():
     curr_reqs = req_df[req_df["Generated Load ID"] == lid]
-    so_num    = str(curr_reqs["SO Number"].iloc[0])
-    country   = str(curr_reqs["Country Name"].iloc[0]) if "Country Name" in curr_reqs.columns else ""
+    so_num = str(curr_reqs["SO Number"].iloc[0])
+    country = str(curr_reqs["Country Name"].iloc[0]) if "Country Name" in curr_reqs.columns else ""
     ship_mode = str(curr_reqs["SHIP MODE: (SEA/AIR)"].iloc[0]) if "SHIP MODE: (SEA/AIR)" in curr_reqs.columns else ""
 
     for _, req in curr_reqs.iterrows():
-        upc         = str(req["Product UPC"])
+        upc = str(req["Product UPC"])
         orig_needed = float(req["PICK QTY"])
-        needed      = orig_needed
+        needed = orig_needed
 
-        stock = temp_inv[
-            temp_inv["Supplier"].astype(str) == upc
-        ].sort_values(by="Actual Qty", ascending=False)
-
+        stock = temp_inv[temp_inv["Supplier"].astype(str) == upc].sort_values(by="Actual Qty", ascending=False)
         picked_qty = 0
 
         for idx, item in stock.iterrows():
@@ -225,18 +185,14 @@ for lid in req_df["Generated Load ID"].unique():
                 continue
             take = min(avail, needed)
 
-            # Keep ALL inventory columns exactly as they are
             p_row = item.copy()
+            p_row["Batch ID"] = batch_id
+            p_row["SO Number"] = so_num
+            p_row["Actual Qty"] = take
+            p_row["Load Id"] = lid
+            p_row["Customer Po Number"] = country + "-" + str(lid)
 
-            # Override only the pick-assignment fields
-            p_row["Batch ID"]           = batch_id
-            p_row["SO Number"]          = so_num
-            p_row["Actual Qty"]         = take
-            p_row["Load Id"]            = lid
-            p_row["Customer Po Number"] = f"{country}-{lid}"
-
-            # Unique Pick ID - assign to correct column
-            pick_id = f"P-{batch_id[-8:]}-{datetime.now().strftime('%H%M%S%f')[:10]}"
+            pick_id = "P-" + batch_id[-8:] + "-" + datetime.now().strftime("%H%M%S%f")[:10]
             if "Pick ID" in p_row.index:
                 p_row["Pick ID"] = pick_id
             elif "Gen Pallet ID" in p_row.index:
@@ -244,50 +200,48 @@ for lid in req_df["Generated Load ID"].unique():
 
             pick_rows.append(p_row)
 
-            # Partial record when pallet is split
             if take < avail:
                 partial_rows.append({
-                    "Batch ID":     batch_id,
-                    "SO Number":    so_num,
-                    "Pallet":       item.get("Pallet", ""),
-                    "Supplier":     upc,
-                    "Load ID":      lid,
+                    "Batch ID": batch_id,
+                    "SO Number": so_num,
+                    "Pallet": item.get("Pallet", ""),
+                    "Supplier": upc,
+                    "Load ID": lid,
                     "Country Name": country,
-                    "Actual Qty":   avail,
-                    "Partial Qty":  take,
+                    "Actual Qty": avail,
+                    "Partial Qty": take,
                     "Gen Pallet ID": pick_id
                 })
 
             temp_inv.at[idx, "Actual Qty"] -= take
-            needed     -= take
+            needed -= take
             picked_qty += take
 
         variance = orig_needed - picked_qty
-        status   = "Full" if variance == 0 else ("Partial" if picked_qty > 0 else "Unfulfilled")
+        status = "Full" if variance == 0 else ("Partial" if picked_qty > 0 else "Unfulfilled")
 
         summary_rows.append({
-            "Batch ID":  batch_id,
+            "Batch ID": batch_id,
             "SO Number": so_num,
-            "Load ID":   lid,
-            "UPC":       upc,
-            "Country":   country,
+            "Load ID": lid,
+            "UPC": upc,
+            "Country": country,
             "Ship Mode": ship_mode,
             "Requested": orig_needed,
-            "Picked":    picked_qty,
-            "Variance":  variance,
-            "Status":    status
+            "Picked": picked_qty,
+            "Variance": variance,
+            "Status": status
         })
-
         verify_rows.append({
-            "Load ID":       lid,
-            "SO Number":     so_num,
-            "UPC":           upc,
-            "Country":       country,
+            "Load ID": lid,
+            "SO Number": so_num,
+            "UPC": upc,
+            "Country": country,
             "Requested Qty": orig_needed,
-            "Picked Qty":    picked_qty,
-            "Variance":      variance,
-            "Status":        status,
-            "Match":         "YES" if variance == 0 else "NO"
+            "Picked Qty": picked_qty,
+            "Variance": variance,
+            "Status": status,
+            "Match": "YES" if variance == 0 else "NO"
         })
 
 return (
@@ -300,7 +254,7 @@ return (
 
 # ============================================================
 
-# Main App
+# MAIN APP
 
 # ============================================================
 
@@ -312,25 +266,23 @@ with st.spinner("Initializing sheets..."):
     init_all_sheets(sh)
 
 role = st.session_state["role"].upper()
-menu = ["Dashboard & Tracking", "Picking Operations", "Revert/Delete Picks"]
+menu_options = ["Dashboard and Tracking", "Picking Operations", "Revert Delete Picks"]
 if role == "ADMIN":
-    menu.append("Admin Settings")
+    menu_options.append("Admin Settings")
 
-choice = st.sidebar.radio("Menu", menu)
+choice = st.sidebar.radio("Menu", menu_options)
 st.sidebar.markdown("---")
-st.sidebar.caption(f"User: {st.session_state['username']} ({st.session_state['role']})")
+st.sidebar.caption("User: " + st.session_state["username"] + " (" + st.session_state["role"] + ")")
 if st.sidebar.button("Logout"):
     st.session_state.clear()
     st.rerun()
 
 # ============================================================
-# PICKING OPERATIONS
-# ============================================================
 if choice == "Picking Operations":
     st.title("Picking Operations")
 
-    inv_f = st.file_uploader("Inventory Report (CSV / Excel)", type=["csv", "xlsx", "xls"])
-    req_f = st.file_uploader("Customer Requirement (CSV / Excel)", type=["csv", "xlsx", "xls"])
+    inv_f = st.file_uploader("Inventory Report (CSV or Excel)", type=["csv", "xlsx", "xls"])
+    req_f = st.file_uploader("Customer Requirement (CSV or Excel)", type=["csv", "xlsx", "xls"])
 
     if inv_f and req_f:
         inv = pd.read_csv(inv_f) if inv_f.name.endswith("csv") else pd.read_excel(inv_f)
@@ -340,28 +292,27 @@ if choice == "Picking Operations":
             c1, c2 = st.columns(2)
             c1.subheader("Inventory Report")
             c1.dataframe(inv.head(10), use_container_width=True)
-            c1.caption(f"Rows: {len(inv)} | Cols: {list(inv.columns)}")
+            c1.caption("Rows: " + str(len(inv)) + " | Cols: " + str(list(inv.columns)))
             c2.subheader("Customer Requirement")
             c2.dataframe(req.head(10), use_container_width=True)
-            c2.caption(f"Rows: {len(req)} | Cols: {list(req.columns)}")
+            c2.caption("Rows: " + str(len(req)) + " | Cols: " + str(list(req.columns)))
 
         inv_required = ["Supplier", "Actual Qty", "Pallet"]
         req_required = ["SO Number", "Product UPC", "PICK QTY"]
-        inv_missing  = [c for c in inv_required if c not in inv.columns]
-        req_missing  = [c for c in req_required if c not in req.columns]
+        inv_missing = [c for c in inv_required if c not in inv.columns]
+        req_missing = [c for c in req_required if c not in req.columns]
 
         if inv_missing:
-            st.error(f"Inventory file missing columns: {inv_missing}")
+            st.error("Inventory file missing columns: " + str(inv_missing))
         elif req_missing:
-            st.error(f"Requirement file missing columns: {req_missing}")
+            st.error("Requirement file missing columns: " + str(req_missing))
         else:
-            if st.button("Preview & Verify Picks", type="secondary"):
+            if st.button("Preview and Verify Picks", type="secondary"):
                 with st.spinner("Generating preview..."):
                     req_copy = req.copy()
                     req_copy["Generated Load ID"] = "SO-" + req_copy["SO Number"].astype(str) + "-001"
                     inv_rec = reconcile_inventory(inv.copy(), sh)
                     _, _, _, verify_df = process_picking(inv_rec, req_copy, "PREVIEW")
-
                 st.session_state["verify_df"] = verify_df
                 st.session_state["inv_ready"] = inv
                 st.session_state["req_ready"] = req
@@ -371,20 +322,20 @@ if choice == "Picking Operations":
                 vdf = st.session_state["verify_df"]
                 st.subheader("Verification - Requirement vs Pick Preview")
 
-                total_req  = vdf["Requested Qty"].sum()
+                total_req = vdf["Requested Qty"].sum()
                 total_pick = vdf["Picked Qty"].sum()
-                total_var  = vdf["Variance"].sum()
-                full_ct    = (vdf["Status"] == "Full").sum()
-                part_ct    = (vdf["Status"] == "Partial").sum()
-                unful_ct   = (vdf["Status"] == "Unfulfilled").sum()
+                total_var = vdf["Variance"].sum()
+                full_ct = (vdf["Status"] == "Full").sum()
+                part_ct = (vdf["Status"] == "Partial").sum()
+                unful_ct = (vdf["Status"] == "Unfulfilled").sum()
 
                 vc1, vc2, vc3, vc4, vc5, vc6 = st.columns(6)
-                vc1.metric("Requested",   f"{total_req:.0f}")
-                vc2.metric("Picked",      f"{total_pick:.0f}")
-                vc3.metric("Variance",    f"{total_var:.0f}")
-                vc4.metric("Full",        full_ct)
-                vc5.metric("Partial",     part_ct)
-                vc6.metric("Unfulfilled", unful_ct)
+                vc1.metric("Requested", str(int(total_req)))
+                vc2.metric("Picked", str(int(total_pick)))
+                vc3.metric("Variance", str(int(total_var)))
+                vc4.metric("Full", str(full_ct))
+                vc5.metric("Partial", str(part_ct))
+                vc6.metric("Unfulfilled", str(unful_ct))
 
                 def color_status(row):
                     if row["Status"] == "Full":
@@ -393,30 +344,26 @@ if choice == "Picking Operations":
                         return ["background-color: #fff3cd"] * len(row)
                     return ["background-color: #f8d7da"] * len(row)
 
-                st.dataframe(
-                    vdf.style.apply(color_status, axis=1),
-                    use_container_width=True,
-                    height=400
-                )
+                st.dataframe(vdf.style.apply(color_status, axis=1), use_container_width=True, height=400)
 
-                buf = io.BytesIO()
-                vdf.to_excel(buf, index=False)
+                buf_v = io.BytesIO()
+                vdf.to_excel(buf_v, index=False)
                 st.download_button(
                     "Download Verification Report",
-                    data=buf.getvalue(),
-                    file_name=f"verification_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    data=buf_v.getvalue(),
+                    file_name="verification_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
                 st.divider()
                 if unful_ct > 0:
-                    st.warning(f"{unful_ct} line(s) cannot be fulfilled. Confirm to proceed anyway?")
+                    st.warning(str(unful_ct) + " line(s) cannot be fulfilled. Confirm to proceed anyway?")
 
                 col_confirm, col_cancel = st.columns([1, 4])
                 with col_confirm:
-                    if st.button("Confirm & Save Picks", type="primary"):
+                    if st.button("Confirm and Save Picks", type="primary"):
                         with st.spinner("Saving to Google Sheets..."):
-                            batch_id  = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                            batch_id = "REQ-" + datetime.now().strftime("%Y%m%d-%H%M%S")
                             req_final = st.session_state["req_ready"].copy()
                             req_final["Generated Load ID"] = "SO-" + req_final["SO Number"].astype(str) + "-001"
                             inv_final = reconcile_inventory(st.session_state["inv_ready"].copy(), sh)
@@ -456,8 +403,7 @@ if choice == "Picking Operations":
                         st.session_state.pop("verify_df", None)
                         st.session_state.pop("inv_ready", None)
                         st.session_state.pop("req_ready", None)
-
-                        st.success(f"Picking Saved! Batch ID: {batch_id}")
+                        st.success("Picking Saved! Batch ID: " + batch_id)
                         st.balloons()
 
                         if not p_df.empty:
@@ -466,7 +412,7 @@ if choice == "Picking Operations":
                             st.download_button(
                                 "Download Pick File",
                                 data=buf2.getvalue(),
-                                file_name=f"picks_{batch_id}.xlsx",
+                                file_name="picks_" + batch_id + ".xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             )
 
@@ -478,11 +424,9 @@ if choice == "Picking Operations":
                         st.rerun()
 
 # ============================================================
-# DASHBOARD & TRACKING
-# ============================================================
-elif choice == "Dashboard & Tracking":
+elif choice == "Dashboard and Tracking":
     col1, col2 = st.columns([4, 1])
-    col1.title("Dashboard & Tracking")
+    col1.title("Dashboard and Tracking")
     if col2.button("Refresh"):
         st.rerun()
 
@@ -492,24 +436,22 @@ elif choice == "Dashboard & Tracking":
         partial_df = get_safe_dataframe(sh, "Master_Partial_Data")
         summary_df = get_safe_dataframe(sh, "Summary_Data")
 
-    with st.expander("Sheet Status (Debug)", expanded=False):
+    with st.expander("Sheet Status Debug", expanded=False):
         dc = st.columns(4)
-        dc[0].info(f"Load_History\nRows: {len(hist_df)}")
-        dc[1].info(f"Master_Pick_Data\nRows: {len(pick_df)}")
-        dc[2].info(f"Master_Partial_Data\nRows: {len(partial_df)}")
-        dc[3].info(f"Summary_Data\nRows: {len(summary_df)}")
+        dc[0].info("Load_History\nRows: " + str(len(hist_df)))
+        dc[1].info("Master_Pick_Data\nRows: " + str(len(pick_df)))
+        dc[2].info("Master_Partial_Data\nRows: " + str(len(partial_df)))
+        dc[3].info("Summary_Data\nRows: " + str(len(summary_df)))
 
     st.subheader("Overview")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Batches",
-              hist_df["Batch ID"].nunique() if not hist_df.empty and "Batch ID" in hist_df.columns else 0)
-    m2.metric("Loads",
-              hist_df["Generated Load ID"].nunique() if not hist_df.empty and "Generated Load ID" in hist_df.columns else 0)
+    m1.metric("Batches", hist_df["Batch ID"].nunique() if not hist_df.empty and "Batch ID" in hist_df.columns else 0)
+    m2.metric("Loads", hist_df["Generated Load ID"].nunique() if not hist_df.empty and "Generated Load ID" in hist_df.columns else 0)
     m3.metric("Pick Rows", len(pick_df) if not pick_df.empty else 0)
     m4.metric("Partial Picks", len(partial_df) if not partial_df.empty else 0)
     if not summary_df.empty and "Variance" in summary_df.columns:
         total_var = pd.to_numeric(summary_df["Variance"], errors="coerce").fillna(0).sum()
-        m5.metric("Total Variance", f"{total_var:.0f}")
+        m5.metric("Total Variance", str(int(total_var)))
     else:
         m5.metric("Total Variance", "N/A")
 
@@ -525,7 +467,7 @@ elif choice == "Dashboard & Tracking":
             else:
                 filtered = hist_df
             st.dataframe(filtered, use_container_width=True, height=400)
-            st.caption(f"Rows: {len(filtered)}")
+            st.caption("Rows: " + str(len(filtered)))
         else:
             st.warning("Load_History is empty. Run a Picking Operation first.")
 
@@ -534,28 +476,30 @@ elif choice == "Dashboard & Tracking":
             col_a, col_b = st.columns([3, 1])
             show_all = col_b.checkbox("Show all columns", key="pick_all")
             if "Batch ID" in pick_df.columns:
-                opts  = ["All"] + sorted(pick_df["Batch ID"].dropna().unique().tolist())
+                opts = ["All"] + sorted(pick_df["Batch ID"].dropna().unique().tolist())
                 sel_p = col_a.selectbox("Filter by Batch:", opts, key="pick_filter")
-                fp    = pick_df if sel_p == "All" else pick_df[pick_df["Batch ID"] == sel_p]
+                fp = pick_df if sel_p == "All" else pick_df[pick_df["Batch ID"] == sel_p]
             else:
                 fp = pick_df
-            key_cols = ["Batch ID", "SO Number", "Load Id", "Pallet", "Supplier",
-                        "Actual Qty", "Customer Po Number", "Pick ID", "Gen Pallet ID"]
+            key_cols = ["Batch ID", "SO Number", "Load Id", "Pallet", "Supplier", "Actual Qty", "Customer Po Number", "Pick ID", "Gen Pallet ID"]
             disp = [c for c in key_cols if c in fp.columns]
             st.dataframe(fp if show_all or not disp else fp[disp], use_container_width=True, height=400)
-            st.caption(f"Rows: {len(fp)}")
+            st.caption("Rows: " + str(len(fp)))
             buf = io.BytesIO()
             fp.to_excel(buf, index=False)
-            st.download_button("Download Pick Data", data=buf.getvalue(),
-                               file_name=f"pick_data_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(
+                "Download Pick Data",
+                data=buf.getvalue(),
+                file_name="pick_data_" + datetime.now().strftime("%Y%m%d") + ".xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         else:
             st.warning("Master_Pick_Data is empty.")
 
     with tab3:
         if not partial_df.empty:
             st.dataframe(partial_df, use_container_width=True, height=400)
-            st.caption(f"Rows: {len(partial_df)}")
+            st.caption("Rows: " + str(len(partial_df)))
         else:
             st.info("No partial picks.")
 
@@ -573,23 +517,18 @@ elif choice == "Dashboard & Tracking":
             st.warning("Summary_Data is empty.")
 
 # ============================================================
-# REVERT / DELETE PICKS
-# ============================================================
-elif choice == "Revert/Delete Picks":
-    st.title("Revert / Delete Picks")
+elif choice == "Revert Delete Picks":
+    st.title("Revert and Delete Picks")
     hist_df = get_safe_dataframe(sh, "Load_History")
-
     if not hist_df.empty and "Batch ID" in hist_df.columns:
-        batch_options  = hist_df["Batch ID"].unique().tolist()
+        batch_options = hist_df["Batch ID"].unique().tolist()
         selected_batch = st.selectbox("Select Batch to Revert:", batch_options)
         st.dataframe(hist_df[hist_df["Batch ID"] == selected_batch], use_container_width=True)
         if st.button("Revert Selected Batch", type="primary"):
-            st.warning(f"Revert logic for {selected_batch} - implement row deletion as needed.")
+            st.warning("Revert logic for " + selected_batch + " - implement row deletion as needed.")
     else:
         st.info("No batches found.")
 
-# ============================================================
-# ADMIN SETTINGS
 # ============================================================
 elif choice == "Admin Settings":
     st.title("Admin Settings")
@@ -599,7 +538,6 @@ elif choice == "Admin Settings":
         "Select Sheet to Reset:",
         ["Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History", "ALL_DATA"]
     )
-
     if st.button("Reset Sheet", type="primary"):
         targets = (
             ["Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History"]
@@ -618,8 +556,8 @@ elif choice == "Admin Settings":
                     time.sleep(0.3)
                 progress.progress((i + 1) / len(targets))
             except gspread.exceptions.WorksheetNotFound:
-                st.warning(f"Sheet '{sname}' not found.")
-        st.success(f"Reset complete for: {', '.join(targets)}")
+                st.warning("Sheet not found: " + sname)
+        st.success("Reset complete for: " + ", ".join(targets))
 
     st.divider()
     st.subheader("User Management")
@@ -636,7 +574,7 @@ elif choice == "Admin Settings":
         if new_user and new_pw:
             ws_u = get_or_create_sheet(sh, "Users", SHEET_HEADERS["Users"])
             ws_u.append_row([new_user, new_pw, new_role])
-            st.success(f"User '{new_user}' added!")
+            st.success("User added: " + new_user)
             st.rerun()
         else:
             st.error("Please enter Username and Password.")
