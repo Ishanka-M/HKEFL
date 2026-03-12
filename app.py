@@ -266,7 +266,19 @@ if login_section():
                     inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
                     
-                    inv.columns = pd.io.parsers.base_parser.ParserBase({'names': inv.columns, 'usecols': None})._maybe_dedup_names(inv.columns)
+                    # --- FIXED: Deduplicate columns safely without using Pandas internal methods ---
+                    new_inv_cols = []
+                    seen_inv = {}
+                    for c in inv.columns:
+                        c_str = str(c)
+                        if c_str in seen_inv:
+                            seen_inv[c_str] += 1
+                            new_inv_cols.append(f"{c_str}.{seen_inv[c_str]}")
+                        else:
+                            seen_inv[c_str] = 0
+                            new_inv_cols.append(c_str)
+                    inv.columns = new_inv_cols
+                    # --------------------------------------------------------------------------------
                     
                     batch_id = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                     
