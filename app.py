@@ -9,6 +9,14 @@ import time
 # --- 1. System Config & Auth ---
 st.set_page_config(page_title="Advanced WMS Picking System", layout="wide", page_icon="📦")
 
+# --- Default Headers Definition ---
+SHEET_HEADERS = {
+    "Load_History": ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'],
+    "Summary_Data": ['Batch ID', 'SO Number', 'Load ID', 'UPC', 'Country', 'Ship Mode', 'Requested', 'Picked', 'Variance', 'Status'],
+    "Master_Partial_Data": ['Batch ID', 'SO Number', 'Pallet', 'Supplier', 'Load ID', 'Country Name', 'Actual Qty', 'Partial Qty', 'Gen Pallet ID'],
+    "Master_Pick_Data": ['Batch ID', 'SO Number', 'Order Type', 'Order Number', 'Store Order Number', 'Customer Po Number', 'Load Id', 'Pick Id', 'Supplier', 'Pallet', 'Actual Qty']
+}
+
 # --- Branding Footer CSS ---
 def footer_branding():
     st.markdown("""
@@ -52,7 +60,6 @@ def get_or_create_sheet(sh, name, headers):
         ws.append_row(headers)
     return ws
 
-# --- 🌟 FIXED: Dashboard Data Loading & Headers 🌟 ---
 def get_safe_dataframe(sh, sheet_name):
     try:
         ws = sh.worksheet(sheet_name)
@@ -68,24 +75,6 @@ def get_safe_dataframe(sh, sheet_name):
             return pd.DataFrame(columns=headers)
     except Exception as e:
         return pd.DataFrame()
-
-# --- 🌟 NEW: Initialize System Sheets & Check Headers on Login 🌟 ---
-def init_system_sheets(sh):
-    hist_headers = ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status']
-    summ_headers = ['Batch ID', 'SO Number', 'Load ID', 'UPC', 'Country', 'Ship Mode', 'Requested', 'Picked', 'Variance', 'Status']
-    
-    # Check and update standard sheets
-    get_or_create_sheet(sh, "Load_History", hist_headers)
-    get_or_create_sheet(sh, "Summary_Data", summ_headers)
-    
-    # Check Master_Pick_Data
-    try:
-        ws_pick = sh.worksheet("Master_Pick_Data")
-        if not ws_pick.get_all_values():
-            ws_pick.append_row(['Batch ID', 'SO Number', 'Order Type', 'Order Number', 'Store Order Number', 'Customer Po Number', 'Load Id', 'Pick Id', 'Supplier', 'Pallet', 'Actual Qty'])
-    except:
-        ws_pick = sh.add_worksheet(title="Master_Pick_Data", rows="1000", cols="70")
-        ws_pick.append_row(['Batch ID', 'SO Number', 'Order Type', 'Order Number', 'Store Order Number', 'Customer Po Number', 'Load Id', 'Pick Id', 'Supplier', 'Pallet', 'Actual Qty'])
 
 # --- 2. User Management & Login ---
 def init_users_sheet(sh):
@@ -126,9 +115,7 @@ def login_section():
                 st.session_state['role'] = user_match.iloc[0]['Role']
                 st.session_state['username'] = user
                 
-                # Check and Update Headers on successful login
-                init_system_sheets(sh)
-                
+                # Header check එක login එකෙන් ඉවත් කර ඇත.
                 st.rerun()
             else:
                 st.sidebar.error("වැරදි Username හෝ Password එකක්!")
@@ -160,7 +147,6 @@ def reconcile_inventory(inv_df, sh):
 def process_picking(inv_df, req_df, batch_id):
     pick_rows, partial_rows, summary = [], [], []
    
-    # Identify Supplier and Pick ID columns dynamically
     supplier_col = next((c for c in inv_df.columns if 'supplier' in str(c).lower()), None)
     pick_id_col = next((c for c in inv_df.columns if 'pick id' in str(c).lower() or 'pickid' in str(c).lower()), None)
 
@@ -192,7 +178,6 @@ def process_picking(inv_df, req_df, batch_id):
                 if take > 0:
                     p_row = item.copy()
                     
-                    # 🌟 FIXED: Add original Pick ID and Supplier in exact Text Format 🌟
                     p_row['Pick Id'] = str(item[pick_id_col]) if pick_id_col else ""
                     p_row['Supplier'] = str(item[supplier_col]) if supplier_col else upc
                     
@@ -232,7 +217,6 @@ def process_picking(inv_df, req_df, batch_id):
         pick_df['Actual Qty'] = pd.to_numeric(pick_df['Actual Qty'])
         pick_df = pick_df[pick_df['Actual Qty'] > 0]
         
-        # Enforce Text Type explicitly for outputs
         if 'Pick Id' in pick_df.columns:
             pick_df['Pick Id'] = pick_df['Pick Id'].astype(str)
         if 'Supplier' in pick_df.columns:
@@ -286,7 +270,7 @@ if login_section():
                     
                     batch_id = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                     
-                    ws_hist = sh.worksheet("Load_History")
+                    ws_hist = get_or_create_sheet(sh, "Load_History", SHEET_HEADERS["Load_History"])
                     hist_df = get_safe_dataframe(sh, "Load_History")
                     
                     req['SO Number'] = req['SO Number'].astype(str).str.strip()
@@ -322,16 +306,14 @@ if login_section():
                     pick_df, part_df, summ_df = process_picking(inv, req, batch_id)
                     
                     if not pick_df.empty:
-                        ws_pick = sh.worksheet("Master_Pick_Data")
-                        if not ws_pick.get_all_values():
-                            ws_pick.append_row(pick_df.columns.tolist())
+                        ws_pick = get_or_create_sheet(sh, "Master_Pick_Data", pick_df.columns.tolist())
                         ws_pick.append_rows(pick_df.astype(str).replace('nan','').values.tolist())
                     
                     if not part_df.empty:
                         ws_part = get_or_create_sheet(sh, "Master_Partial_Data", part_df.columns.tolist())
                         ws_part.append_rows(part_df.astype(str).replace('nan','').values.tolist())
                     
-                    ws_summ = sh.worksheet("Summary_Data")
+                    ws_summ = get_or_create_sheet(sh, "Summary_Data", summ_df.columns.tolist())
                     ws_summ.append_rows(summ_df.astype(str).replace('nan','').values.tolist())
                     
                     output = io.BytesIO()
@@ -340,7 +322,6 @@ if login_section():
                         if not part_df.empty: part_df.to_excel(writer, sheet_name='Partial_Report', index=False)
                         if not summ_df.empty: summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
                     
-                    # Store generated data in session state for Verification Step
                     st.session_state['processed_excel'] = output.getvalue()
                     st.session_state['summary_df'] = summ_df
                     st.session_state['batch_id'] = batch_id
@@ -348,7 +329,6 @@ if login_section():
                     
                     st.success(f"✅ Data Processed! (Batch ID: {batch_id})")
 
-        # --- 🌟 FIXED: Customer Requirement Verification Step 🌟 ---
         if st.session_state.get('show_verification', False):
             st.divider()
             st.subheader("📋 Verification: Customer Requirement vs Picked Data")
@@ -451,6 +431,7 @@ if login_section():
                 st.markdown(f"### Results for {search_by}: `{search_term}`")
                 tab_v, tab_p = st.tabs(["📉 Summary / Variance", "📦 Picked Items Detail"])
                 
+                # Dashboard mapping to match sheet headers explicitly
                 col_map_pick = {"Load Id": "Load Id", "Pallet": "Pallet", "Supplier (Product UPC)": "Supplier", "SO Number": "SO Number"}
                 col_map_summ = {"Load Id": "Load ID", "Pallet": None, "Supplier (Product UPC)": "UPC", "SO Number": "SO Number"}
                 
@@ -581,12 +562,14 @@ if login_section():
                             try:
                                 ws = sh.worksheet(s_name)
                                 ws.clear() 
+                                # 🌟 FIXED: Add original headers automatically after clearing 🌟
+                                if s_name in SHEET_HEADERS:
+                                    ws.append_row(SHEET_HEADERS[s_name])
                             except: pass
-                        st.success(f"✅ {sheet_to_clear} සාර්ථකව Reset කරන ලදී.")
+                        st.success(f"✅ {sheet_to_clear} සාර්ථකව Reset කර Headers අලුතින් ඇතුලත් කරන ලදී.")
                     except Exception as e:
                         st.error(f"Error clearing data: {e}")
                 else:
                     st.error("කරුණාකර CONFIRM ලෙස Type කරන්න.")
 
 footer_branding()
-
