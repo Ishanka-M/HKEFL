@@ -68,7 +68,19 @@ def get_safe_dataframe(sh, sheet_name):
             return pd.DataFrame()
         
         # Strip spaces from headers to prevent column name mismatch in Dashboard
-        headers = [str(h).strip() for h in data[0]]
+        raw_headers = [str(h).strip() for h in data[0]]
+        
+        # FIXED: Ensure headers are unique to prevent PyArrow serialization errors
+        headers = []
+        seen = {}
+        for h in raw_headers:
+            if h in seen:
+                seen[h] += 1
+                headers.append(f"{h}_{seen[h]}")
+            else:
+                seen[h] = 0
+                headers.append(h)
+
         if len(data) > 1:
             return pd.DataFrame(data[1:], columns=headers)
         else:
@@ -346,7 +358,8 @@ if login_section():
             st.subheader("📋 Verification: Customer Requirement vs Picked Data")
             st.info("කරුණාකර පහත Summary එක පරීක්ෂා කර Download කිරීමට පෙර Verify කරන්න.")
             
-            st.dataframe(st.session_state['summary_df'], use_container_width=True)
+            # FIXED: Avoid Pyarrow error by casting to string
+            st.dataframe(st.session_state['summary_df'].astype(str), use_container_width=True)
             
             verify_check = st.checkbox("✅ මම Customer Requirement එක සහ Picked Data නිවැරදිදැයි පරීක්ෂා කළෙමි.")
             
@@ -454,7 +467,9 @@ if login_section():
                             filtered_picks = pick_df[pick_df[search_col].astype(str) == str(search_term)]
                         else:
                             filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(str(search_term), case=False, na=False)]
-                        st.dataframe(filtered_picks, use_container_width=True)
+                        
+                        # FIXED: Ensure dataframe converts properly avoiding Pyarrow error
+                        st.dataframe(filtered_picks.astype(str), use_container_width=True)
                     else:
                         st.write("No pick data found for this search.")
                         
@@ -467,7 +482,8 @@ if login_section():
                             else:
                                 filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(str(search_term), case=False, na=False)]
                             
-                            st.dataframe(filtered_summ, use_container_width=True)
+                            # FIXED: Ensure dataframe converts properly avoiding Pyarrow error
+                            st.dataframe(filtered_summ.astype(str), use_container_width=True)
                             
                             if 'Variance' in filtered_summ.columns:
                                 filtered_summ['Variance'] = pd.to_numeric(filtered_summ['Variance'], errors='coerce')
