@@ -370,30 +370,119 @@ if choice == "🚀 Picking Operations":
 # --------------------------------------------------------
 elif choice == "📊 Dashboard & Tracking":
     col1, col2 = st.columns([4, 1])
-    col1.title("📊 Dashboard")
+    col1.title("📊 Dashboard & Tracking")
     if col2.button("🔄 Refresh"):
+        st.cache_resource.clear()
         st.rerun()
 
-    hist_df = get_safe_dataframe(sh, "Load_History")
-    pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
+    # --- Load all sheets ---
+    with st.spinner("Loading data..."):
+        hist_df    = get_safe_dataframe(sh, "Load_History")
+        pick_df    = get_safe_dataframe(sh, "Master_Pick_Data")
+        partial_df = get_safe_dataframe(sh, "Master_Partial_Data")
+        summary_df = get_safe_dataframe(sh, "Summary_Data")
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric(
-        "Total Loads",
-        hist_df['Generated Load ID'].nunique() if not hist_df.empty else 0
-    )
-    m2.metric("Total Picks", len(pick_df) if not pick_df.empty else 0)
-    m3.metric(
-        "Batches",
-        hist_df['Batch ID'].nunique() if not hist_df.empty else 0
-    )
+    # --- Debug expander (sheet status check) ---
+    with st.expander("🔍 Sheet Status (Debug)", expanded=False):
+        debug_cols = st.columns(4)
+        debug_cols[0].info(f"**Load_History**\n\nRows: {len(hist_df)}\nCols: {list(hist_df.columns) if not hist_df.empty else 'Empty'}")
+        debug_cols[1].info(f"**Master_Pick_Data**\n\nRows: {len(pick_df)}\nCols: {len(pick_df.columns) if not pick_df.empty else 0}")
+        debug_cols[2].info(f"**Master_Partial_Data**\n\nRows: {len(partial_df)}\nCols: {list(partial_df.columns) if not partial_df.empty else 'Empty'}")
+        debug_cols[3].info(f"**Summary_Data**\n\nRows: {len(summary_df)}\nCols: {list(summary_df.columns) if not summary_df.empty else 'Empty'}")
+
+    # --- Metric Cards ---
+    st.subheader("📈 Overview")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("📦 Total Batches",
+              hist_df['Batch ID'].nunique() if not hist_df.empty and 'Batch ID' in hist_df.columns else 0)
+    m2.metric("🚛 Total Loads",
+              hist_df['Generated Load ID'].nunique() if not hist_df.empty and 'Generated Load ID' in hist_df.columns else 0)
+    m3.metric("✅ Total Pick Rows",
+              len(pick_df) if not pick_df.empty else 0)
+    m4.metric("🔀 Partial Picks",
+              len(partial_df) if not partial_df.empty else 0)
+
+    # Variance calculation from Summary
+    if not summary_df.empty and 'Variance' in summary_df.columns:
+        total_var = pd.to_numeric(summary_df['Variance'], errors='coerce').fillna(0).sum()
+        m5.metric("⚠️ Total Variance", f"{total_var:.0f}")
+    else:
+        m5.metric("⚠️ Total Variance", "N/A")
 
     st.divider()
-    if not hist_df.empty:
+
+    # --- Tabs for each sheet ---
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Load History",
+        "🗃️ Pick Data",
+        "🔀 Partial Data",
+        "📊 Summary"
+    ])
+
+    with tab1:
         st.subheader("📋 Load History")
-        st.dataframe(hist_df, use_container_width=True)
-    else:
-        st.info("No data available.")
+        if not hist_df.empty:
+            # Filter by Batch
+            if 'Batch ID' in hist_df.columns:
+                batches = ["All"] + sorted(hist_df['Batch ID'].dropna().unique().tolist())
+                sel_batch = st.selectbox("Filter by Batch ID:", batches, key="hist_filter")
+                filtered = hist_df if sel_batch == "All" else hist_df[hist_df['Batch ID'] == sel_batch]
+            else:
+                filtered = hist_df
+            st.dataframe(filtered, use_container_width=True, height=400)
+            st.caption(f"Total rows: {len(filtered)}")
+        else:
+            st.warning("⚠️ Load_History sheet හිස් — Picking operation එකක් run කළ පසු data දිස්වේ.")
+
+    with tab2:
+        st.subheader("🗃️ Master Pick Data")
+        if not pick_df.empty:
+            # Show key columns only to avoid wide table
+            key_cols = ['Batch ID', 'SO Number', 'Load Id', 'Pallet', 'Supplier',
+                        'Actual Qty', 'Customer Po Number']
+            display_cols = [c for c in key_cols if c in pick_df.columns]
+            
+            col_a, col_b = st.columns([3, 1])
+            show_all = col_b.checkbox("Show all columns", key="pick_all_cols")
+            
+            if 'Batch ID' in pick_df.columns:
+                batches_p = ["All"] + sorted(pick_df['Batch ID'].dropna().unique().tolist())
+                sel_p = col_a.selectbox("Filter by Batch:", batches_p, key="pick_filter")
+                filtered_p = pick_df if sel_p == "All" else pick_df[pick_df['Batch ID'] == sel_p]
+            else:
+                filtered_p = pick_df
+
+            if show_all or not display_cols:
+                st.dataframe(filtered_p, use_container_width=True, height=400)
+            else:
+                st.dataframe(filtered_p[display_cols], use_container_width=True, height=400)
+            st.caption(f"Total rows: {len(filtered_p)}")
+        else:
+            st.warning("⚠️ Master_Pick_Data sheet හිස් — Picking operation run කළ පසු data දිස්වේ.")
+
+    with tab3:
+        st.subheader("🔀 Partial Pick Data")
+        if not partial_df.empty:
+            st.dataframe(partial_df, use_container_width=True, height=400)
+            st.caption(f"Total partial rows: {len(partial_df)}")
+        else:
+            st.info("ℹ️ Partial picks නොමැත.")
+
+    with tab4:
+        st.subheader("📊 Summary Data")
+        if not summary_df.empty:
+            st.dataframe(summary_df, use_container_width=True, height=400)
+
+            # Variance chart
+            if 'UPC' in summary_df.columns and 'Variance' in summary_df.columns:
+                st.subheader("📉 Variance by UPC")
+                chart_df = summary_df.copy()
+                chart_df['Variance'] = pd.to_numeric(chart_df['Variance'], errors='coerce').fillna(0)
+                chart_df = chart_df[chart_df['Variance'] != 0]
+                if not chart_df.empty:
+                    st.bar_chart(chart_df.set_index('UPC')['Variance'])
+        else:
+            st.warning("⚠️ Summary_Data sheet හිස් — Picking operation run කළ පසු data දිස්වේ.")
 
 # --------------------------------------------------------
 elif choice == "🔄 Revert/Delete Picks":
