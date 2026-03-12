@@ -67,10 +67,8 @@ def get_safe_dataframe(sh, sheet_name):
         if not data:
             return pd.DataFrame()
         
-        # Strip spaces from headers to prevent column name mismatch in Dashboard
         raw_headers = [str(h).strip() for h in data[0]]
         
-        # FIXED: Ensure headers are unique to prevent PyArrow serialization errors
         headers = []
         seen = {}
         for h in raw_headers:
@@ -126,8 +124,6 @@ def login_section():
                 st.session_state['logged_in'] = True
                 st.session_state['role'] = user_match.iloc[0]['Role']
                 st.session_state['username'] = user
-                
-                # Header check එක login එකෙන් ඉවත් කර ඇත.
                 st.rerun()
             else:
                 st.sidebar.error("වැරදි Username හෝ Password එකක්!")
@@ -137,6 +133,11 @@ def login_section():
 
 # --- 3. Inventory Logic ---
 def reconcile_inventory(inv_df, sh):
+    """
+    FIX: Subtract all previously picked quantities from inventory.
+    After subtraction, strictly remove any pallet rows where Actual Qty <= 0
+    so they cannot be picked again in any future batch.
+    """
     try:
         pick_history = get_safe_dataframe(sh, "Master_Pick_Data")
         if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
@@ -147,13 +148,20 @@ def reconcile_inventory(inv_df, sh):
             inv_df = pd.merge(inv_df, pick_summary, on='Pallet', how='left')
             inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
             inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
+
+            # Subtract previously picked qty from inventory
             inv_df['Actual Qty'] = inv_df['Actual Qty'] - inv_df['Total_Picked']
-            inv_df = inv_df[inv_df['Actual Qty'] > 0]
-            
+
             if 'Total_Picked' in inv_df.columns:
                 inv_df = inv_df.drop(columns=['Total_Picked'])
+
     except Exception as e:
         st.warning(f"Inventory Reconcile Error: {e}")
+
+    # ✅ FIX: Strictly filter out any pallet with Actual Qty <= 0 (previously fully picked)
+    inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
+    inv_df = inv_df[inv_df['Actual Qty'] > 0].reset_index(drop=True)
+
     return inv_df
 
 def process_picking(inv_df, req_df, batch_id):
@@ -163,6 +171,10 @@ def process_picking(inv_df, req_df, batch_id):
     pick_id_col = next((c for c in inv_df.columns if 'pick id' in str(c).lower() or 'pickid' in str(c).lower()), None)
 
     temp_inv = inv_df.copy()
+    temp_inv['Actual Qty'] = pd.to_numeric(temp_inv['Actual Qty'], errors='coerce').fillna(0)
+
+    # ✅ FIX: Remove zero/negative qty rows from working copy before processing starts
+    temp_inv = temp_inv[temp_inv['Actual Qty'] > 0].reset_index(drop=True)
     
     for lid in req_df['Generated Load ID'].unique():
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
@@ -176,16 +188,30 @@ def process_picking(inv_df, req_df, batch_id):
             country = req['Country Name']
             
             if supplier_col:
-                stock = temp_inv[temp_inv[supplier_col].astype(str) == upc].sort_values(by='Actual Qty', ascending=False)
+                stock = temp_inv[
+                    (temp_inv[supplier_col].astype(str) == upc) &
+                    (temp_inv['Actual Qty'] > 0)          # ✅ FIX: Only pick from pallets with qty > 0
+                ].sort_values(by='Actual Qty', ascending=False)
             else:
-                stock = temp_inv[temp_inv['Supplier'].astype(str) == upc].sort_values(by='Actual Qty', ascending=False)
+                stock = temp_inv[
+                    (temp_inv['Supplier'].astype(str) == upc) &
+                    (temp_inv['Actual Qty'] > 0)          # ✅ FIX: Only pick from pallets with qty > 0
+                ].sort_values(by='Actual Qty', ascending=False)
                 
             picked_qty = 0
             
             for idx, item in stock.iterrows():
-                if needed <= 0: break
-                avail = float(item['Actual Qty'])
-                take = min(avail, needed)
+                if needed <= 0:
+                    break
+
+                # ✅ FIX: Re-read the current qty from temp_inv to avoid stale values
+                current_avail = float(temp_inv.at[idx, 'Actual Qty'])
+
+                # ✅ FIX: Skip this pallet if its qty has already been depleted to 0
+                if current_avail <= 0:
+                    continue
+
+                take = min(current_avail, needed)
                 
                 if take > 0:
                     p_row = item.copy()
@@ -204,13 +230,15 @@ def process_picking(inv_df, req_df, batch_id):
                     
                     pick_rows.append(p_row)
                     
-                    if take < avail:
+                    if take < current_avail:
                         partial_rows.append({
-                            'Batch ID': batch_id, 'SO Number': so_num, 'Pallet': item['Pallet'], 'Supplier': p_row['Supplier'], 'Load ID': lid,
-                            'Country Name': country, 'Actual Qty': avail,
+                            'Batch ID': batch_id, 'SO Number': so_num, 'Pallet': item['Pallet'],
+                            'Supplier': p_row['Supplier'], 'Load ID': lid,
+                            'Country Name': country, 'Actual Qty': current_avail,
                             'Partial Qty': take, 'Gen Pallet ID': f"{item['Pallet']}-P{len(partial_rows)+1:04d}"
                         })
                     
+                    # ✅ FIX: Update temp_inv in-place so subsequent iterations see the correct remaining qty
                     temp_inv.at[idx, 'Actual Qty'] -= take
                     needed -= take
                     picked_qty += take
@@ -227,6 +255,7 @@ def process_picking(inv_df, req_df, batch_id):
     pick_df = pd.DataFrame(pick_rows)
     if not pick_df.empty: 
         pick_df['Actual Qty'] = pd.to_numeric(pick_df['Actual Qty'])
+        # ✅ FIX: Final safety filter — drop any accidentally zero-qty rows
         pick_df = pick_df[pick_df['Actual Qty'] > 0]
         
         if 'Pick Id' in pick_df.columns:
@@ -278,7 +307,6 @@ if login_section():
                     inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
                     
-                    # --- FIXED: Deduplicate columns safely without using Pandas internal methods ---
                     new_inv_cols = []
                     seen_inv = {}
                     for c in inv.columns:
@@ -290,7 +318,6 @@ if login_section():
                             seen_inv[c_str] = 0
                             new_inv_cols.append(c_str)
                     inv.columns = new_inv_cols
-                    # --------------------------------------------------------------------------------
                     
                     batch_id = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                     
@@ -358,7 +385,6 @@ if login_section():
             st.subheader("📋 Verification: Customer Requirement vs Picked Data")
             st.info("කරුණාකර පහත Summary එක පරීක්ෂා කර Download කිරීමට පෙර Verify කරන්න.")
             
-            # FIXED: Avoid Pyarrow error by casting to string
             st.dataframe(st.session_state['summary_df'].astype(str), use_container_width=True)
             
             verify_check = st.checkbox("✅ මම Customer Requirement එක සහ Picked Data නිවැරදිදැයි පරීක්ෂා කළෙමි.")
@@ -456,7 +482,6 @@ if login_section():
                 st.markdown(f"### Results for {search_by}: `{search_term}`")
                 tab_v, tab_p = st.tabs(["📉 Summary / Variance", "📦 Picked Items Detail"])
                 
-                # Dashboard mapping to match sheet headers explicitly
                 col_map_pick = {"Load Id": "Load Id", "Pallet": "Pallet", "Supplier (Product UPC)": "Supplier", "SO Number": "SO Number"}
                 col_map_summ = {"Load Id": "Load ID", "Pallet": None, "Supplier (Product UPC)": "UPC", "SO Number": "SO Number"}
                 
@@ -468,7 +493,6 @@ if login_section():
                         else:
                             filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(str(search_term), case=False, na=False)]
                         
-                        # FIXED: Ensure dataframe converts properly avoiding Pyarrow error
                         st.dataframe(filtered_picks.astype(str), use_container_width=True)
                     else:
                         st.write("No pick data found for this search.")
@@ -482,7 +506,6 @@ if login_section():
                             else:
                                 filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(str(search_term), case=False, na=False)]
                             
-                            # FIXED: Ensure dataframe converts properly avoiding Pyarrow error
                             st.dataframe(filtered_summ.astype(str), use_container_width=True)
                             
                             if 'Variance' in filtered_summ.columns:
@@ -590,7 +613,6 @@ if login_section():
                             try:
                                 ws = sh.worksheet(s_name)
                                 ws.clear() 
-                                # 🌟 FIXED: Add original headers automatically after clearing 🌟
                                 if s_name in SHEET_HEADERS:
                                     ws.append_row(SHEET_HEADERS[s_name])
                             except: pass
