@@ -51,6 +51,20 @@ def get_or_create_sheet(sh, name, headers):
         ws.append_row(headers)
     return ws
 
+# --- Safe Data Fetcher for Dashboard ---
+def get_safe_dataframe(sh, sheet_name):
+    """Safely fetch data from a worksheet, returning an empty DataFrame with correct headers if empty."""
+    try:
+        ws = sh.worksheet(sheet_name)
+        data = ws.get_all_records()
+        if data:
+            return pd.DataFrame(data)
+        else:
+            headers = ws.row_values(1)
+            return pd.DataFrame(columns=headers)
+    except Exception as e:
+        return pd.DataFrame() # Returns completely empty DF if sheet doesn't exist
+
 # --- 2. User Management & Login ---
 def init_users_sheet(sh):
     ws = get_or_create_sheet(sh, "Users", ["Username", "Password", "Role"])
@@ -312,27 +326,33 @@ if login_section():
     # TAB 2: DASHBOARD & TRACKING
     # ==========================================
     elif choice == "📊 Dashboard & Tracking":
-        st.title("📊 Load Tracking & Dashboard")
+        col_t1, col_t2 = st.columns([4, 1])
+        col_t1.title("📊 Load Tracking & Dashboard")
+        if col_t2.button("🔄 Refresh Data", use_container_width=True):
+            st.rerun()
         
-        try:
-            hist_df = pd.DataFrame(sh.worksheet("Load_History").get_all_records())
-            summ_df = pd.DataFrame(sh.worksheet("Summary_Data").get_all_records())
-            pick_df = pd.DataFrame(sh.worksheet("Master_Pick_Data").get_all_records())
-        except Exception:
-            st.info("දැනට පද්ධතියේ කිසිදු දත්තයක් නොමැත.")
-            st.stop()
+        # Safe Data Fetching
+        hist_df = get_safe_dataframe(sh, "Load_History")
+        summ_df = get_safe_dataframe(sh, "Summary_Data")
+        pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
             
-        if hist_df.empty:
-            st.info("දැනට Load History දත්ත නොමැත.")
+        if hist_df.empty or 'Generated Load ID' not in hist_df.columns:
+            st.info("දැනට පද්ධතියේ කිසිදු Load History දත්තයක් නොමැත.")
             st.stop()
 
-        # Overall Metrics
+        # Overall Metrics (Safely checking columns)
         st.subheader("📈 Overall System Summary")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Load IDs", hist_df['Generated Load ID'].nunique())
-        m2.metric("Total Picks Made", len(pick_df) if not pick_df.empty else 0)
-        m3.metric("Pending Loads", len(hist_df[hist_df['Pick Status'] == 'Pending']))
-        m4.metric("Completed Loads", len(hist_df[hist_df['Pick Status'] == 'Completed']))
+        
+        total_loads = hist_df['Generated Load ID'].nunique() if 'Generated Load ID' in hist_df.columns else 0
+        total_picks = len(pick_df) if not pick_df.empty else 0
+        pending_loads = len(hist_df[hist_df['Pick Status'] == 'Pending']) if 'Pick Status' in hist_df.columns else 0
+        completed_loads = len(hist_df[hist_df['Pick Status'] == 'Completed']) if 'Pick Status' in hist_df.columns else 0
+        
+        m1.metric("Total Load IDs", total_loads)
+        m2.metric("Total Picks Made", total_picks)
+        m3.metric("Pending Loads", pending_loads)
+        m4.metric("Completed Loads", completed_loads)
         st.divider()
 
         # Download Total Report
@@ -343,8 +363,8 @@ if login_section():
                 selected_batch = st.selectbox("Select Requirement Batch ID:", available_batches)
                 if st.button("Generate Total Batch Report"):
                     with st.spinner("Generating Total Report..."):
-                        batch_picks = pick_df[pick_df.get('Batch ID', '') == selected_batch] if not pick_df.empty else pd.DataFrame()
-                        batch_summ = summ_df[summ_df.get('Batch ID', '') == selected_batch] if not summ_df.empty else pd.DataFrame()
+                        batch_picks = pick_df[pick_df.get('Batch ID', '') == selected_batch] if not pick_df.empty and 'Batch ID' in pick_df.columns else pd.DataFrame()
+                        batch_summ = summ_df[summ_df.get('Batch ID', '') == selected_batch] if not summ_df.empty and 'Batch ID' in summ_df.columns else pd.DataFrame()
                         
                         out_total = io.BytesIO()
                         with pd.ExcelWriter(out_total, engine='xlsxwriter') as writer:
@@ -364,21 +384,28 @@ if login_section():
         
         search_term = None
         if search_by == "Load Id":
-            search_term = col_s2.selectbox("Select Load ID:", hist_df['Generated Load ID'].unique())
-            
-            # Status Update (Only allowed when searched by Load ID)
-            current_status = hist_df[hist_df['Generated Load ID'] == search_term]['Pick Status'].iloc[0]
-            status_options = ["Pending", "Processing", "Completed", "Cancelled"]
-            safe_index = status_options.index(current_status) if current_status in status_options else 0
-            new_status = col_s3.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
-            
-            if col_s3.button("Update Status"):
-                ws_hist = sh.worksheet("Load_History")
-                cell = ws_hist.find(search_term)
-                ws_hist.update_cell(cell.row, 7, new_status)
-                st.success(f"Status updated to {new_status}!")
-                time.sleep(1)
-                st.rerun()
+            if 'Generated Load ID' in hist_df.columns:
+                search_term = col_s2.selectbox("Select Load ID:", hist_df['Generated Load ID'].dropna().unique())
+                
+                # Status Update 
+                if search_term:
+                    current_status = hist_df[hist_df['Generated Load ID'] == search_term]['Pick Status'].iloc[0] if 'Pick Status' in hist_df.columns else "Pending"
+                    status_options = ["Pending", "Processing", "Completed", "Cancelled"]
+                    safe_index = status_options.index(current_status) if current_status in status_options else 0
+                    new_status = col_s3.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
+                    
+                    if col_s3.button("Update Status"):
+                        ws_hist = sh.worksheet("Load_History")
+                        cell = ws_hist.find(search_term)
+                        if cell:
+                            ws_hist.update_cell(cell.row, 7, new_status) # Assuming Pick Status is 7th column
+                            st.success(f"Status updated to {new_status}!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Error: Load ID cell not found in Google Sheet.")
+            else:
+                st.warning("Generated Load ID column not found.")
         else:
             search_term = col_s2.text_input(f"Enter {search_by}:")
             col_s3.write("") # Placeholder
@@ -396,27 +423,34 @@ if login_section():
                 if not pick_df.empty and col_map_pick[search_by] in pick_df.columns:
                     search_col = col_map_pick[search_by]
                     if search_by == "Load Id":
-                        filtered_picks = pick_df[pick_df[search_col] == search_term]
+                        filtered_picks = pick_df[pick_df[search_col].astype(str) == str(search_term)]
                     else:
-                        filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(search_term, case=False, na=False)]
+                        filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(str(search_term), case=False, na=False)]
                     st.dataframe(filtered_picks, use_container_width=True)
                 else:
-                    st.write("No pick data found for this search.")
+                    st.write("No pick data found for this search. (හෝ අදාළ Column එක Sheet එකේ නොමැත)")
                     
             with tab_v:
                 if not summ_df.empty and col_map_summ[search_by]:
                     search_col_s = col_map_summ[search_by]
-                    if search_by == "Load Id":
-                        filtered_summ = summ_df[summ_df[search_col_s] == search_term]
+                    if search_col_s in summ_df.columns:
+                        if search_by == "Load Id":
+                            filtered_summ = summ_df[summ_df[search_col_s].astype(str) == str(search_term)]
+                        else:
+                            filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(str(search_term), case=False, na=False)]
+                        
+                        st.dataframe(filtered_summ, use_container_width=True)
+                        
+                        if 'Variance' in filtered_summ.columns:
+                            # Safely convert to numeric before checking > 0
+                            filtered_summ['Variance'] = pd.to_numeric(filtered_summ['Variance'], errors='coerce')
+                            shortages = filtered_summ[filtered_summ['Variance'] > 0]
+                            if not shortages.empty:
+                                st.warning("⚠️ Warning: Shortages detected!")
+                                cols_to_show = [c for c in ['UPC', 'Requested', 'Picked', 'Variance'] if c in shortages.columns]
+                                st.table(shortages[cols_to_show])
                     else:
-                        filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(search_term, case=False, na=False)]
-                    
-                    st.dataframe(filtered_summ, use_container_width=True)
-                    
-                    shortages = filtered_summ[filtered_summ['Variance'] > 0]
-                    if not shortages.empty:
-                        st.warning("⚠️ Warning: Shortages detected!")
-                        st.table(shortages[['UPC', 'Requested', 'Picked', 'Variance']])
+                        st.write(f"Column '{search_col_s}' not found in Summary Data.")
                 else:
                     if not col_map_summ[search_by]:
                         st.info("Summary view is not available for Pallet search.")
