@@ -30,6 +30,7 @@ def footer_branding():
     <div class="footer">Developed by Ishanka Madusanka</div>
     """, unsafe_allow_html=True)
 
+@st.cache_resource
 def get_gsheet_client():
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], 
@@ -44,36 +45,40 @@ def get_master_workbook():
 def get_or_create_sheet(sh, name, headers):
     try:
         ws = sh.worksheet(name)
-        if not ws.get_all_values(): # If sheet is completely empty (after reset), it auto-adds headers
+        if not ws.get_all_values(): 
             ws.append_row(headers)
     except:
         ws = sh.add_worksheet(title=name, rows="1000", cols=str(max(20, len(headers) + 5)))
         ws.append_row(headers)
     return ws
 
-# --- Safe Data Fetcher for Dashboard ---
+# --- 🌟 FIXED Safe Data Fetcher 🌟 ---
+# get_all_records() වෙනුවට get_all_values() භාවිතා කර duplicate columns නිසා ඇතිවන දෝෂය මගහරවා ඇත.
 def get_safe_dataframe(sh, sheet_name):
-    """Safely fetch data from a worksheet, returning an empty DataFrame with correct headers if empty."""
     try:
         ws = sh.worksheet(sheet_name)
-        data = ws.get_all_records()
-        if data:
-            return pd.DataFrame(data)
+        data = ws.get_all_values()
+        if not data:
+            return pd.DataFrame()
+        
+        headers = data[0]
+        if len(data) > 1:
+            return pd.DataFrame(data[1:], columns=headers)
         else:
-            headers = ws.row_values(1)
             return pd.DataFrame(columns=headers)
     except Exception as e:
-        return pd.DataFrame() # Returns completely empty DF if sheet doesn't exist
+        return pd.DataFrame()
 
 # --- 2. User Management & Login ---
 def init_users_sheet(sh):
     ws = get_or_create_sheet(sh, "Users", ["Username", "Password", "Role"])
-    users_data = ws.get_all_records()
-    if not users_data:
+    users_df = get_safe_dataframe(sh, "Users")
+    if users_df.empty:
         ws.append_row(["admin", "admin@123", "admin"])
         ws.append_row(["sys", "sys@123", "SysUser"])
         ws.append_row(["user", "user@123", "user"])
-    return pd.DataFrame(ws.get_all_records())
+        return get_safe_dataframe(sh, "Users")
+    return users_df
 
 def login_section():
     st.sidebar.title("🔐 WMS Login")
@@ -112,25 +117,28 @@ def login_section():
 # --- 3. Inventory Logic ---
 def reconcile_inventory(inv_df, sh):
     try:
-        pick_ws = sh.worksheet("Master_Pick_Data")
-        pick_history = pd.DataFrame(pick_ws.get_all_records())
-        if not pick_history.empty:
+        pick_history = get_safe_dataframe(sh, "Master_Pick_Data")
+        if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
+            # Convert Actual Qty to float for proper math
+            pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
             pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
             pick_summary.columns = ['Pallet', 'Total_Picked']
+            
             inv_df = pd.merge(inv_df, pick_summary, on='Pallet', how='left')
-        
             inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
+            inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
             inv_df['Actual Qty'] = inv_df['Actual Qty'] - inv_df['Total_Picked']
             inv_df = inv_df[inv_df['Actual Qty'] > 0]
+            
             if 'Total_Picked' in inv_df.columns:
                 inv_df = inv_df.drop(columns=['Total_Picked'])
-    except: pass
+    except Exception as e:
+        st.warning(f"Inventory Reconcile Error: {e}")
     return inv_df
 
 def process_picking(inv_df, req_df, batch_id):
     pick_rows, partial_rows, summary = [], [], []
    
-    # Ensure inventory DataFrame has at least 63 columns to safely access BK (index 62) and BG (index 58)
     current_cols = list(inv_df.columns)
     if len(current_cols) < 63:
         for i in range(len(current_cols), 63):
@@ -142,12 +150,11 @@ def process_picking(inv_df, req_df, batch_id):
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
         so_num = str(current_reqs['SO Number'].iloc[0]) 
         
-        # Get Ship Mode for Summary
         ship_mode = str(current_reqs['SHIP MODE: (SEA/AIR)'].iloc[0]) if 'SHIP MODE: (SEA/AIR)' in current_reqs.columns else ""
         
         for _, req in current_reqs.iterrows():
             upc = str(req['Product UPC'])
-            needed = req['PICK QTY']
+            needed = float(req['PICK QTY'])
             country = req['Country Name']
             
             stock = temp_inv[temp_inv['Supplier'].astype(str) == upc].sort_values(by='Actual Qty', ascending=False)
@@ -155,18 +162,15 @@ def process_picking(inv_df, req_df, batch_id):
             
             for idx, item in stock.iterrows():
                 if needed <= 0: break
-                avail = item['Actual Qty']
+                avail = float(item['Actual Qty'])
                 take = min(avail, needed)
                 
                 if take > 0:
                     p_row = item.copy()
                     
-                    # BG Column (Index 58) - Do not add anything / Clear it
-                    p_row.iloc[58] = ""
-                    # BK Column (Index 62) - Add System Generated Pick Id
-                    p_row.iloc[62] = f"P-{datetime.now().strftime('%m%d%H%M%S')}"
+                    p_row.iloc[58] = "" # BG Clear
+                    p_row.iloc[62] = f"P-{datetime.now().strftime('%m%d%H%M%S')}" # BK Pick ID
                     
-                    # Append strictly required system tracking columns at the end (so original format is preserved)
                     p_row['Batch ID'] = batch_id 
                     p_row['SO Number'] = so_num 
                     p_row['Actual Qty'] = take
@@ -189,9 +193,8 @@ def process_picking(inv_df, req_df, batch_id):
                     needed -= take
                     picked_qty += take
 
-            variance = req['PICK QTY'] - picked_qty
+            variance = float(req['PICK QTY']) - picked_qty
             
-            # Added 'Ship Mode' to Variance Summary
             summary.append({
                 'Batch ID': batch_id, 'SO Number': so_num, 'Load ID': lid, 'UPC': upc, 'Country': country,
                 'Ship Mode': ship_mode,
@@ -200,7 +203,9 @@ def process_picking(inv_df, req_df, batch_id):
             })
             
     pick_df = pd.DataFrame(pick_rows)
-    if not pick_df.empty: pick_df = pick_df[pick_df['Actual Qty'] > 0]
+    if not pick_df.empty: 
+        pick_df['Actual Qty'] = pd.to_numeric(pick_df['Actual Qty'])
+        pick_df = pick_df[pick_df['Actual Qty'] > 0]
     
     return pick_df, pd.DataFrame(partial_rows), pd.DataFrame(summary)
 
@@ -219,13 +224,12 @@ if login_section():
         st.session_state.clear()
         st.rerun()
 
-    # --- Role Based Access Menu ---
     menu = []
     if current_role == 'ADMIN':
         menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "🔄 Revert/Delete Picks", "⚙️ Admin Settings"]
     elif current_role == 'SYSUSER':
         menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "🔄 Revert/Delete Picks"]
-    else: # USER
+    else: 
         menu = ["📊 Dashboard & Tracking", "🔄 Revert/Delete Picks"]
         
     choice = st.sidebar.radio("Navigation Menu", menu)
@@ -242,46 +246,39 @@ if login_section():
 
         if inv_file and req_file:
             if st.button("Generate Picks & Process", use_container_width=True, type="primary"):
-                with st.spinner("🔄 Processing Data & Running Animations..."):
-                    time.sleep(1) 
+                with st.spinner("🔄 Processing Data & Saving to Google Sheets..."):
                     
                     inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
                     
+                    # Force unique column names for inventory to prevent gspread duplicate column errors
+                    inv.columns = pd.io.parsers.base_parser.ParserBase({'names': inv.columns, 'usecols': None})._maybe_dedup_names(inv.columns)
+                    
                     batch_id = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                     
                     ws_hist = get_or_create_sheet(sh, "Load_History", ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'])
-                    hist_df = pd.DataFrame(ws_hist.get_all_records())
+                    hist_df = get_safe_dataframe(sh, "Load_History")
                     
-                    # Convert necessary columns to string to avoid errors and strip spaces
                     req['SO Number'] = req['SO Number'].astype(str).str.strip()
                     req['Country Name'] = req['Country Name'].astype(str).str.strip()
                     req['SHIP MODE: (SEA/AIR)'] = req['SHIP MODE: (SEA/AIR)'].astype(str).str.strip()
                     
-                    # Group key logic based on SO Number, Country Name, and Ship Mode
                     req['Group'] = req['SO Number'] + "_" + req['Country Name'] + "_" + req['SHIP MODE: (SEA/AIR)']
                     new_hist_entries = []
                     load_id_map = {}
                     so_counts = {}
                     
-                    # Track counts per SO Number from previous historical data to ensure accurate increment (+1)
-                    if not hist_df.empty:
+                    if not hist_df.empty and 'SO Number' in hist_df.columns:
                         for so in hist_df['SO Number'].astype(str).unique():
                             so_history = hist_df[hist_df['SO Number'].astype(str) == so]
                             so_counts[so] = len(so_history['Generated Load ID'].unique())
                     
                     for group, data in req.groupby('Group'):
                         so_num = data['SO Number'].iloc[0]
-                        
-                        # Initialize count if new SO Number
-                        if so_num not in so_counts:
-                            so_counts[so_num] = 0
-                            
-                        # Increment count for each unique group
+                        if so_num not in so_counts: so_counts[so_num] = 0
                         so_counts[so_num] += 1
                         count = so_counts[so_num]
                         
-                        # Generate structured Load ID (e.g., SO-23387-001, SO-23387-002)
                         lid = f"SO-{so_num}-{count:03d}"
                         load_id_map[group] = lid
                         
@@ -331,131 +328,124 @@ if login_section():
         if col_t2.button("🔄 Refresh Data", use_container_width=True):
             st.rerun()
         
-        # Safe Data Fetching
         hist_df = get_safe_dataframe(sh, "Load_History")
         summ_df = get_safe_dataframe(sh, "Summary_Data")
         pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
             
-        if hist_df.empty or 'Generated Load ID' not in hist_df.columns:
-            st.info("දැනට පද්ධතියේ කිසිදු Load History දත්තයක් නොමැත.")
-            st.stop()
+        # UI එක නැවතිය යුතු නැත (st.stop() ඉවත් කර ඇත). හිස් නම් බිංදුව පෙන්වයි.
+        total_loads = hist_df['Generated Load ID'].nunique() if not hist_df.empty and 'Generated Load ID' in hist_df.columns else 0
+        total_picks = len(pick_df) if not pick_df.empty else 0
+        pending_loads = len(hist_df[hist_df['Pick Status'] == 'Pending']) if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
+        completed_loads = len(hist_df[hist_df['Pick Status'] == 'Completed']) if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
 
-        # Overall Metrics (Safely checking columns)
         st.subheader("📈 Overall System Summary")
         m1, m2, m3, m4 = st.columns(4)
-        
-        total_loads = hist_df['Generated Load ID'].nunique() if 'Generated Load ID' in hist_df.columns else 0
-        total_picks = len(pick_df) if not pick_df.empty else 0
-        pending_loads = len(hist_df[hist_df['Pick Status'] == 'Pending']) if 'Pick Status' in hist_df.columns else 0
-        completed_loads = len(hist_df[hist_df['Pick Status'] == 'Completed']) if 'Pick Status' in hist_df.columns else 0
-        
         m1.metric("Total Load IDs", total_loads)
         m2.metric("Total Picks Made", total_picks)
         m3.metric("Pending Loads", pending_loads)
         m4.metric("Completed Loads", completed_loads)
         st.divider()
 
-        # Download Total Report
-        st.subheader("📑 Download Total Report by Upload Batch")
-        if 'Batch ID' in hist_df.columns:
-            available_batches = hist_df['Batch ID'].dropna().unique()
-            if len(available_batches) > 0:
-                selected_batch = st.selectbox("Select Requirement Batch ID:", available_batches)
-                if st.button("Generate Total Batch Report"):
-                    with st.spinner("Generating Total Report..."):
-                        batch_picks = pick_df[pick_df.get('Batch ID', '') == selected_batch] if not pick_df.empty and 'Batch ID' in pick_df.columns else pd.DataFrame()
-                        batch_summ = summ_df[summ_df.get('Batch ID', '') == selected_batch] if not summ_df.empty and 'Batch ID' in summ_df.columns else pd.DataFrame()
-                        
-                        out_total = io.BytesIO()
-                        with pd.ExcelWriter(out_total, engine='xlsxwriter') as writer:
-                            if not batch_picks.empty: batch_picks.to_excel(writer, sheet_name='Pick_Report', index=False)
-                            if not batch_summ.empty: batch_summ.to_excel(writer, sheet_name='Variance_Summary', index=False)
-                        
-                        st.download_button("⬇️ Download Batch Excel", data=out_total.getvalue(), file_name=f"Total_Report_{selected_batch}.xlsx", mime="application/vnd.ms-excel")
-            else:
-                st.write("No batch records found.")
-        st.divider()
-
-        # Advanced Search & Tracking
-        st.subheader("🔍 Advanced Search & Status Update")
-        col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
-        
-        search_by = col_s1.selectbox("🔎 Search By:", ["Load Id", "Pallet", "Supplier (Product UPC)", "SO Number"])
-        
-        search_term = None
-        if search_by == "Load Id":
-            if 'Generated Load ID' in hist_df.columns:
-                search_term = col_s2.selectbox("Select Load ID:", hist_df['Generated Load ID'].dropna().unique())
-                
-                # Status Update 
-                if search_term:
-                    current_status = hist_df[hist_df['Generated Load ID'] == search_term]['Pick Status'].iloc[0] if 'Pick Status' in hist_df.columns else "Pending"
-                    status_options = ["Pending", "Processing", "Completed", "Cancelled"]
-                    safe_index = status_options.index(current_status) if current_status in status_options else 0
-                    new_status = col_s3.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
-                    
-                    if col_s3.button("Update Status"):
-                        ws_hist = sh.worksheet("Load_History")
-                        cell = ws_hist.find(search_term)
-                        if cell:
-                            ws_hist.update_cell(cell.row, 7, new_status) # Assuming Pick Status is 7th column
-                            st.success(f"Status updated to {new_status}!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("Error: Load ID cell not found in Google Sheet.")
-            else:
-                st.warning("Generated Load ID column not found.")
+        if total_loads == 0:
+            st.info("දැනට පද්ධතියේ කිසිදු දත්තයක් නොමැත. කරුණාකර 'Picking Operations' මගින් දත්ත ඇතුලත් කරන්න.")
         else:
-            search_term = col_s2.text_input(f"Enter {search_by}:")
-            col_s3.write("") # Placeholder
+            # Download Total Report
+            st.subheader("📑 Download Total Report by Upload Batch")
+            if not hist_df.empty and 'Batch ID' in hist_df.columns:
+                available_batches = hist_df['Batch ID'].dropna().unique()
+                if len(available_batches) > 0:
+                    selected_batch = st.selectbox("Select Requirement Batch ID:", available_batches)
+                    if st.button("Generate Total Batch Report"):
+                        with st.spinner("Generating Total Report..."):
+                            batch_picks = pick_df[pick_df.get('Batch ID', '') == selected_batch] if not pick_df.empty and 'Batch ID' in pick_df.columns else pd.DataFrame()
+                            batch_summ = summ_df[summ_df.get('Batch ID', '') == selected_batch] if not summ_df.empty and 'Batch ID' in summ_df.columns else pd.DataFrame()
+                            
+                            out_total = io.BytesIO()
+                            with pd.ExcelWriter(out_total, engine='xlsxwriter') as writer:
+                                if not batch_picks.empty: batch_picks.to_excel(writer, sheet_name='Pick_Report', index=False)
+                                if not batch_summ.empty: batch_summ.to_excel(writer, sheet_name='Variance_Summary', index=False)
+                            
+                            st.download_button("⬇️ Download Batch Excel", data=out_total.getvalue(), file_name=f"Total_Report_{selected_batch}.xlsx", mime="application/vnd.ms-excel")
+            st.divider()
+
+            # Advanced Search & Tracking
+            st.subheader("🔍 Advanced Search & Status Update")
+            col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
             
-        # Display Search Results
-        if search_term:
-            st.markdown(f"### Results for {search_by}: `{search_term}`")
-            tab_v, tab_p = st.tabs(["📉 Summary / Variance", "📦 Picked Items Detail"])
+            search_by = col_s1.selectbox("🔎 Search By:", ["Load Id", "Pallet", "Supplier (Product UPC)", "SO Number"])
             
-            # Column Mapping
-            col_map_pick = {"Load Id": "Load Id", "Pallet": "Pallet", "Supplier (Product UPC)": "Supplier", "SO Number": "SO Number"}
-            col_map_summ = {"Load Id": "Load ID", "Pallet": None, "Supplier (Product UPC)": "UPC", "SO Number": "SO Number"}
-            
-            with tab_p:
-                if not pick_df.empty and col_map_pick[search_by] in pick_df.columns:
-                    search_col = col_map_pick[search_by]
-                    if search_by == "Load Id":
-                        filtered_picks = pick_df[pick_df[search_col].astype(str) == str(search_term)]
-                    else:
-                        filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(str(search_term), case=False, na=False)]
-                    st.dataframe(filtered_picks, use_container_width=True)
-                else:
-                    st.write("No pick data found for this search. (හෝ අදාළ Column එක Sheet එකේ නොමැත)")
+            search_term = None
+            if search_by == "Load Id":
+                if 'Generated Load ID' in hist_df.columns:
+                    search_term = col_s2.selectbox("Select Load ID:", hist_df['Generated Load ID'].dropna().unique())
                     
-            with tab_v:
-                if not summ_df.empty and col_map_summ[search_by]:
-                    search_col_s = col_map_summ[search_by]
-                    if search_col_s in summ_df.columns:
-                        if search_by == "Load Id":
-                            filtered_summ = summ_df[summ_df[search_col_s].astype(str) == str(search_term)]
-                        else:
-                            filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(str(search_term), case=False, na=False)]
+                    # Status Update 
+                    if search_term:
+                        current_status = hist_df[hist_df['Generated Load ID'] == search_term]['Pick Status'].iloc[0] if 'Pick Status' in hist_df.columns else "Pending"
+                        status_options = ["Pending", "Processing", "Completed", "Cancelled"]
+                        safe_index = status_options.index(current_status) if current_status in status_options else 0
+                        new_status = col_s3.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
                         
-                        st.dataframe(filtered_summ, use_container_width=True)
-                        
-                        if 'Variance' in filtered_summ.columns:
-                            # Safely convert to numeric before checking > 0
-                            filtered_summ['Variance'] = pd.to_numeric(filtered_summ['Variance'], errors='coerce')
-                            shortages = filtered_summ[filtered_summ['Variance'] > 0]
-                            if not shortages.empty:
-                                st.warning("⚠️ Warning: Shortages detected!")
-                                cols_to_show = [c for c in ['UPC', 'Requested', 'Picked', 'Variance'] if c in shortages.columns]
-                                st.table(shortages[cols_to_show])
-                    else:
-                        st.write(f"Column '{search_col_s}' not found in Summary Data.")
+                        if col_s3.button("Update Status"):
+                            ws_hist = sh.worksheet("Load_History")
+                            cell = ws_hist.find(search_term)
+                            if cell:
+                                ws_hist.update_cell(cell.row, 7, new_status) # Assuming Pick Status is 7th column
+                                st.success(f"Status updated to {new_status}!")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("Error: Load ID cell not found in Google Sheet.")
                 else:
-                    if not col_map_summ[search_by]:
-                        st.info("Summary view is not available for Pallet search.")
+                    st.warning("Generated Load ID column not found.")
+            else:
+                search_term = col_s2.text_input(f"Enter {search_by}:")
+                col_s3.write("") 
+                
+            # Display Search Results
+            if search_term:
+                st.markdown(f"### Results for {search_by}: `{search_term}`")
+                tab_v, tab_p = st.tabs(["📉 Summary / Variance", "📦 Picked Items Detail"])
+                
+                col_map_pick = {"Load Id": "Load Id", "Pallet": "Pallet", "Supplier (Product UPC)": "Supplier", "SO Number": "SO Number"}
+                col_map_summ = {"Load Id": "Load ID", "Pallet": None, "Supplier (Product UPC)": "UPC", "SO Number": "SO Number"}
+                
+                with tab_p:
+                    if not pick_df.empty and col_map_pick[search_by] in pick_df.columns:
+                        search_col = col_map_pick[search_by]
+                        if search_by == "Load Id":
+                            filtered_picks = pick_df[pick_df[search_col].astype(str) == str(search_term)]
+                        else:
+                            filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(str(search_term), case=False, na=False)]
+                        st.dataframe(filtered_picks, use_container_width=True)
                     else:
-                        st.write("No summary data found.")
+                        st.write("No pick data found for this search.")
+                        
+                with tab_v:
+                    if not summ_df.empty and col_map_summ[search_by]:
+                        search_col_s = col_map_summ[search_by]
+                        if search_col_s in summ_df.columns:
+                            if search_by == "Load Id":
+                                filtered_summ = summ_df[summ_df[search_col_s].astype(str) == str(search_term)]
+                            else:
+                                filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(str(search_term), case=False, na=False)]
+                            
+                            st.dataframe(filtered_summ, use_container_width=True)
+                            
+                            if 'Variance' in filtered_summ.columns:
+                                filtered_summ['Variance'] = pd.to_numeric(filtered_summ['Variance'], errors='coerce')
+                                shortages = filtered_summ[filtered_summ['Variance'] > 0]
+                                if not shortages.empty:
+                                    st.warning("⚠️ Warning: Shortages detected!")
+                                    cols_to_show = [c for c in ['UPC', 'Requested', 'Picked', 'Variance'] if c in shortages.columns]
+                                    st.table(shortages[cols_to_show])
+                        else:
+                            st.write(f"Column '{search_col_s}' not found in Summary Data.")
+                    else:
+                        if not col_map_summ[search_by]:
+                            st.info("Summary view is not available for Pallet search.")
+                        else:
+                            st.write("No summary data found.")
 
     # ==========================================
     # TAB 3: REVERT / DELETE PICKS (ALL USERS)
@@ -469,20 +459,13 @@ if login_section():
             if st.button("🗑️ Delete Matching Records", type="primary"):
                 with st.spinner("Deleting Data..."):
                     del_df = pd.read_csv(del_file) if del_file.name.endswith('.csv') else pd.read_excel(del_file)
-                    
-                    # Normalize columns to uppercase for checking
                     del_df.columns = del_df.columns.str.strip().str.upper()
                     
                     if not all(col in del_df.columns for col in ['LOAD ID', 'PALLET', 'ACTUAL QTY']):
                         st.error("Uploaded file must contain 'Load ID', 'Pallet', and 'Actual Qty' columns.")
                         st.stop()
                         
-                    try:
-                        ws_pick = sh.worksheet("Master_Pick_Data")
-                        master_pick_df = pd.DataFrame(ws_pick.get_all_records())
-                    except Exception:
-                        st.error("දැනට Master_Pick_Data හි දත්ත නොමැත.")
-                        st.stop()
+                    master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
                         
                     if not master_pick_df.empty:
                         initial_len = len(master_pick_df)
@@ -490,7 +473,6 @@ if login_section():
                         temp_master = master_pick_df.copy()
                         temp_master.columns = temp_master.columns.str.strip().str.upper()
                         
-                        # Create unique Match Key
                         temp_master['MATCH_KEY'] = temp_master['LOAD ID'].astype(str).str.strip() + "_" + temp_master['PALLET'].astype(str).str.strip() + "_" + temp_master['ACTUAL QTY'].astype(float).astype(str)
                         del_df['MATCH_KEY'] = del_df['LOAD ID'].astype(str).str.strip() + "_" + del_df['PALLET'].astype(str).str.strip() + "_" + del_df['ACTUAL QTY'].astype(float).astype(str)
                         
@@ -500,6 +482,7 @@ if login_section():
                         deleted_count = initial_len - len(filtered_master)
                         
                         if deleted_count > 0:
+                            ws_pick = sh.worksheet("Master_Pick_Data")
                             header = ws_pick.row_values(1)
                             ws_pick.clear()
                             ws_pick.append_row(header)
@@ -510,6 +493,8 @@ if login_section():
                             st.balloons()
                         else:
                             st.warning("⚠️ Upload කල දත්ත හා ගැලපෙන වාර්තා Master_Pick_Data හි හමු නොවීය.")
+                    else:
+                        st.error("දැනට Master_Pick_Data හි දත්ත නොමැත.")
 
     # ==========================================
     # TAB 4: ADMIN SETTINGS
@@ -528,8 +513,8 @@ if login_section():
                 submitted = st.form_submit_button("Add User")
                 if submitted and n_user and n_pass:
                     ws_users = sh.worksheet("Users")
-                    users_data = pd.DataFrame(ws_users.get_all_records())
-                    if n_user in users_data['Username'].values:
+                    users_data = get_safe_dataframe(sh, "Users")
+                    if not users_data.empty and n_user in users_data['Username'].values:
                         st.error("මෙම Username එක දැනටමත් ඇත.")
                     else:
                         ws_users.append_row([n_user, n_pass, n_role])
@@ -551,7 +536,7 @@ if login_section():
                         for s_name in sheets_to_process:
                             try:
                                 ws = sh.worksheet(s_name)
-                                ws.clear() # Headers ඇතුළුව සියල්ල මකා දමයි. අලුතින් data යද්දී Auto-Headers හැදේ.
+                                ws.clear() 
                             except: pass
                         st.success(f"✅ {sheet_to_clear} සාර්ථකව Reset කරන ලදී.")
                     except Exception as e:
