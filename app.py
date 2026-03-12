@@ -111,14 +111,22 @@ def process_inventory(inv_df, req_df, new_so_id):
 # --- 4. Google Sheets Saving Logic ---
 def save_to_gsheets(client, df, sheet_name):
     sh = client.open_by_url(SHEET_URL)
+    
+    # --- දත්ත පිරිසිදු කිරීම (Data Cleaning) ---
+    # 1. NaN (හිස් තැන්) වෙනුවට හිස් string එකක් දාන්න
+    # 2. Date/Time columns තියෙනවා නම් ඒවා string වලට හරවන්න
+    cleaned_df = df.astype(str).replace('nan', '', regex=True)
+    cleaned_df = cleaned_df.replace('None', '', regex=True)
+    
     try:
-        worksheet = sh.add_worksheet(title=sheet_name, rows=str(len(df)+10), cols=str(len(df.columns)))
+        worksheet = sh.add_worksheet(title=sheet_name, rows="100", cols="20")
     except:
-        # Sheet එක දැනටමත් තියෙනවා නම් ඒකටම දානවා
         worksheet = sh.worksheet(sheet_name)
         worksheet.clear()
         
-    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+    # List එකක් බවට හරවා update කිරීම
+    data_to_upload = [cleaned_df.columns.values.tolist()] + cleaned_df.values.tolist()
+    worksheet.update(data_to_upload)
 
 # --- 5. Streamlit App UI ---
 st.set_page_config(layout="wide", page_title="WMS Picking System")
