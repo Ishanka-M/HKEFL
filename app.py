@@ -44,7 +44,7 @@ def get_master_workbook():
 def get_or_create_sheet(sh, name, headers):
     try:
         ws = sh.worksheet(name)
-        if not ws.get_all_values():
+        if not ws.get_all_values(): # If sheet is completely empty (after reset), it auto-adds headers
             ws.append_row(headers)
     except:
         ws = sh.add_worksheet(title=name, rows="1000", cols=str(max(20, len(headers) + 5)))
@@ -92,6 +92,7 @@ def login_section():
             else:
                 st.sidebar.error("වැරදි Username හෝ Password එකක්!")
         return False
+ 
     return True
 
 # --- 3. Inventory Logic ---
@@ -103,6 +104,7 @@ def reconcile_inventory(inv_df, sh):
             pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
             pick_summary.columns = ['Pallet', 'Total_Picked']
             inv_df = pd.merge(inv_df, pick_summary, on='Pallet', how='left')
+        
             inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
             inv_df['Actual Qty'] = inv_df['Actual Qty'] - inv_df['Total_Picked']
             inv_df = inv_df[inv_df['Actual Qty'] > 0]
@@ -113,11 +115,21 @@ def reconcile_inventory(inv_df, sh):
 
 def process_picking(inv_df, req_df, batch_id):
     pick_rows, partial_rows, summary = [], [], []
+   
+    # Ensure inventory DataFrame has at least 63 columns to safely access BK (index 62) and BG (index 58)
+    current_cols = list(inv_df.columns)
+    if len(current_cols) < 63:
+        for i in range(len(current_cols), 63):
+            inv_df[f"Unnamed_Col_{i}"] = ""
+
     temp_inv = inv_df.copy()
     
     for lid in req_df['Generated Load ID'].unique():
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
-        so_num = str(current_reqs['SO Number'].iloc[0]) # Get SO Number for this Load ID
+        so_num = str(current_reqs['SO Number'].iloc[0]) 
+        
+        # Get Ship Mode for Summary
+        ship_mode = str(current_reqs['SHIP MODE: (SEA/AIR)'].iloc[0]) if 'SHIP MODE: (SEA/AIR)' in current_reqs.columns else ""
         
         for _, req in current_reqs.iterrows():
             upc = str(req['Product UPC'])
@@ -134,15 +146,22 @@ def process_picking(inv_df, req_df, batch_id):
                 
                 if take > 0:
                     p_row = item.copy()
+                    
+                    # BG Column (Index 58) - Do not add anything / Clear it
+                    p_row.iloc[58] = ""
+                    # BK Column (Index 62) - Add System Generated Pick Id
+                    p_row.iloc[62] = f"P-{datetime.now().strftime('%m%d%H%M%S')}"
+                    
+                    # Append strictly required system tracking columns at the end (so original format is preserved)
                     p_row['Batch ID'] = batch_id 
-                    p_row['SO Number'] = so_num  # Add SO Number to Pick Data
+                    p_row['SO Number'] = so_num 
                     p_row['Actual Qty'] = take
                     p_row['Order Type'] = "Sample Orders"
                     p_row['Order Number'] = lid
                     p_row['Store Order Number'] = lid
                     p_row['Customer Po Number'] = f"{country}-{lid}"
                     p_row['Load Id'] = lid
-                    p_row['Pick Id'] = f"P-{datetime.now().strftime('%m%d%H%M%S')}"
+                    
                     pick_rows.append(p_row)
                     
                     if take < avail:
@@ -157,8 +176,11 @@ def process_picking(inv_df, req_df, batch_id):
                     picked_qty += take
 
             variance = req['PICK QTY'] - picked_qty
+            
+            # Added 'Ship Mode' to Variance Summary
             summary.append({
                 'Batch ID': batch_id, 'SO Number': so_num, 'Load ID': lid, 'UPC': upc, 'Country': country,
+                'Ship Mode': ship_mode,
                 'Requested': req['PICK QTY'], 'Picked': picked_qty, 'Variance': variance,
                 'Status': 'Fully Picked' if variance == 0 else 'Shortage'
             })
@@ -232,6 +254,7 @@ if login_section():
                     if new_hist_entries: ws_hist.append_rows(new_hist_entries)
                     
                     inv = reconcile_inventory(inv, sh)
+                    
                     pick_df, part_df, summ_df = process_picking(inv, req, batch_id)
                     
                     if not pick_df.empty:
@@ -457,7 +480,7 @@ if login_section():
         
         with col_adm2:
             st.subheader("⚠️ Database Management")
-            st.warning("මෙමඟින් පද්ධතියේ පරණ දත්ත සම්පූර්ණයෙන්ම මකා දමයි. (Clear Database)")
+            st.warning("මෙමඟින් පද්ධතියේ පරණ දත්ත සහ Headers සම්පූර්ණයෙන්ම මකා දමයි. (Clear Database)")
             
             sheet_to_clear = st.selectbox("Select Data to Clear:", [
                 "Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History", "ALL_DATA"
@@ -471,9 +494,7 @@ if login_section():
                         for s_name in sheets_to_process:
                             try:
                                 ws = sh.worksheet(s_name)
-                                header = ws.row_values(1)
-                                ws.clear()
-                                ws.append_row(header)
+                                ws.clear() # Headers ඇතුළුව සියල්ල මකා දමයි. අලුතින් data යද්දී Auto-Headers හැදේ.
                             except: pass
                         st.success(f"✅ {sheet_to_clear} සාර්ථකව Reset කරන ලදී.")
                     except Exception as e:
