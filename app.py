@@ -15,7 +15,7 @@ def get_gspread_client():
     )
     return gspread.authorize(credentials)
 
-SHEET_URL = "YOUR_GOOGLE_SHEET_URL_HERE" # මෙතනට ඔබේ Google Sheet Link එක දෙන්න
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1wLPaUtZ_-xbeIknhBpv4Y8o-X1qMth5KPydEc0TrqDE/edit?gid=0#gid=0" # මෙතනට ඔබේ Google Sheet Link එක දෙන්න
 
 # --- 2. SO Number Generation Logic ---
 def generate_so_number(df_req, existing_sos):
