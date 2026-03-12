@@ -4,9 +4,31 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import io
+import time
 
 # --- 1. System Config & Auth ---
 st.set_page_config(page_title="Advanced WMS Picking System", layout="wide", page_icon="📦")
+
+# --- Branding Footer CSS ---
+def footer_branding():
+    st.markdown("""
+    <style>
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: transparent;
+        color: #888888;
+        text-align: center;
+        font-size: 13px;
+        padding: 10px;
+        font-weight: bold;
+        z-index: 100;
+    }
+    </style>
+    <div class="footer">Developed by Ishanka Madusanka</div>
+    """, unsafe_allow_html=True)
 
 def get_gsheet_client():
     creds = Credentials.from_service_account_info(
@@ -22,6 +44,9 @@ def get_master_workbook():
 def get_or_create_sheet(sh, name, headers):
     try:
         ws = sh.worksheet(name)
+        # Check if empty, if so add headers
+        if not ws.get_all_values():
+            ws.append_row(headers)
     except:
         ws = sh.add_worksheet(title=name, rows="1000", cols=str(max(20, len(headers) + 5)))
         ws.append_row(headers)
@@ -32,14 +57,15 @@ def init_users_sheet(sh):
     ws = get_or_create_sheet(sh, "Users", ["Username", "Password", "Role"])
     users_data = ws.get_all_records()
     if not users_data:
-        # Default Admin
+        # Default Users
         ws.append_row(["admin", "admin@123", "admin"])
+        ws.append_row(["sys", "sys@123", "SysUser"])
+        ws.append_row(["user", "user@123", "user"])
     return pd.DataFrame(ws.get_all_records())
 
 def login_section():
     st.sidebar.title("🔐 WMS Login")
     
-    # එක් එක් key එක වෙන වෙනම අලුතින් හඳුන්වා දීම (Safe Initialization)
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if 'role' not in st.session_state:
@@ -57,7 +83,8 @@ def login_section():
 
         user = st.sidebar.text_input("Username")
         pw = st.sidebar.text_input("Password", type="password")
-        if st.sidebar.button("Login"):
+        
+        if st.sidebar.button("Login", type="primary"):
             user_match = users_df[(users_df['Username'] == user) & (users_df['Password'] == str(pw))]
             if not user_match.empty:
                 st.session_state['logged_in'] = True
@@ -81,18 +108,21 @@ def reconcile_inventory(inv_df, sh):
             inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
             inv_df['Actual Qty'] = inv_df['Actual Qty'] - inv_df['Total_Picked']
             inv_df = inv_df[inv_df['Actual Qty'] > 0]
-            inv_df = inv_df.drop(columns=['Total_Picked'])
+            if 'Total_Picked' in inv_df.columns:
+                inv_df = inv_df.drop(columns=['Total_Picked'])
     except: pass
     return inv_df
 
-def process_picking(inv_df, req_df):
+def process_picking(inv_df, req_df, batch_id):
     pick_rows, partial_rows, summary = [], [], []
     temp_inv = inv_df.copy()
     
     for lid in req_df['Generated Load ID'].unique():
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
         for _, req in current_reqs.iterrows():
-            upc, needed, country = str(req['Product UPC']), req['PICK QTY'], req['Country Name']
+            upc = str(req['Product UPC'])
+            needed = req['PICK QTY']
+            country = req['Country Name']
             
             stock = temp_inv[temp_inv['Supplier'].astype(str) == upc].sort_values(by='Actual Qty', ascending=False)
             picked_qty = 0
@@ -104,6 +134,7 @@ def process_picking(inv_df, req_df):
                 
                 if take > 0:
                     p_row = item.copy()
+                    p_row['Batch ID'] = batch_id # New Total Report ID
                     p_row['Actual Qty'] = take
                     p_row['Order Type'] = "Sample Orders"
                     p_row['Order Number'] = lid
@@ -115,7 +146,7 @@ def process_picking(inv_df, req_df):
                     
                     if take < avail:
                         partial_rows.append({
-                            'Pallet': item['Pallet'], 'Supplier': upc, 'Load ID': lid,
+                            'Batch ID': batch_id, 'Pallet': item['Pallet'], 'Supplier': upc, 'Load ID': lid,
                             'Country Name': country, 'Actual Qty': avail,
                             'Partial Qty': take, 'Gen Pallet ID': f"{item['Pallet']}-P{len(partial_rows)+1:04d}"
                         })
@@ -126,12 +157,11 @@ def process_picking(inv_df, req_df):
 
             variance = req['PICK QTY'] - picked_qty
             summary.append({
-                'Load ID': lid, 'UPC': upc, 'Country': country,
+                'Batch ID': batch_id, 'Load ID': lid, 'UPC': upc, 'Country': country,
                 'Requested': req['PICK QTY'], 'Picked': picked_qty, 'Variance': variance,
                 'Status': 'Fully Picked' if variance == 0 else 'Shortage'
             })
             
-    # Filter out any 0 quantities just to be 100% safe
     pick_df = pd.DataFrame(pick_rows)
     if not pick_df.empty: pick_df = pick_df[pick_df['Actual Qty'] > 0]
     
@@ -139,22 +169,28 @@ def process_picking(inv_df, req_df):
 
 # --- 4. App UI & Navigation ---
 if login_section():
-    # .get() භාවිතයෙන් Error එක මඟ හැරීම
     current_user = st.session_state.get('username', 'User')
     current_role = st.session_state.get('role', 'user').upper()
     
     st.sidebar.success(f"👤 Logged in as: {current_user} ({current_role})")
     
+    # Simple welcome animation on first load after login
+    if 'welcomed' not in st.session_state:
+        st.toast(f"Welcome back, {current_user}!", icon="👋")
+        st.session_state['welcomed'] = True
+    
     if st.sidebar.button("Logout"):
-        # st.session_state.clear() වෙනුවට පහත ක්‍රමය පාවිච්චි කරන්න
-        st.session_state['logged_in'] = False
-        st.session_state['username'] = 'Unknown'
-        st.session_state['role'] = 'user'
+        st.session_state.clear()
         st.rerun()
 
-    menu = ["🚀 Picking Operations", "📊 Dashboard & Tracking"]
+    # --- Role Based Access Menu ---
+    menu = []
     if current_role == 'ADMIN':
-        menu.append("⚙️ Admin Settings")
+        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "⚙️ Admin Settings"]
+    elif current_role == 'SYSUSER':
+        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations"]
+    else: # USER
+        menu = ["📊 Dashboard & Tracking"]
         
     choice = st.sidebar.radio("Navigation Menu", menu)
     sh = get_master_workbook()
@@ -170,12 +206,17 @@ if login_section():
 
         if inv_file and req_file:
             if st.button("Generate Picks & Process", use_container_width=True, type="primary"):
-                with st.spinner("Processing Data..."):
+                with st.spinner("🔄 Processing Data & Running Animations..."):
+                    time.sleep(1) # Small delay for animation effect
+                    
                     inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
                     
+                    # Generate Unique Batch/Request ID for this upload
+                    batch_id = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    
                     # History and ID Generation
-                    ws_hist = get_or_create_sheet(sh, "Load_History", ['Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'])
+                    ws_hist = get_or_create_sheet(sh, "Load_History", ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'])
                     hist_df = pd.DataFrame(ws_hist.get_all_records())
                     
                     req['Group'] = req['SO Number'].astype(str) + "_" + req['Country Name'] + "_" + req['SHIP MODE: (SEA/AIR)']
@@ -187,19 +228,20 @@ if login_section():
                         count = len(hist_df[hist_df['SO Number'].astype(str) == so_num]) + 1 if not hist_df.empty else 1
                         lid = f"SO-{so_num}-{count:03d}"
                         load_id_map[group] = lid
-                        new_hist_entries.append([lid, so_num, data['Country Name'].iloc[0], data['SHIP MODE: (SEA/AIR)'].iloc[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Pending"])
+                        new_hist_entries.append([batch_id, lid, so_num, data['Country Name'].iloc[0], data['SHIP MODE: (SEA/AIR)'].iloc[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Pending"])
                     
                     req['Generated Load ID'] = req['Group'].map(load_id_map)
                     if new_hist_entries: ws_hist.append_rows(new_hist_entries)
                     
                     # Picking Process
                     inv = reconcile_inventory(inv, sh)
-                    pick_df, part_df, summ_df = process_picking(inv, req)
+                    pick_df, part_df, summ_df = process_picking(inv, req, batch_id)
                     
                     # Save to Sheets
                     if not pick_df.empty:
                         ws_pick = get_or_create_sheet(sh, "Master_Pick_Data", pick_df.columns.tolist())
                         ws_pick.append_rows(pick_df.astype(str).replace('nan','').values.tolist())
+                    
                     if not part_df.empty:
                         ws_part = get_or_create_sheet(sh, "Master_Partial_Data", part_df.columns.tolist())
                         ws_part.append_rows(part_df.astype(str).replace('nan','').values.tolist())
@@ -214,8 +256,16 @@ if login_section():
                         if not part_df.empty: part_df.to_excel(writer, sheet_name='Partial_Report', index=False)
                         if not summ_df.empty: summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
                     
-                    st.success("✅ Picking Completed Successfully!")
-                    st.download_button("⬇️ Download Final Reports (Excel)", data=output.getvalue(), file_name=f"WMS_Pick_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+                    st.success(f"✅ Picking Completed Successfully! (Batch ID: {batch_id})")
+                    st.balloons() # Success Animation
+                    
+                    st.download_button(
+                        "⬇️ Download Current Processed Report (Excel)", 
+                        data=output.getvalue(), 
+                        file_name=f"WMS_{batch_id}.xlsx", 
+                        mime="application/vnd.ms-excel", 
+                        use_container_width=True
+                    )
 
     # ==========================================
     # TAB 2: DASHBOARD & TRACKING
@@ -244,25 +294,46 @@ if login_section():
         m4.metric("Completed Loads", len(hist_df[hist_df['Pick Status'] == 'Completed']))
         st.divider()
 
+        # --- NEW: Total Report by Unique Request ID ---
+        st.subheader("📑 Download Total Report by Upload Batch")
+        if 'Batch ID' in hist_df.columns:
+            available_batches = hist_df['Batch ID'].dropna().unique()
+            if len(available_batches) > 0:
+                selected_batch = st.selectbox("Select Requirement Batch ID:", available_batches)
+                if st.button("Generate Total Batch Report"):
+                    with st.spinner("Generating Total Report..."):
+                        batch_picks = pick_df[pick_df.get('Batch ID', '') == selected_batch] if not pick_df.empty else pd.DataFrame()
+                        batch_summ = summ_df[summ_df.get('Batch ID', '') == selected_batch] if not summ_df.empty else pd.DataFrame()
+                        
+                        out_total = io.BytesIO()
+                        with pd.ExcelWriter(out_total, engine='xlsxwriter') as writer:
+                            if not batch_picks.empty: batch_picks.to_excel(writer, sheet_name='Pick_Report', index=False)
+                            if not batch_summ.empty: batch_summ.to_excel(writer, sheet_name='Variance_Summary', index=False)
+                        
+                        st.download_button("⬇️ Download Batch Excel", data=out_total.getvalue(), file_name=f"Total_Report_{selected_batch}.xlsx", mime="application/vnd.ms-excel")
+            else:
+                st.write("No batch records found. Ensure new records are uploaded.")
+        st.divider()
+
         # Search & Tracking
         st.subheader("🔍 Search & Update Load Details")
         col_s1, col_s2 = st.columns([3, 1])
-        # Search Box
+        
         search_lid = col_s1.selectbox("🔎 Search Load ID:", hist_df['Generated Load ID'].unique())
         
-        # Status Update
         current_status = hist_df[hist_df['Generated Load ID'] == search_lid]['Pick Status'].iloc[0]
-        new_status = col_s2.selectbox("📝 Update Pick Status:", ["Pending", "Processing", "Completed", "Cancelled"], index=["Pending", "Processing", "Completed", "Cancelled"].index(current_status))
+        status_options = ["Pending", "Processing", "Completed", "Cancelled"]
+        safe_index = status_options.index(current_status) if current_status in status_options else 0
+        new_status = col_s2.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
         
         if col_s2.button("Update Status"):
-            # Update status in Google Sheets
             ws_hist = sh.worksheet("Load_History")
             cell = ws_hist.find(search_lid)
-            ws_hist.update_cell(cell.row, 6, new_status) # 6th column is Status
+            ws_hist.update_cell(cell.row, 7, new_status) # Updated column index for Status (Due to Batch ID addition)
             st.success(f"Status updated to {new_status}!")
+            time.sleep(1)
             st.rerun()
 
-        # Load ID Specific Details
         st.markdown(f"### Details for: `{search_lid}`")
         tab_v, tab_p = st.tabs(["📉 Variance & Summary", "📦 Picked Items Detail"])
         
@@ -271,7 +342,6 @@ if login_section():
                 load_summ = summ_df[summ_df['Load ID'] == search_lid]
                 st.dataframe(load_summ, use_container_width=True)
                 
-                # Check for variances
                 shortages = load_summ[load_summ['Variance'] > 0]
                 if not shortages.empty:
                     st.warning("⚠️ Warning: Shortages detected in this Load ID!")
@@ -300,7 +370,7 @@ if login_section():
             with st.form("add_user_form"):
                 n_user = st.text_input("New Username")
                 n_pass = st.text_input("New Password", type="password")
-                n_role = st.selectbox("Role", ["user", "admin"])
+                n_role = st.selectbox("Role", ["user", "SysUser", "admin"]) # Added SysUser
                 submitted = st.form_submit_button("Add User")
                 if submitted and n_user and n_pass:
                     ws_users = sh.worksheet("Users")
@@ -325,11 +395,10 @@ if login_section():
                 if confirm == 'CONFIRM':
                     try:
                         sheets_to_process = ["Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History"] if sheet_to_clear == "ALL_DATA" else [sheet_to_clear]
-                        
                         for s_name in sheets_to_process:
                             try:
                                 ws = sh.worksheet(s_name)
-                                header = ws.row_values(1) # අනුපිළිවෙල (Headers) ආරක්ෂා කරගැනීම
+                                header = ws.row_values(1)
                                 ws.clear()
                                 ws.append_row(header)
                             except: pass
@@ -338,3 +407,6 @@ if login_section():
                         st.error(f"Error clearing data: {e}")
                 else:
                     st.error("කරුණාකර CONFIRM ලෙස Type කරන්න.")
+
+# Call the branding footer at the very end
+footer_branding()
