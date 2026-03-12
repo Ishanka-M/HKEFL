@@ -38,10 +38,14 @@ def init_users_sheet(sh):
 
 def login_section():
     st.sidebar.title("🔐 WMS Login")
+    
+    # එක් එක් key එක වෙන වෙනම අලුතින් හඳුන්වා දීම (Safe Initialization)
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
-        st.session_state['role'] = None
-        st.session_state['username'] = None
+    if 'role' not in st.session_state:
+        st.session_state['role'] = 'user'
+    if 'username' not in st.session_state:
+        st.session_state['username'] = 'Unknown'
 
     if not st.session_state['logged_in']:
         try:
@@ -135,13 +139,21 @@ def process_picking(inv_df, req_df):
 
 # --- 4. App UI & Navigation ---
 if login_section():
-    st.sidebar.success(f"👤 Logged in as: {st.session_state['username']} ({st.session_state['role'].upper()})")
+    # .get() භාවිතයෙන් Error එක මඟ හැරීම
+    current_user = st.session_state.get('username', 'User')
+    current_role = st.session_state.get('role', 'user').upper()
+    
+    st.sidebar.success(f"👤 Logged in as: {current_user} ({current_role})")
+    
     if st.sidebar.button("Logout"):
-        st.session_state.clear()
+        # st.session_state.clear() වෙනුවට පහත ක්‍රමය පාවිච්චි කරන්න
+        st.session_state['logged_in'] = False
+        st.session_state['username'] = 'Unknown'
+        st.session_state['role'] = 'user'
         st.rerun()
 
     menu = ["🚀 Picking Operations", "📊 Dashboard & Tracking"]
-    if st.session_state['role'] == 'admin':
+    if current_role == 'ADMIN':
         menu.append("⚙️ Admin Settings")
         
     choice = st.sidebar.radio("Navigation Menu", menu)
