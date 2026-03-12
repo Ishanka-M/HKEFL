@@ -44,7 +44,6 @@ def get_master_workbook():
 def get_or_create_sheet(sh, name, headers):
     try:
         ws = sh.worksheet(name)
-        # Check if empty, if so add headers
         if not ws.get_all_values():
             ws.append_row(headers)
     except:
@@ -57,7 +56,6 @@ def init_users_sheet(sh):
     ws = get_or_create_sheet(sh, "Users", ["Username", "Password", "Role"])
     users_data = ws.get_all_records()
     if not users_data:
-        # Default Users
         ws.append_row(["admin", "admin@123", "admin"])
         ws.append_row(["sys", "sys@123", "SysUser"])
         ws.append_row(["user", "user@123", "user"])
@@ -119,6 +117,8 @@ def process_picking(inv_df, req_df, batch_id):
     
     for lid in req_df['Generated Load ID'].unique():
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
+        so_num = str(current_reqs['SO Number'].iloc[0]) # Get SO Number for this Load ID
+        
         for _, req in current_reqs.iterrows():
             upc = str(req['Product UPC'])
             needed = req['PICK QTY']
@@ -134,7 +134,8 @@ def process_picking(inv_df, req_df, batch_id):
                 
                 if take > 0:
                     p_row = item.copy()
-                    p_row['Batch ID'] = batch_id # New Total Report ID
+                    p_row['Batch ID'] = batch_id 
+                    p_row['SO Number'] = so_num  # Add SO Number to Pick Data
                     p_row['Actual Qty'] = take
                     p_row['Order Type'] = "Sample Orders"
                     p_row['Order Number'] = lid
@@ -146,7 +147,7 @@ def process_picking(inv_df, req_df, batch_id):
                     
                     if take < avail:
                         partial_rows.append({
-                            'Batch ID': batch_id, 'Pallet': item['Pallet'], 'Supplier': upc, 'Load ID': lid,
+                            'Batch ID': batch_id, 'SO Number': so_num, 'Pallet': item['Pallet'], 'Supplier': upc, 'Load ID': lid,
                             'Country Name': country, 'Actual Qty': avail,
                             'Partial Qty': take, 'Gen Pallet ID': f"{item['Pallet']}-P{len(partial_rows)+1:04d}"
                         })
@@ -157,7 +158,7 @@ def process_picking(inv_df, req_df, batch_id):
 
             variance = req['PICK QTY'] - picked_qty
             summary.append({
-                'Batch ID': batch_id, 'Load ID': lid, 'UPC': upc, 'Country': country,
+                'Batch ID': batch_id, 'SO Number': so_num, 'Load ID': lid, 'UPC': upc, 'Country': country,
                 'Requested': req['PICK QTY'], 'Picked': picked_qty, 'Variance': variance,
                 'Status': 'Fully Picked' if variance == 0 else 'Shortage'
             })
@@ -174,7 +175,6 @@ if login_section():
     
     st.sidebar.success(f"👤 Logged in as: {current_user} ({current_role})")
     
-    # Simple welcome animation on first load after login
     if 'welcomed' not in st.session_state:
         st.toast(f"Welcome back, {current_user}!", icon="👋")
         st.session_state['welcomed'] = True
@@ -186,11 +186,11 @@ if login_section():
     # --- Role Based Access Menu ---
     menu = []
     if current_role == 'ADMIN':
-        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "⚙️ Admin Settings"]
+        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "🔄 Revert/Delete Picks", "⚙️ Admin Settings"]
     elif current_role == 'SYSUSER':
-        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations"]
+        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "🔄 Revert/Delete Picks"]
     else: # USER
-        menu = ["📊 Dashboard & Tracking"]
+        menu = ["📊 Dashboard & Tracking", "🔄 Revert/Delete Picks"]
         
     choice = st.sidebar.radio("Navigation Menu", menu)
     sh = get_master_workbook()
@@ -207,15 +207,13 @@ if login_section():
         if inv_file and req_file:
             if st.button("Generate Picks & Process", use_container_width=True, type="primary"):
                 with st.spinner("🔄 Processing Data & Running Animations..."):
-                    time.sleep(1) # Small delay for animation effect
+                    time.sleep(1) 
                     
                     inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
                     
-                    # Generate Unique Batch/Request ID for this upload
                     batch_id = f"REQ-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                     
-                    # History and ID Generation
                     ws_hist = get_or_create_sheet(sh, "Load_History", ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'])
                     hist_df = pd.DataFrame(ws_hist.get_all_records())
                     
@@ -233,11 +231,9 @@ if login_section():
                     req['Generated Load ID'] = req['Group'].map(load_id_map)
                     if new_hist_entries: ws_hist.append_rows(new_hist_entries)
                     
-                    # Picking Process
                     inv = reconcile_inventory(inv, sh)
                     pick_df, part_df, summ_df = process_picking(inv, req, batch_id)
                     
-                    # Save to Sheets
                     if not pick_df.empty:
                         ws_pick = get_or_create_sheet(sh, "Master_Pick_Data", pick_df.columns.tolist())
                         ws_pick.append_rows(pick_df.astype(str).replace('nan','').values.tolist())
@@ -249,7 +245,6 @@ if login_section():
                     ws_summ = get_or_create_sheet(sh, "Summary_Data", summ_df.columns.tolist())
                     ws_summ.append_rows(summ_df.astype(str).replace('nan','').values.tolist())
                     
-                    # Download Excel
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         if not pick_df.empty: pick_df.to_excel(writer, sheet_name='Pick_Report', index=False)
@@ -257,10 +252,10 @@ if login_section():
                         if not summ_df.empty: summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
                     
                     st.success(f"✅ Picking Completed Successfully! (Batch ID: {batch_id})")
-                    st.balloons() # Success Animation
+                    st.balloons() 
                     
                     st.download_button(
-                        "⬇️ Download Current Processed Report (Excel)", 
+                        "⬇️ Download Current Processed Report", 
                         data=output.getvalue(), 
                         file_name=f"WMS_{batch_id}.xlsx", 
                         mime="application/vnd.ms-excel", 
@@ -294,7 +289,7 @@ if login_section():
         m4.metric("Completed Loads", len(hist_df[hist_df['Pick Status'] == 'Completed']))
         st.divider()
 
-        # --- NEW: Total Report by Unique Request ID ---
+        # Download Total Report
         st.subheader("📑 Download Total Report by Upload Batch")
         if 'Batch ID' in hist_df.columns:
             available_batches = hist_df['Batch ID'].dropna().unique()
@@ -312,65 +307,144 @@ if login_section():
                         
                         st.download_button("⬇️ Download Batch Excel", data=out_total.getvalue(), file_name=f"Total_Report_{selected_batch}.xlsx", mime="application/vnd.ms-excel")
             else:
-                st.write("No batch records found. Ensure new records are uploaded.")
+                st.write("No batch records found.")
         st.divider()
 
-        # Search & Tracking
-        st.subheader("🔍 Search & Update Load Details")
-        col_s1, col_s2 = st.columns([3, 1])
+        # Advanced Search & Tracking
+        st.subheader("🔍 Advanced Search & Status Update")
+        col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
         
-        search_lid = col_s1.selectbox("🔎 Search Load ID:", hist_df['Generated Load ID'].unique())
+        search_by = col_s1.selectbox("🔎 Search By:", ["Load Id", "Pallet", "Supplier (Product UPC)", "SO Number"])
         
-        current_status = hist_df[hist_df['Generated Load ID'] == search_lid]['Pick Status'].iloc[0]
-        status_options = ["Pending", "Processing", "Completed", "Cancelled"]
-        safe_index = status_options.index(current_status) if current_status in status_options else 0
-        new_status = col_s2.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
-        
-        if col_s2.button("Update Status"):
-            ws_hist = sh.worksheet("Load_History")
-            cell = ws_hist.find(search_lid)
-            ws_hist.update_cell(cell.row, 7, new_status) # Updated column index for Status (Due to Batch ID addition)
-            st.success(f"Status updated to {new_status}!")
-            time.sleep(1)
-            st.rerun()
-
-        st.markdown(f"### Details for: `{search_lid}`")
-        tab_v, tab_p = st.tabs(["📉 Variance & Summary", "📦 Picked Items Detail"])
-        
-        with tab_v:
-            if not summ_df.empty:
-                load_summ = summ_df[summ_df['Load ID'] == search_lid]
-                st.dataframe(load_summ, use_container_width=True)
-                
-                shortages = load_summ[load_summ['Variance'] > 0]
-                if not shortages.empty:
-                    st.warning("⚠️ Warning: Shortages detected in this Load ID!")
-                    st.table(shortages[['UPC', 'Requested', 'Picked', 'Variance']])
-            else:
-                st.write("No summary data.")
-                
-        with tab_p:
-            if not pick_df.empty:
-                load_picks = pick_df[pick_df['Load Id'] == search_lid]
-                st.dataframe(load_picks, use_container_width=True)
-            else:
-                st.write("No pick data.")
+        search_term = None
+        if search_by == "Load Id":
+            search_term = col_s2.selectbox("Select Load ID:", hist_df['Generated Load ID'].unique())
+            
+            # Status Update (Only allowed when searched by Load ID)
+            current_status = hist_df[hist_df['Generated Load ID'] == search_term]['Pick Status'].iloc[0]
+            status_options = ["Pending", "Processing", "Completed", "Cancelled"]
+            safe_index = status_options.index(current_status) if current_status in status_options else 0
+            new_status = col_s3.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
+            
+            if col_s3.button("Update Status"):
+                ws_hist = sh.worksheet("Load_History")
+                cell = ws_hist.find(search_term)
+                ws_hist.update_cell(cell.row, 7, new_status)
+                st.success(f"Status updated to {new_status}!")
+                time.sleep(1)
+                st.rerun()
+        else:
+            search_term = col_s2.text_input(f"Enter {search_by}:")
+            col_s3.write("") # Placeholder
+            
+        # Display Search Results
+        if search_term:
+            st.markdown(f"### Results for {search_by}: `{search_term}`")
+            tab_v, tab_p = st.tabs(["📉 Summary / Variance", "📦 Picked Items Detail"])
+            
+            # Column Mapping
+            col_map_pick = {"Load Id": "Load Id", "Pallet": "Pallet", "Supplier (Product UPC)": "Supplier", "SO Number": "SO Number"}
+            col_map_summ = {"Load Id": "Load ID", "Pallet": None, "Supplier (Product UPC)": "UPC", "SO Number": "SO Number"}
+            
+            with tab_p:
+                if not pick_df.empty and col_map_pick[search_by] in pick_df.columns:
+                    search_col = col_map_pick[search_by]
+                    if search_by == "Load Id":
+                        filtered_picks = pick_df[pick_df[search_col] == search_term]
+                    else:
+                        filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(search_term, case=False, na=False)]
+                    st.dataframe(filtered_picks, use_container_width=True)
+                else:
+                    st.write("No pick data found for this search.")
+                    
+            with tab_v:
+                if not summ_df.empty and col_map_summ[search_by]:
+                    search_col_s = col_map_summ[search_by]
+                    if search_by == "Load Id":
+                        filtered_summ = summ_df[summ_df[search_col_s] == search_term]
+                    else:
+                        filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(search_term, case=False, na=False)]
+                    
+                    st.dataframe(filtered_summ, use_container_width=True)
+                    
+                    shortages = filtered_summ[filtered_summ['Variance'] > 0]
+                    if not shortages.empty:
+                        st.warning("⚠️ Warning: Shortages detected!")
+                        st.table(shortages[['UPC', 'Requested', 'Picked', 'Variance']])
+                else:
+                    if not col_map_summ[search_by]:
+                        st.info("Summary view is not available for Pallet search.")
+                    else:
+                        st.write("No summary data found.")
 
     # ==========================================
-    # TAB 3: ADMIN SETTINGS
+    # TAB 3: REVERT / DELETE PICKS (ALL USERS)
+    # ==========================================
+    elif choice == "🔄 Revert/Delete Picks":
+        st.title("🔄 Revert / Delete Picked Data")
+        st.info("Load ID, Pallet සහ Actual Qty අඩංගු Excel හෝ CSV ගොනුවක් Upload කිරීමෙන් එම දත්ත Master_Pick_Data එකෙන් මකා දැමිය හැක.")
+        
+        del_file = st.file_uploader("Upload Data to Delete", type=['csv', 'xlsx'])
+        if del_file:
+            if st.button("🗑️ Delete Matching Records", type="primary"):
+                with st.spinner("Deleting Data..."):
+                    del_df = pd.read_csv(del_file) if del_file.name.endswith('.csv') else pd.read_excel(del_file)
+                    
+                    # Normalize columns to uppercase for checking
+                    del_df.columns = del_df.columns.str.strip().str.upper()
+                    
+                    if not all(col in del_df.columns for col in ['LOAD ID', 'PALLET', 'ACTUAL QTY']):
+                        st.error("Uploaded file must contain 'Load ID', 'Pallet', and 'Actual Qty' columns.")
+                        st.stop()
+                        
+                    try:
+                        ws_pick = sh.worksheet("Master_Pick_Data")
+                        master_pick_df = pd.DataFrame(ws_pick.get_all_records())
+                    except Exception:
+                        st.error("දැනට Master_Pick_Data හි දත්ත නොමැත.")
+                        st.stop()
+                        
+                    if not master_pick_df.empty:
+                        initial_len = len(master_pick_df)
+                        
+                        temp_master = master_pick_df.copy()
+                        temp_master.columns = temp_master.columns.str.strip().str.upper()
+                        
+                        # Create unique Match Key
+                        temp_master['MATCH_KEY'] = temp_master['LOAD ID'].astype(str).str.strip() + "_" + temp_master['PALLET'].astype(str).str.strip() + "_" + temp_master['ACTUAL QTY'].astype(float).astype(str)
+                        del_df['MATCH_KEY'] = del_df['LOAD ID'].astype(str).str.strip() + "_" + del_df['PALLET'].astype(str).str.strip() + "_" + del_df['ACTUAL QTY'].astype(float).astype(str)
+                        
+                        keys_to_delete = del_df['MATCH_KEY'].tolist()
+                        
+                        filtered_master = master_pick_df[~temp_master['MATCH_KEY'].isin(keys_to_delete)]
+                        deleted_count = initial_len - len(filtered_master)
+                        
+                        if deleted_count > 0:
+                            header = ws_pick.row_values(1)
+                            ws_pick.clear()
+                            ws_pick.append_row(header)
+                            if not filtered_master.empty:
+                                filtered_master = filtered_master[[c for c in header if c in filtered_master.columns]]
+                                ws_pick.append_rows(filtered_master.astype(str).replace('nan','').values.tolist())
+                            st.success(f"✅ සාර්ථකව වාර්තා {deleted_count} ක් මකා දමන ලදී!")
+                            st.balloons()
+                        else:
+                            st.warning("⚠️ Upload කල දත්ත හා ගැලපෙන වාර්තා Master_Pick_Data හි හමු නොවීය.")
+
+    # ==========================================
+    # TAB 4: ADMIN SETTINGS
     # ==========================================
     elif choice == "⚙️ Admin Settings":
         st.title("⚙️ System Administration")
         
         col_adm1, col_adm2 = st.columns(2)
         
-        # User Management
         with col_adm1:
             st.subheader("👥 Add New User")
             with st.form("add_user_form"):
                 n_user = st.text_input("New Username")
                 n_pass = st.text_input("New Password", type="password")
-                n_role = st.selectbox("Role", ["user", "SysUser", "admin"]) # Added SysUser
+                n_role = st.selectbox("Role", ["user", "SysUser", "admin"])
                 submitted = st.form_submit_button("Add User")
                 if submitted and n_user and n_pass:
                     ws_users = sh.worksheet("Users")
@@ -381,7 +455,6 @@ if login_section():
                         ws_users.append_row([n_user, n_pass, n_role])
                         st.success("User සාර්ථකව ඇතුලත් කරන ලදී!")
         
-        # Data Reset Management
         with col_adm2:
             st.subheader("⚠️ Database Management")
             st.warning("මෙමඟින් පද්ධතියේ පරණ දත්ත සම්පූර්ණයෙන්ම මකා දමයි. (Clear Database)")
@@ -408,5 +481,4 @@ if login_section():
                 else:
                     st.error("කරුණාකර CONFIRM ලෙස Type කරන්න.")
 
-# Call the branding footer at the very end
 footer_branding()
