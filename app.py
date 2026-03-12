@@ -1,16 +1,15 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 from datetime import datetime
-import hashlib
-import io
 import re
+import io
 
 # -------------------- Google Sheets Setup --------------------
 def get_gsheet_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
     client = gspread.authorize(creds)
     return client
 
@@ -66,7 +65,7 @@ def get_available_inventory(product_upc):
         pallet = row["Pallet"]
         orig_qty = float(row["Actual Qty"])
         # sum picked from this pallet
-        picked = df_picks[df_picks["OriginalPalletID"] == pallet]["PickedQty"].sum()
+        picked = df_picks[df_picks["OriginalPalletID"] == pallet]["PickedQty"].sum() if not df_picks.empty else 0
         remaining = orig_qty - picked
         if remaining > 0:
             available.append({
@@ -165,7 +164,6 @@ def pick_for_load(load_id):
 
         if to_pick > 0:
             # insufficient stock
-            # add remark row to partial report? Or summary
             st.warning(f"Insufficient stock for UPC {upc}. Required {req_qty}, picked {req_qty - to_pick}")
 
     # Save picks to sheet
@@ -186,6 +184,10 @@ def pick_for_load(load_id):
 # -------------------- User Authentication --------------------
 def check_password():
     """Simple password check (replace with proper auth)"""
+    if "password" not in st.secrets:
+        st.error("Password not set in secrets.toml")
+        return False
+
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
@@ -252,7 +254,6 @@ def main():
                         df.at[i, "LoadID"] = load_id
                 # Update the sheet
                 # Need to write back the entire column
-                # Simple: replace the whole sheet? Better to update only the LoadID column
                 # For simplicity, we'll clear and re-upload
                 ws.clear()
                 ws.append_rows([df.columns.values.tolist()] + df.values.tolist())
