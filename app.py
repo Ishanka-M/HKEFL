@@ -111,11 +111,6 @@ def init_users_sheet(sh):
         return get_safe_dataframe(sh, "Users")
     return users_df
 
-# --- Logo URL (GitHub raw URL) ---
-# ඔබගේ GitHub repo URL මෙහි paste කරන්න:
-# උදා: "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/helen_kaminski_logo.png"
-HK_LOGO_URL = st.secrets.get("general", {}).get("logo_url", "")
-
 def login_section():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
@@ -125,16 +120,13 @@ def login_section():
         st.session_state['username'] = 'Unknown'
 
     if not st.session_state['logged_in']:
-        # Show logo on main page login screen
-        if HK_LOGO_URL:
-            st.markdown(f"""
-            <div style="display:flex; justify-content:center; align-items:center; padding: 40px 0 10px 0;">
-                <img src="{HK_LOGO_URL}" style="max-width:380px; width:100%;" />
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("<h2 style='text-align:center; font-family:serif; letter-spacing:4px; padding:40px 0 10px 0;'>HELEN KAMINSKI</h2>", unsafe_allow_html=True)
-        st.markdown("<h3 style='text-align:center; color:#555; margin-bottom:30px;'>Warehouse Management System</h3>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style="text-align:center; padding: 50px 0 5px 0;">
+            <div style="font-family:'Georgia',serif; font-size:34px; font-weight:800; letter-spacing:7px; color:#1a1a1a;">HELEN KAMINSKI</div>
+            <div style="font-size:13px; letter-spacing:4px; color:#888; margin-top:5px; font-weight:500;">PICK MANAGEMENT</div>
+            <div style="width:80px; height:2px; background:#1a1a1a; margin:14px auto 30px auto;"></div>
+        </div>
+        """, unsafe_allow_html=True)
 
         # Centered login form
         col_l, col_mid, col_r = st.columns([1, 1.2, 1])
@@ -161,15 +153,13 @@ def login_section():
                     st.error("වැරදි Username හෝ Password එකක්!")
         return False
 
-    # Show logo in sidebar when logged in
-    if HK_LOGO_URL:
-        st.sidebar.markdown(f"""
-        <div style="text-align:center; padding: 8px 0 12px 0;">
-            <img src="{HK_LOGO_URL}" style="max-width:200px; width:100%;" />
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.sidebar.markdown("<div style='text-align:center; font-weight:bold; font-family:serif; letter-spacing:2px; padding:8px 0;'>HELEN KAMINSKI</div>", unsafe_allow_html=True)
+    # Sidebar branding
+    st.sidebar.markdown("""
+    <div style="text-align:center; padding:12px 0 14px 0; border-bottom:1px solid #eee; margin-bottom:8px;">
+        <div style="font-family:'Georgia',serif; font-size:14px; font-weight:800; letter-spacing:3px; color:#1a1a1a;">HELEN KAMINSKI</div>
+        <div style="font-size:9px; letter-spacing:2px; color:#999; margin-top:2px;">PICK MANAGEMENT</div>
+    </div>
+    """, unsafe_allow_html=True)
     return True
 
 # --- 3. Inventory Logic ---
@@ -604,11 +594,10 @@ if login_section():
             st.info("දැනට පද්ධතියේ කිසිදු දත්තයක් නොමැත. කරුණාකර 'Picking Operations' මගින් දත්ත ඇතුලත් කරන්න.")
         else:
             # --- Load ID Cards Dashboard ---
-            st.subheader("📦 Active Load ID Cards")
-            st.caption("Cancel සහ Completed Load IDs මෙහි නොපෙන්වයි.")
+            st.subheader("📦 Active Load ID Overview")
+            st.caption("Cancelled සහ Completed Load IDs මෙහි නොපෙන්වයි.")
 
             if not hist_df.empty and 'Generated Load ID' in hist_df.columns and 'Pick Status' in hist_df.columns:
-                # Show only active loads (exclude Cancelled and Completed)
                 active_loads = hist_df[
                     ~hist_df['Pick Status'].astype(str).isin(['Cancelled', 'Completed'])
                 ].copy()
@@ -616,45 +605,119 @@ if login_section():
                 if active_loads.empty:
                     st.info("සියලු Loads Completed හෝ Cancelled වී ඇත.")
                 else:
-                    # Display in card grid: 4 per row (compact)
                     load_ids = active_loads['Generated Load ID'].dropna().unique().tolist()
 
-                    for i in range(0, len(load_ids), 4):
-                        cols = st.columns(4)
-                        for j, lid in enumerate(load_ids[i:i+4]):
-                            with cols[j]:
-                                load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
-                                status = load_row.get('Pick Status', 'Pending')
-                                so_num = load_row.get('SO Number', '-')
-                                country = load_row.get('Country Name', '-')
-                                ship_mode = load_row.get('SHIP MODE', '-')
-                                date = str(load_row.get('Date', '-'))[:10]
+                    # --- Build per-load summary data ---
+                    # variance info from Summary_Data
+                    summ_by_load = {}
+                    if not summ_df.empty and 'Load ID' in summ_df.columns:
+                        summ_df['Variance'] = pd.to_numeric(summ_df.get('Variance', 0), errors='coerce').fillna(0)
+                        summ_df['Requested'] = pd.to_numeric(summ_df.get('Requested', 0), errors='coerce').fillna(0)
+                        summ_df['Picked'] = pd.to_numeric(summ_df.get('Picked', 0), errors='coerce').fillna(0)
+                        for lid_s in summ_df['Load ID'].dropna().unique():
+                            rows = summ_df[summ_df['Load ID'].astype(str) == str(lid_s)]
+                            total_req = rows['Requested'].sum()
+                            total_picked = rows['Picked'].sum()
+                            total_var = rows['Variance'].sum()
+                            summ_by_load[str(lid_s)] = {
+                                'requested': total_req,
+                                'picked': total_picked,
+                                'variance': total_var
+                            }
 
-                                # Pick count for this load
-                                if not pick_df.empty and 'Load Id' in pick_df.columns:
-                                    load_picks = pick_df[pick_df['Load Id'].astype(str) == str(lid)]
-                                    pick_count = len(load_picks)
-                                    pick_qty = pd.to_numeric(load_picks.get('Actual Qty', pd.Series()), errors='coerce').sum()
-                                else:
-                                    pick_count = 0
-                                    pick_qty = 0
+                    # Categorise loads
+                    zero_pick_ids = []
+                    shortage_ids = []
+                    full_pick_ids = []
 
-                                status_bg = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f8f9fa')
-                                status_color = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
-                                status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
+                    for lid in load_ids:
+                        s = summ_by_load.get(str(lid), {})
+                        req = s.get('requested', 0)
+                        picked = s.get('picked', 0)
+                        var = s.get('variance', 0)
 
-                                st.markdown(f"""
-                                <div style="border:1px solid #ddd; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
-                                    <div style="font-weight:700; font-size:12px; color:#222; margin-bottom:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{lid}">📦 {lid}</div>
-                                    <div style="display:inline-block; background:{status_bg}; color:{status_color}; font-size:10px; font-weight:600; padding:2px 7px; border-radius:10px; margin-bottom:5px;">{status_dot} {status}</div>
-                                    <div style="font-size:11px; color:#555; line-height:1.6;">
-                                        <div>📋 <b>SO:</b> {so_num}</div>
-                                        <div>🌍 {country} &nbsp;|&nbsp; 🚢 {ship_mode}</div>
-                                        <div>📅 {date}</div>
-                                        <div>🧾 <b>{pick_count}</b> lines &nbsp;|&nbsp; Qty: <b>{int(pick_qty)}</b></div>
+                        if picked == 0 and req > 0:
+                            zero_pick_ids.append(lid)
+                        elif var > 0:
+                            shortage_ids.append(lid)
+                        else:
+                            full_pick_ids.append(lid)
+
+                    def render_load_cards(id_list, category_color):
+                        for i in range(0, len(id_list), 4):
+                            cols = st.columns(4)
+                            for j, lid in enumerate(id_list[i:i+4]):
+                                with cols[j]:
+                                    load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
+                                    status = load_row.get('Pick Status', 'Pending')
+                                    so_num = load_row.get('SO Number', '-')
+                                    country = load_row.get('Country Name', '-')
+                                    ship_mode = load_row.get('SHIP MODE', '-')
+                                    date = str(load_row.get('Date', '-'))[:10]
+
+                                    if not pick_df.empty and 'Load Id' in pick_df.columns:
+                                        load_picks = pick_df[pick_df['Load Id'].astype(str) == str(lid)]
+                                        pick_count = len(load_picks)
+                                        pick_qty = pd.to_numeric(
+                                            load_picks['Actual Qty'] if 'Actual Qty' in load_picks.columns else pd.Series(),
+                                            errors='coerce'
+                                        ).sum()
+                                    else:
+                                        pick_count = 0
+                                        pick_qty = 0
+
+                                    s = summ_by_load.get(str(lid), {})
+                                    variance = s.get('variance', 0)
+                                    requested = s.get('requested', 0)
+
+                                    status_bg = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f8f9fa')
+                                    status_color = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
+                                    status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
+
+                                    variance_html = ""
+                                    if variance > 0:
+                                        variance_html = f'<div style="margin-top:4px; background:#fff0f0; border:1px solid #ffcccc; border-radius:4px; padding:2px 6px; font-size:10px; color:#c0392b;">⚠️ Shortage: <b>{int(variance)}</b> / Req: <b>{int(requested)}</b></div>'
+
+                                    st.markdown(f"""
+                                    <div style="border:1px solid {category_color}; border-left:4px solid {category_color}; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.07);">
+                                        <div style="font-weight:700; font-size:12px; color:#222; margin-bottom:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{lid}">📦 {lid}</div>
+                                        <div style="display:inline-block; background:{status_bg}; color:{status_color}; font-size:10px; font-weight:600; padding:2px 7px; border-radius:10px; margin-bottom:4px;">{status_dot} {status}</div>
+                                        <div style="font-size:11px; color:#555; line-height:1.7;">
+                                            <div>📋 <b>SO:</b> {so_num}</div>
+                                            <div>🌍 {country} &nbsp;|&nbsp; 🚢 {ship_mode}</div>
+                                            <div>📅 {date}</div>
+                                            <div>🧾 <b>{pick_count}</b> lines &nbsp;|&nbsp; Qty: <b>{int(pick_qty)}</b></div>
+                                        </div>
+                                        {variance_html}
                                     </div>
-                                </div>
-                                """, unsafe_allow_html=True)
+                                    """, unsafe_allow_html=True)
+
+                    # --- Category 1: Zero Pick ---
+                    if zero_pick_ids:
+                        st.markdown("""
+                        <div style="display:flex; align-items:center; gap:10px; margin:18px 0 8px 0;">
+                            <div style="background:#6c757d; color:white; font-size:11px; font-weight:700; padding:3px 12px; border-radius:12px;">⬜ NOT PICKED &nbsp;·&nbsp; {}</div>
+                        </div>
+                        """.format(len(zero_pick_ids)), unsafe_allow_html=True)
+                        render_load_cards(zero_pick_ids, "#adb5bd")
+
+                    # --- Category 2: Shortage ---
+                    if shortage_ids:
+                        st.markdown("""
+                        <div style="display:flex; align-items:center; gap:10px; margin:18px 0 8px 0;">
+                            <div style="background:#e74c3c; color:white; font-size:11px; font-weight:700; padding:3px 12px; border-radius:12px;">⚠️ SHORTAGE &nbsp;·&nbsp; {}</div>
+                        </div>
+                        """.format(len(shortage_ids)), unsafe_allow_html=True)
+                        render_load_cards(shortage_ids, "#e74c3c")
+
+                    # --- Category 3: Full Pick ---
+                    if full_pick_ids:
+                        st.markdown("""
+                        <div style="display:flex; align-items:center; gap:10px; margin:18px 0 8px 0;">
+                            <div style="background:#27ae60; color:white; font-size:11px; font-weight:700; padding:3px 12px; border-radius:12px;">✅ FULLY PICKED &nbsp;·&nbsp; {}</div>
+                        </div>
+                        """.format(len(full_pick_ids)), unsafe_allow_html=True)
+                        render_load_cards(full_pick_ids, "#27ae60")
 
             st.divider()
 
