@@ -9,22 +9,31 @@ import time
 # --- 1. System Config & Auth ---
 st.set_page_config(page_title="Advanced WMS Picking System", layout="wide", page_icon="📦")
 
-# --- Master_Pick_Data CORRECT Headers ---
-MASTER_PICK_HEADERS = [
+# --- Master_Pick_Data Headers (exact match to inventory file columns + WMS fields) ---
+# Inventory file headers in exact order (per latest notepad):
+INVENTORY_HEADERS = [
     'Wh Id', 'Client Code', 'Pallet', 'Invoice Number', 'Location Id', 'Item Number',
     'Description', 'Lot Number', 'Actual Qty', 'Unavailable Qty', 'Uom', 'Status',
     'Mlp', 'Stored Attribute Id', 'Fifo Date', 'Expiration Date', 'Grn Number',
     'Gate Pass Id', 'Cust Dec No', 'Color', 'Size', 'Style', 'Supplier', 'Plant',
-    'Client So', 'Client So Line', 'Po', 'Cust Dec', 'Customer Ref Number', 'Item Id',
+    'Client So', 'Client So Line', 'Po Cust Dec', 'Customer Ref Number', 'Item Id',
     'Invoice Number1', 'Transaction', 'Order Type', 'Order Number', 'Store Order Number',
     'Customer Po Number', 'Partial Order Flag', 'Order Date', 'Load Id', 'Asn Number',
     'Po Number', 'Supplier Hu', 'New Item Number', 'Asn Line Number',
     'Received Gross Weight', 'Current Gross Weight', 'Received Net Weight',
     'Current Net Weight', 'Supplier Desc', 'Cbm', 'Container Type', 'Display Item Number',
-    'Old Item Number', 'Inventory Type', 'Type', 'Qc', 'Vendor Name', 'Manufacture Date',
+    'Old Item Number', 'Inventory Type', 'Type Qc', 'Vendor Name', 'Manufacture Date',
     'Suom', 'S Qty', 'Pick Id', 'Downloaded Date',
-    'Batch ID', 'SO Number', 'Generated Load ID', 'Country Name', 'Pick Quantity', 'Remark'
 ]
+
+# WMS fields appended after inventory columns
+WMS_FIELDS = ['Batch ID', 'SO Number', 'Generated Load ID', 'Country Name', 'Pick Quantity', 'Remark']
+
+# Full Master_Pick_Data headers = inventory columns + WMS fields
+MASTER_PICK_HEADERS = INVENTORY_HEADERS + WMS_FIELDS
+
+# Lookup: lowercase stripped header → exact MASTER_PICK_HEADERS name
+HEADER_LOWER_MAP = {h.strip().lower(): h for h in MASTER_PICK_HEADERS}
 
 SHEET_HEADERS = {
     "Load_History": ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'],
@@ -178,44 +187,52 @@ def get_damage_pallets(sh):
 
 def reconcile_inventory(inv_df, sh):
     """
-    MAIN TASK CHECK:
-    - Inventory Pallet + Actual Qty vs Master_Pick_Data Pallet + total Actual Qty
-    - If inventory Actual Qty == Master_Pick_Data total Actual Qty → skip (do NOT pick)
-    - If inventory Actual Qty > Master_Pick_Data total Actual Qty → take ONLY the excess
-    - If inventory Actual Qty < Master_Pick_Data total Actual Qty → skip (over-picked)
-    - Also fully exclude Damage_Items pallets
+    MAIN TASK:
+    - Compare inventory Pallet + Actual Qty vs Master_Pick_Data totals
+    - inv qty == picked qty → skip (do NOT pick)
+    - inv qty > picked qty → take excess only
+    - inv qty < picked qty → skip
+    - Fully exclude Damage_Items pallets
     """
+    # Normalize inventory columns
+    inv_df = inv_df.copy()
+    inv_df.columns = [str(c).strip() for c in inv_df.columns]
+    inv_col_lower = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
+
+    pallet_col   = inv_col_lower.get('pallet', 'Pallet')
+    actual_col   = inv_col_lower.get('actual qty', 'Actual Qty')
+
+    if actual_col not in inv_df.columns:
+        # Try to find any column with 'actual' in name
+        actual_col = next((c for c in inv_df.columns if 'actual' in c.lower()), actual_col)
+
+    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
+
     try:
         pick_history = get_safe_dataframe(sh, "Master_Pick_Data")
         if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
             pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
-            # Sum ALL picked qty per Pallet across all Load IDs
             pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
-            pick_summary.columns = ['Pallet', 'Total_Picked']
+            pick_summary.columns = [pallet_col, 'Total_Picked']
 
-            inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
-            inv_df = pd.merge(inv_df, pick_summary, on='Pallet', how='left')
+            inv_df = pd.merge(inv_df, pick_summary, on=pallet_col, how='left')
             inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
-
-            # Available = inventory Actual Qty - already picked qty
-            # Equal → 0 (skip), Greater → excess only, Less → negative → clip to 0 (skip)
-            inv_df['Actual Qty'] = (inv_df['Actual Qty'] - inv_df['Total_Picked']).clip(lower=0)
+            inv_df[actual_col] = (inv_df[actual_col] - inv_df['Total_Picked']).clip(lower=0)
             inv_df = inv_df.drop(columns=['Total_Picked'], errors='ignore')
     except Exception as e:
         st.warning(f"Inventory Reconcile Error: {e}")
 
-    # Fully exclude Damage_Items pallets from picking
+    # Fully exclude Damage_Items pallets
     try:
         dmg_summary = get_damage_pallets(sh)
         if not dmg_summary.empty:
             damage_pallet_set = set(dmg_summary['Pallet'].astype(str).tolist())
-            inv_df = inv_df[~inv_df['Pallet'].astype(str).isin(damage_pallet_set)].reset_index(drop=True)
+            inv_df = inv_df[~inv_df[pallet_col].astype(str).isin(damage_pallet_set)].reset_index(drop=True)
     except Exception as e:
         st.warning(f"Damage Exclude Error: {e}")
 
-    inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
-    # Remove rows where Actual Qty <= 0 (fully picked, equal, or damage)
-    inv_df = inv_df[inv_df['Actual Qty'] > 0].reset_index(drop=True)
+    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
+    inv_df = inv_df[inv_df[actual_col] > 0].reset_index(drop=True)
     return inv_df
 
 def generate_unique_load_id(sh, so_num, so_counts):
@@ -235,15 +252,25 @@ def generate_unique_load_id(sh, so_num, so_counts):
 def process_picking(inv_df, req_df, batch_id, sh=None):
     pick_rows, partial_rows, summary = [], [], []
 
-    supplier_col = next((c for c in inv_df.columns if 'supplier' in str(c).lower()), None)
-    pick_id_col = next((c for c in inv_df.columns if 'pick id' in str(c).lower() or 'pickid' in str(c).lower()), None)
+    # Normalize inventory column names: strip whitespace
+    inv_df = inv_df.copy()
+    inv_df.columns = [str(c).strip() for c in inv_df.columns]
+
+    # Build inv_col_map: lowercase_stripped → actual inventory column name
+    inv_col_map = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
+
+    # Find supplier and pick_id columns using loose match
+    supplier_col = next((inv_col_map[k] for k in inv_col_map if k == 'supplier'), None)
+    pick_id_col  = next((inv_col_map[k] for k in inv_col_map if k in ('pick id', 'pickid')), None)
+
+    # Also find Pallet column
+    pallet_col = next((inv_col_map[k] for k in inv_col_map if k == 'pallet'), 'Pallet')
 
     temp_inv = inv_df.copy()
-    temp_inv['Actual Qty'] = pd.to_numeric(temp_inv['Actual Qty'], errors='coerce').fillna(0)
-    temp_inv = temp_inv[temp_inv['Actual Qty'] > 0].reset_index(drop=True)
-
-    # Build a lowercase → original column name map for inventory
-    inv_col_map = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
+    # Normalize Actual Qty column name for internal use
+    actual_qty_col = next((inv_col_map[k] for k in inv_col_map if k == 'actual qty'), 'Actual Qty')
+    temp_inv[actual_qty_col] = pd.to_numeric(temp_inv[actual_qty_col], errors='coerce').fillna(0)
+    temp_inv = temp_inv[temp_inv[actual_qty_col] > 0].reset_index(drop=True)
 
     # Load existing Gen Pallet IDs from Master_Partial_Data to avoid duplicates
     existing_gen_pallet_ids = set()
@@ -265,15 +292,21 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                 existing_gen_pallet_ids.add(candidate)
                 return candidate
 
-    def get_inv_val(item, header_name):
+    def get_inv_val(item, master_header):
         """
-        Get inventory column value by matching MASTER_PICK_HEADER name
-        to inventory column — case-insensitive, strip spaces.
+        Map a MASTER_PICK_HEADER name → inventory column value.
+        Strategy:
+          1. Exact match
+          2. Case-insensitive + stripped match via inv_col_map
         """
-        key = str(header_name).strip().lower()
-        orig_col = inv_col_map.get(key)
-        if orig_col and orig_col in item.index:
-            return item[orig_col]
+        key = str(master_header).strip().lower()
+        # Try exact first
+        if master_header in item.index:
+            return item[master_header]
+        # Try lowercase map
+        orig = inv_col_map.get(key)
+        if orig and orig in item.index:
+            return item[orig]
         return ''
 
     for lid in req_df['Generated Load ID'].unique():
@@ -286,11 +319,11 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
             needed = float(req['PICK QTY'])
             country = req['Country Name']
 
-            if supplier_col:
+            if supplier_col and supplier_col in temp_inv.columns:
                 stock = temp_inv[
-                    (temp_inv[supplier_col].astype(str) == upc) &
-                    (temp_inv['Actual Qty'] > 0)
-                ].sort_values(by='Actual Qty', ascending=False)
+                    (temp_inv[supplier_col].astype(str).str.strip() == upc) &
+                    (temp_inv[actual_qty_col] > 0)
+                ].sort_values(by=actual_qty_col, ascending=False)
             else:
                 stock = pd.DataFrame()
 
@@ -300,7 +333,7 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                 if needed <= 0:
                     break
 
-                current_avail = float(temp_inv.at[idx, 'Actual Qty'])
+                current_avail = float(temp_inv.at[idx, actual_qty_col])
                 if current_avail <= 0:
                     continue
 
@@ -312,35 +345,36 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                     for header in MASTER_PICK_HEADERS:
                         p_row[header] = get_inv_val(item, header)
 
-                    # Override / set WMS-specific fields
-                    p_row['Actual Qty']          = take
-                    p_row['Pick Quantity']        = take
-                    p_row['Pick Id']              = str(item[pick_id_col]) if pick_id_col else ''
-                    p_row['Supplier']             = str(item[supplier_col]) if supplier_col else upc
-                    p_row['Batch ID']             = batch_id
-                    p_row['SO Number']            = so_num
-                    p_row['Generated Load ID']    = lid
-                    p_row['Country Name']         = country
-                    p_row['Remark']               = ''
-                    p_row['Order Type']           = 'Sample Orders'
-                    p_row['Order Number']         = lid
-                    p_row['Store Order Number']   = lid
-                    p_row['Customer Po Number']   = f"{country}-{lid}"
-                    p_row['Load Id']              = lid
+                    # Override WMS-specific fields
+                    p_row['Actual Qty']        = take
+                    p_row['Pick Quantity']     = take
+                    p_row['Pick Id']           = str(item[pick_id_col]) if pick_id_col and pick_id_col in item.index else ''
+                    p_row['Supplier']          = str(item[supplier_col]) if supplier_col and supplier_col in item.index else upc
+                    p_row['Batch ID']          = batch_id
+                    p_row['SO Number']         = so_num
+                    p_row['Generated Load ID'] = lid
+                    p_row['Country Name']      = country
+                    p_row['Remark']            = ''
+                    p_row['Order Type']        = 'Sample Orders'
+                    p_row['Order Number']      = lid
+                    p_row['Store Order Number']= lid
+                    p_row['Customer Po Number']= f"{country}-{lid}"
+                    p_row['Load Id']           = lid
 
                     pick_rows.append(p_row)
 
+                    pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
                     if take < current_avail:
                         partial_rows.append({
                             'Batch ID': batch_id, 'SO Number': so_num,
-                            'Pallet': str(get_inv_val(item, 'Pallet')),
+                            'Pallet': pallet_val,
                             'Supplier': p_row['Supplier'], 'Load ID': lid,
                             'Country Name': country, 'Actual Qty': current_avail,
                             'Partial Qty': take,
-                            'Gen Pallet ID': make_unique_gen_pallet_id(str(get_inv_val(item, 'Pallet')))
+                            'Gen Pallet ID': make_unique_gen_pallet_id(pallet_val)
                         })
 
-                    temp_inv.at[idx, 'Actual Qty'] -= take
+                    temp_inv.at[idx, actual_qty_col] -= take
                     needed -= take
                     picked_qty += take
 
@@ -353,11 +387,11 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                 'Status': 'Fully Picked' if variance == 0 else 'Shortage'
             })
 
-    # Build pick_df strictly from MASTER_PICK_HEADERS
+    # Build pick_df strictly from MASTER_PICK_HEADERS — correct column order guaranteed
     if pick_rows:
         pick_df = pd.DataFrame(pick_rows, columns=MASTER_PICK_HEADERS)
         pick_df['Actual Qty'] = pd.to_numeric(pick_df['Actual Qty'], errors='coerce').fillna(0)
-        pick_df = pick_df[pick_df['Actual Qty'] > 0]
+        pick_df = pick_df[pick_df['Actual Qty'] > 0].reset_index(drop=True)
     else:
         pick_df = pd.DataFrame(columns=MASTER_PICK_HEADERS)
 
