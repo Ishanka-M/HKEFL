@@ -198,17 +198,14 @@ def reconcile_inventory(inv_df, sh):
     except Exception as e:
         st.warning(f"Inventory Reconcile Error: {e}")
 
-    # Subtract damage quantities
+    # Fully exclude damage pallets from picking (regardless of qty)
     try:
         dmg_summary = get_damage_pallets(sh)
         if not dmg_summary.empty:
-            inv_df = pd.merge(inv_df, dmg_summary, on='Pallet', how='left')
-            inv_df['Damage_Qty'] = inv_df['Damage_Qty'].fillna(0)
-            inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
-            inv_df['Actual Qty'] = inv_df['Actual Qty'] - inv_df['Damage_Qty']
-            inv_df = inv_df.drop(columns=['Damage_Qty'])
+            damage_pallet_set = set(dmg_summary['Pallet'].astype(str).tolist())
+            inv_df = inv_df[~inv_df['Pallet'].astype(str).isin(damage_pallet_set)].reset_index(drop=True)
     except Exception as e:
-        st.warning(f"Damage Reconcile Error: {e}")
+        st.warning(f"Damage Exclude Error: {e}")
 
     inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
     inv_df = inv_df[inv_df['Actual Qty'] > 0].reset_index(drop=True)
@@ -326,24 +323,52 @@ def process_picking(inv_df, req_df, batch_id):
 def generate_inventory_details_report(inv_df, sh):
     """
     Generate inventory details report showing allocation status.
-    Each pallet is checked against Master_Pick_Data and Load_History.
-    If one pallet is picked in multiple loads, create one line per load.
-    Adds: Batch ID, SO Number, Generated Load ID, Country Name, Pick Quantity, Remark columns.
+    - Checks Master_Pick_Data for pick allocations (one line per allocation)
+    - Checks Damage_Items for damage status and remark
+    - Adds: Batch ID, SO Number, Generated Load ID, Country Name, Pick Quantity, Remark, Allocation Status
     """
     try:
         pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
         hist_df = get_safe_dataframe(sh, "Load_History")
 
-        # Start with the base inventory
+        # Build damage lookup: {pallet: remark}
+        damage_lookup = {}
+        try:
+            dmg_df = get_safe_dataframe(sh, "Damage_Items")
+            if not dmg_df.empty and 'Pallet' in dmg_df.columns:
+                for _, dr in dmg_df.iterrows():
+                    p = str(dr.get('Pallet', '')).strip()
+                    r = str(dr.get('Remark', 'Damage')).strip()
+                    qty = str(dr.get('Actual Qty', '')).strip()
+                    if p:
+                        # If same pallet has multiple damage rows, concatenate remarks
+                        existing = damage_lookup.get(p, '')
+                        new_remark = f"DAMAGE: {r} (Qty:{qty})" if qty else f"DAMAGE: {r}"
+                        damage_lookup[p] = (existing + ' | ' + new_remark).lstrip(' | ') if existing else new_remark
+        except Exception as e:
+            pass
+
         report_rows = []
 
         for _, inv_row in inv_df.iterrows():
-            pallet = str(inv_row.get('Pallet', ''))
-            actual_qty = pd.to_numeric(inv_row.get('Actual Qty', 0), errors='coerce')
+            pallet = str(inv_row.get('Pallet', '')).strip()
 
-            # Check if this pallet has been picked
+            # --- Check if this pallet is a DAMAGE item ---
+            if pallet in damage_lookup:
+                row = inv_row.copy()
+                row['Batch ID'] = ''
+                row['SO Number'] = ''
+                row['Generated Load ID'] = ''
+                row['Country Name'] = ''
+                row['Pick Quantity'] = ''
+                row['Remark'] = damage_lookup[pallet]
+                row['Allocation Status'] = 'Damage'
+                report_rows.append(row)
+                continue  # Don't check picks for damage pallets
+
+            # --- Check if this pallet has been picked ---
             if not pick_df.empty and 'Pallet' in pick_df.columns:
-                pallet_picks = pick_df[pick_df['Pallet'].astype(str) == pallet]
+                pallet_picks = pick_df[pick_df['Pallet'].astype(str).str.strip() == pallet]
 
                 if not pallet_picks.empty:
                     # One line per pick allocation
@@ -358,7 +383,7 @@ def generate_inventory_details_report(inv_df, sh):
                         row['Allocation Status'] = 'Picked'
                         report_rows.append(row)
                 else:
-                    # Not picked
+                    # Available - not picked, not damaged
                     row = inv_row.copy()
                     row['Batch ID'] = ''
                     row['SO Number'] = ''
@@ -823,10 +848,11 @@ if login_section():
     elif choice == "📋 Inventory Details Report":
         st.title("📋 Inventory Details Report")
         st.info("""
-        Inventory file upload කරහම එය Master_Pick_Data සහ Load_History සමඟ compare කර allocation status සහිත report එකක් generate වේ.
-        - **Picked**: Pallet pick allocate වී ඇත
-        - **Available**: Pallet pick allocate වී නොමැත
-        - එකම Pallet pick ගොඩකට allocate වී ඇත්නම් pick ගානට lines update වේ
+        Inventory file upload කරහම එය Master_Pick_Data සහ Damage_Items සමඟ compare කර allocation status සහිත report එකක් generate වේ.
+        - ✅ **Picked** — Pallet pick allocate වී ඇත
+        - 🟢 **Available** — Pallet pick allocate වී නොමැත
+        - 🔴 **Damage** — Damage_Items හි ඇති Pallet (Remark සහිතව)
+        - එකම Pallet pick ගොඩකට allocate නම් pick ගානට lines update වේ
         """)
 
         inv_report_file = st.file_uploader("Upload Inventory File", type=['csv', 'xlsx'], key="inv_report_uploader")
@@ -841,21 +867,39 @@ if login_section():
                     if not report_df.empty:
                         st.success(f"✅ Report generated! Total rows: {len(report_df)}")
 
-                        # Show summary
-                        col_r1, col_r2, col_r3 = st.columns(3)
+                        # Show summary metrics
+                        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
                         if 'Allocation Status' in report_df.columns:
                             picked_count = len(report_df[report_df['Allocation Status'] == 'Picked'])
                             avail_count = len(report_df[report_df['Allocation Status'] == 'Available'])
-                            col_r1.metric("Total Pallets (Lines)", len(report_df))
-                            col_r2.metric("Picked Lines", picked_count)
-                            col_r3.metric("Available Pallets", avail_count)
+                            damage_count = len(report_df[report_df['Allocation Status'] == 'Damage'])
+                            col_r1.metric("Total Lines", len(report_df))
+                            col_r2.metric("✅ Picked", picked_count)
+                            col_r3.metric("🟢 Available", avail_count)
+                            col_r4.metric("🔴 Damage", damage_count)
 
+                        # Colour-coded dataframe display
                         st.dataframe(report_df.astype(str), use_container_width=True)
 
                         # Download
                         out_rpt = io.BytesIO()
                         with pd.ExcelWriter(out_rpt, engine='xlsxwriter') as writer:
                             report_df.to_excel(writer, sheet_name='Inventory_Details', index=False)
+                            # Highlight damage rows in Excel
+                            workbook = writer.book
+                            worksheet = writer.sheets['Inventory_Details']
+                            dmg_fmt = workbook.add_format({'bg_color': '#FFE0E0', 'font_color': '#C0392B'})
+                            pick_fmt = workbook.add_format({'bg_color': '#E8F5E9', 'font_color': '#1B5E20'})
+                            avail_fmt = workbook.add_format({'bg_color': '#E3F2FD', 'font_color': '#0D47A1'})
+                            if 'Allocation Status' in report_df.columns:
+                                status_col_idx = report_df.columns.get_loc('Allocation Status')
+                                for row_num, status_val in enumerate(report_df['Allocation Status'], start=1):
+                                    if status_val == 'Damage':
+                                        worksheet.set_row(row_num, None, dmg_fmt)
+                                    elif status_val == 'Picked':
+                                        worksheet.set_row(row_num, None, pick_fmt)
+                                    elif status_val == 'Available':
+                                        worksheet.set_row(row_num, None, avail_fmt)
 
                         st.download_button(
                             "⬇️ Download Inventory Details Report",
