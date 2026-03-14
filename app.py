@@ -733,83 +733,122 @@ if login_section():
 
                     STATUS_OPTIONS = ["Pending", "Processing", "Completed", "Cancelled"]
 
-                    def render_load_cards(id_list, category_color):
-                        for i in range(0, len(id_list), 4):
-                            cols = st.columns(4)
-                            for j, lid in enumerate(id_list[i:i+4]):
-                                with cols[j]:
-                                    load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
-                                    status = str(load_row.get('Pick Status', 'Pending'))
-                                    so_num = load_row.get('SO Number', '-')
-                                    country = load_row.get('Country Name', '-')
-                                    ship_mode = load_row.get('SHIP MODE', '-')
-                                    date = str(load_row.get('Date', '-'))[:10]
+                    # Pre-build pick counts per Load ID (fix column name flexibility)
+                    pick_counts_by_lid = {}
+                    pick_qty_by_lid = {}
+                    if not pick_df.empty:
+                        # Find Load Id column — try exact, then case-insensitive
+                        load_id_col_pick = None
+                        for c in pick_df.columns:
+                            if str(c).strip().lower() in ('load id', 'loadid', 'load_id'):
+                                load_id_col_pick = c
+                                break
+                        # Find Actual Qty column
+                        actual_col_pick = None
+                        for c in pick_df.columns:
+                            if str(c).strip().lower() == 'actual qty':
+                                actual_col_pick = c
+                                break
 
-                                    if not pick_df.empty and 'Load Id' in pick_df.columns:
-                                        load_picks = pick_df[pick_df['Load Id'].astype(str) == str(lid)]
-                                        pick_count = len(load_picks)
-                                        pick_qty = pd.to_numeric(
-                                            load_picks['Actual Qty'] if 'Actual Qty' in load_picks.columns else pd.Series(),
-                                            errors='coerce'
-                                        ).sum()
-                                    else:
-                                        pick_count = 0
-                                        pick_qty = 0
+                        if load_id_col_pick:
+                            for lid_p in pick_df[load_id_col_pick].dropna().unique():
+                                rows_p = pick_df[pick_df[load_id_col_pick].astype(str).str.strip() == str(lid_p).strip()]
+                                pick_counts_by_lid[str(lid_p).strip()] = len(rows_p)
+                                if actual_col_pick:
+                                    pick_qty_by_lid[str(lid_p).strip()] = pd.to_numeric(rows_p[actual_col_pick], errors='coerce').sum()
+                                else:
+                                    pick_qty_by_lid[str(lid_p).strip()] = 0
 
-                                    s = summ_by_load.get(str(lid), {})
-                                    variance = s.get('variance', 0)
-                                    requested = s.get('requested', 0)
+                    def render_load_list(id_list, category_color, category_label):
+                        """Render loads as a table-style list."""
+                        # Header row
+                        st.markdown(f"""
+                        <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
+                             background:{category_color}15; border:1px solid {category_color}40;
+                             border-radius:8px 8px 0 0; padding:7px 12px;
+                             font-size:11px; font-weight:700; color:#444; margin-top:4px;">
+                            <div>Load ID</div>
+                            <div>SO</div>
+                            <div>Country</div>
+                            <div>Ship</div>
+                            <div>Date</div>
+                            <div>Lines</div>
+                            <div>Qty</div>
+                            <div>Status</div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                                    status_bg = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f8f9fa')
-                                    status_color_text = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
-                                    status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
+                        for lid in id_list:
+                            load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
+                            status   = str(load_row.get('Pick Status', 'Pending'))
+                            so_num   = str(load_row.get('SO Number', '-'))
+                            country  = str(load_row.get('Country Name', '-'))
+                            ship     = str(load_row.get('SHIP MODE', '-'))
+                            date     = str(load_row.get('Date', '-'))[:10]
 
-                                    variance_html = ""
-                                    if variance > 0:
-                                        variance_html = f'<div style="margin-top:4px; background:#fff0f0; border:1px solid #ffcccc; border-radius:4px; padding:2px 6px; font-size:10px; color:#c0392b;">⚠️ Shortage: <b>{int(variance)}</b> / Req: <b>{int(requested)}</b></div>'
+                            lid_key      = str(lid).strip()
+                            pick_count   = pick_counts_by_lid.get(lid_key, 0)
+                            pick_qty_val = pick_qty_by_lid.get(lid_key, 0)
 
-                                    st.markdown(f"""
-                                    <div style="border:1px solid {category_color}; border-left:4px solid {category_color}; border-radius:8px; padding:10px 12px; margin-bottom:4px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.07);">
-                                        <div style="font-weight:700; font-size:12px; color:#222; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{lid}">📦 {lid}</div>
-                                        <div style="display:inline-block; background:{status_bg}; color:{status_color_text}; font-size:10px; font-weight:600; padding:2px 7px; border-radius:10px; margin-bottom:3px;">{status_dot} {status}</div>
-                                        <div style="font-size:11px; color:#555; line-height:1.6;">
-                                            <div>📋 <b>SO:</b> {so_num}</div>
-                                            <div>🌍 {country} &nbsp;|&nbsp; 🚢 {ship_mode}</div>
-                                            <div>📅 {date} &nbsp;|&nbsp; 🧾 <b>{pick_count}</b> lines / Qty:<b>{int(pick_qty)}</b></div>
-                                        </div>
-                                        {variance_html}
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                            s         = summ_by_load.get(str(lid), {})
+                            variance  = s.get('variance', 0)
+                            requested = s.get('requested', 0)
 
-                                    # Inline status update
-                                    safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                                    new_st = st.selectbox("", STATUS_OPTIONS, index=safe_idx, key=f"st_{lid}", label_visibility="collapsed")
-                                    if st.button("💾 Update", key=f"upd_{lid}", use_container_width=True):
-                                        try:
-                                            ws_hist_upd = sh.worksheet("Load_History")
-                                            cell = ws_hist_upd.find(str(lid))
-                                            if cell:
-                                                ws_hist_upd.update_cell(cell.row, 7, new_st)
-                                                st.success(f"✅ {lid} → {new_st}")
-                                                time.sleep(0.5)
-                                                st.rerun()
-                                        except Exception as ex:
-                                            st.error(f"Update failed: {ex}")
+                            status_bg   = {'Pending':'#fff3cd','Processing':'#cce5ff'}.get(status,'#f0f0f0')
+                            status_col  = {'Pending':'#856404','Processing':'#004085'}.get(status,'#333')
+                            status_dot  = {'Pending':'🟡','Processing':'🔵'}.get(status,'⚪')
+
+                            shortage_tag = ''
+                            if variance > 0:
+                                shortage_tag = f'<span style="font-size:9px; background:#ffe0e0; color:#c0392b; padding:1px 5px; border-radius:4px; margin-left:4px;">⚠️ -{int(variance)}</span>'
+
+                            row_html = f"""
+                            <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
+                                 border-left:3px solid {category_color}; border-bottom:1px solid #eee;
+                                 padding:7px 12px; background:#fff; font-size:11px; color:#333; align-items:center;">
+                                <div style="font-weight:600; color:#1a1a1a;">{lid}{shortage_tag}</div>
+                                <div>{so_num}</div>
+                                <div>{country}</div>
+                                <div>{ship}</div>
+                                <div>{date}</div>
+                                <div><b>{pick_count}</b></div>
+                                <div><b>{int(pick_qty_val)}</b></div>
+                                <div><span style="background:{status_bg}; color:{status_col}; font-size:10px; font-weight:600; padding:2px 8px; border-radius:10px;">{status_dot} {status}</span></div>
+                            </div>
+                            """
+                            st.markdown(row_html, unsafe_allow_html=True)
+
+                            # Inline update controls in a tight row
+                            c1, c2 = st.columns([3, 1])
+                            safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
+                            new_st = c1.selectbox("", STATUS_OPTIONS, index=safe_idx,
+                                                  key=f"st_{lid}", label_visibility="collapsed")
+                            if c2.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
+                                try:
+                                    ws_hist_upd = sh.worksheet("Load_History")
+                                    cell = ws_hist_upd.find(str(lid))
+                                    if cell:
+                                        ws_hist_upd.update_cell(cell.row, 7, new_st)
+                                        st.success(f"✅ {lid} → {new_st}")
+                                        time.sleep(0.5)
+                                        st.rerun()
+                                except Exception as ex:
+                                    st.error(f"Update failed: {ex}")
 
                     # --- Category 1: Zero Pick ---
                     if zero_pick_ids:
-                        st.markdown('<div style="background:#6c757d; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:14px 0 8px 0;">⬜ NOT PICKED &nbsp;·&nbsp; {}</div>'.format(len(zero_pick_ids)), unsafe_allow_html=True)
-                        render_load_cards(zero_pick_ids, "#adb5bd")
+                        st.markdown('<div style="background:#6c757d; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:16px 0 4px 0;">⬜ NOT PICKED &nbsp;·&nbsp; {}</div>'.format(len(zero_pick_ids)), unsafe_allow_html=True)
+                        render_load_list(zero_pick_ids, "#adb5bd", "NOT PICKED")
 
                     # --- Category 2: Shortage ---
                     if shortage_ids:
-                        st.markdown('<div style="background:#e74c3c; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:14px 0 8px 0;">⚠️ SHORTAGE &nbsp;·&nbsp; {}</div>'.format(len(shortage_ids)), unsafe_allow_html=True)
-                        render_load_cards(shortage_ids, "#e74c3c")
+                        st.markdown('<div style="background:#e74c3c; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:16px 0 4px 0;">⚠️ SHORTAGE &nbsp;·&nbsp; {}</div>'.format(len(shortage_ids)), unsafe_allow_html=True)
+                        render_load_list(shortage_ids, "#e74c3c", "SHORTAGE")
 
                     # --- Category 3: Full Pick ---
                     if full_pick_ids:
-                        st.markdown('<div style="background:#27ae60; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:14px 0 8px 0;">✅ FULLY PICKED &nbsp;·&nbsp; {}</div>'.format(len(full_pick_ids)), unsafe_allow_html=True)
-                        render_load_cards(full_pick_ids, "#27ae60")
+                        st.markdown('<div style="background:#27ae60; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:16px 0 4px 0;">✅ FULLY PICKED &nbsp;·&nbsp; {}</div>'.format(len(full_pick_ids)), unsafe_allow_html=True)
+                        render_load_list(full_pick_ids, "#27ae60", "FULLY PICKED")
 
             st.divider()
 
