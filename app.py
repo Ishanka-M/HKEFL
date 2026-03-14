@@ -538,6 +538,47 @@ if login_section():
                     inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
 
+                    # --- Validate files are not swapped ---
+                    inv_cols_lower = [str(c).strip().lower() for c in inv.columns]
+                    req_cols_lower = [str(c).strip().lower() for c in req.columns]
+
+                    REQ_REQUIRED = ['so number', 'country name', 'ship mode: (sea/air)', 'product upc', 'pick qty']
+                    INV_REQUIRED = ['pallet', 'actual qty']
+
+                    missing_req = [c for c in REQ_REQUIRED if c not in req_cols_lower]
+                    missing_inv = [c for c in INV_REQUIRED if c not in inv_cols_lower]
+
+                    # Detect if files are swapped
+                    req_has_inv_cols = 'pallet' in req_cols_lower and 'actual qty' in req_cols_lower
+                    inv_has_req_cols = 'so number' in inv_cols_lower and 'pick qty' in inv_cols_lower
+
+                    if req_has_inv_cols and inv_has_req_cols:
+                        st.error("⚠️ Files swapped! '1. Upload Inventory Report' හි Inventory file සහ '2. Upload Customer Requirement' හි Customer Requirement file upload කරන්න.")
+                        st.stop()
+
+                    if missing_req:
+                        st.error(f"❌ Customer Requirement file හි required columns නොමැත: **{', '.join(missing_req)}**\n\nCustomer Requirement file '2. Upload Customer Requirement' හිම upload කරන්න.")
+                        st.stop()
+
+                    if missing_inv:
+                        st.error(f"❌ Inventory file හි required columns නොමැත: **{', '.join(missing_inv)}**\n\nInventory file '1. Upload Inventory Report' හිම upload කරන්න.")
+                        st.stop()
+
+                    # Normalize req column names (strip + find correct case)
+                    req_col_map = {str(c).strip().lower(): str(c).strip() for c in req.columns}
+
+                    def get_req_col(name):
+                        return req_col_map.get(name.lower(), name)
+
+                    # Rename req columns to expected names
+                    req = req.rename(columns={
+                        req_col_map.get('so number', 'SO Number'): 'SO Number',
+                        req_col_map.get('country name', 'Country Name'): 'Country Name',
+                        req_col_map.get('ship mode: (sea/air)', 'SHIP MODE: (SEA/AIR)'): 'SHIP MODE: (SEA/AIR)',
+                        req_col_map.get('product upc', 'Product UPC'): 'Product UPC',
+                        req_col_map.get('pick qty', 'PICK QTY'): 'PICK QTY',
+                    })
+
                     new_inv_cols = []
                     seen_inv = {}
                     for c in inv.columns:
