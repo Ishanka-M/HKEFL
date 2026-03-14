@@ -242,6 +242,9 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
     temp_inv['Actual Qty'] = pd.to_numeric(temp_inv['Actual Qty'], errors='coerce').fillna(0)
     temp_inv = temp_inv[temp_inv['Actual Qty'] > 0].reset_index(drop=True)
 
+    # Build a lowercase → original column name map for inventory
+    inv_col_map = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
+
     # Load existing Gen Pallet IDs from Master_Partial_Data to avoid duplicates
     existing_gen_pallet_ids = set()
     if sh is not None:
@@ -252,17 +255,26 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
         except:
             pass
 
-    # Counter for generating unique Gen Pallet IDs in this session
     gen_pallet_counter = [0]
 
     def make_unique_gen_pallet_id(pallet):
-        """Generate a unique Gen Pallet ID not in existing set or current session."""
         while True:
             gen_pallet_counter[0] += 1
             candidate = f"{pallet}-P{gen_pallet_counter[0]:04d}"
             if candidate not in existing_gen_pallet_ids:
                 existing_gen_pallet_ids.add(candidate)
                 return candidate
+
+    def get_inv_val(item, header_name):
+        """
+        Get inventory column value by matching MASTER_PICK_HEADER name
+        to inventory column — case-insensitive, strip spaces.
+        """
+        key = str(header_name).strip().lower()
+        orig_col = inv_col_map.get(key)
+        if orig_col and orig_col in item.index:
+            return item[orig_col]
+        return ''
 
     for lid in req_df['Generated Load ID'].unique():
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
@@ -280,10 +292,7 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                     (temp_inv['Actual Qty'] > 0)
                 ].sort_values(by='Actual Qty', ascending=False)
             else:
-                stock = temp_inv[
-                    (temp_inv['Supplier'].astype(str) == upc) &
-                    (temp_inv['Actual Qty'] > 0)
-                ].sort_values(by='Actual Qty', ascending=False)
+                stock = pd.DataFrame()
 
             picked_qty = 0
 
@@ -298,33 +307,37 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                 take = min(current_avail, needed)
 
                 if take > 0:
-                    p_row = item.copy()
+                    # Build pick row strictly aligned to MASTER_PICK_HEADERS
+                    p_row = {}
+                    for header in MASTER_PICK_HEADERS:
+                        p_row[header] = get_inv_val(item, header)
 
-                    p_row['Pick Id'] = str(item[pick_id_col]) if pick_id_col else ""
-                    p_row['Supplier'] = str(item[supplier_col]) if supplier_col else upc
-
-                    p_row['Batch ID'] = batch_id
-                    p_row['SO Number'] = so_num
-                    p_row['Generated Load ID'] = lid
-                    p_row['Country Name'] = country
-                    p_row['Pick Quantity'] = take
-                    p_row['Remark'] = ""
-                    p_row['Actual Qty'] = take
-                    p_row['Order Type'] = "Sample Orders"
-                    p_row['Order Number'] = lid
-                    p_row['Store Order Number'] = lid
-                    p_row['Customer Po Number'] = f"{country}-{lid}"
-                    p_row['Load Id'] = lid
+                    # Override / set WMS-specific fields
+                    p_row['Actual Qty']          = take
+                    p_row['Pick Quantity']        = take
+                    p_row['Pick Id']              = str(item[pick_id_col]) if pick_id_col else ''
+                    p_row['Supplier']             = str(item[supplier_col]) if supplier_col else upc
+                    p_row['Batch ID']             = batch_id
+                    p_row['SO Number']            = so_num
+                    p_row['Generated Load ID']    = lid
+                    p_row['Country Name']         = country
+                    p_row['Remark']               = ''
+                    p_row['Order Type']           = 'Sample Orders'
+                    p_row['Order Number']         = lid
+                    p_row['Store Order Number']   = lid
+                    p_row['Customer Po Number']   = f"{country}-{lid}"
+                    p_row['Load Id']              = lid
 
                     pick_rows.append(p_row)
 
                     if take < current_avail:
                         partial_rows.append({
-                            'Batch ID': batch_id, 'SO Number': so_num, 'Pallet': item['Pallet'],
+                            'Batch ID': batch_id, 'SO Number': so_num,
+                            'Pallet': str(get_inv_val(item, 'Pallet')),
                             'Supplier': p_row['Supplier'], 'Load ID': lid,
                             'Country Name': country, 'Actual Qty': current_avail,
                             'Partial Qty': take,
-                            'Gen Pallet ID': make_unique_gen_pallet_id(str(item['Pallet']))
+                            'Gen Pallet ID': make_unique_gen_pallet_id(str(get_inv_val(item, 'Pallet')))
                         })
 
                     temp_inv.at[idx, 'Actual Qty'] -= take
@@ -333,20 +346,20 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
 
             variance = float(req['PICK QTY']) - picked_qty
             summary.append({
-                'Batch ID': batch_id, 'SO Number': so_num, 'Load ID': lid, 'UPC': upc, 'Country': country,
-                'Ship Mode': ship_mode,
-                'Requested': req['PICK QTY'], 'Picked': picked_qty, 'Variance': variance,
+                'Batch ID': batch_id, 'SO Number': so_num, 'Load ID': lid,
+                'UPC': upc, 'Country': country, 'Ship Mode': ship_mode,
+                'Requested': req['PICK QTY'], 'Picked': picked_qty,
+                'Variance': variance,
                 'Status': 'Fully Picked' if variance == 0 else 'Shortage'
             })
 
-    pick_df = pd.DataFrame(pick_rows)
-    if not pick_df.empty:
-        pick_df['Actual Qty'] = pd.to_numeric(pick_df['Actual Qty'])
+    # Build pick_df strictly from MASTER_PICK_HEADERS
+    if pick_rows:
+        pick_df = pd.DataFrame(pick_rows, columns=MASTER_PICK_HEADERS)
+        pick_df['Actual Qty'] = pd.to_numeric(pick_df['Actual Qty'], errors='coerce').fillna(0)
         pick_df = pick_df[pick_df['Actual Qty'] > 0]
-        if 'Pick Id' in pick_df.columns:
-            pick_df['Pick Id'] = pick_df['Pick Id'].astype(str)
-        if 'Supplier' in pick_df.columns:
-            pick_df['Supplier'] = pick_df['Supplier'].astype(str)
+    else:
+        pick_df = pd.DataFrame(columns=MASTER_PICK_HEADERS)
 
     return pick_df, pd.DataFrame(partial_rows), pd.DataFrame(summary)
 
@@ -561,12 +574,8 @@ if login_section():
 
                     if not pick_df.empty:
                         ws_pick = get_or_create_sheet(sh, "Master_Pick_Data", MASTER_PICK_HEADERS)
-                        # Align columns to MASTER_PICK_HEADERS
-                        for col in MASTER_PICK_HEADERS:
-                            if col not in pick_df.columns:
-                                pick_df[col] = ''
-                        pick_df_to_save = pick_df[MASTER_PICK_HEADERS]
-                        ws_pick.append_rows(pick_df_to_save.astype(str).replace('nan', '').values.tolist())
+                        # pick_df is already built with exact MASTER_PICK_HEADERS columns
+                        ws_pick.append_rows(pick_df.astype(str).replace('nan', '').values.tolist())
 
                     if not part_df.empty:
                         ws_part = get_or_create_sheet(sh, "Master_Partial_Data", SHEET_HEADERS["Master_Partial_Data"])
