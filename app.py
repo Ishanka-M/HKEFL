@@ -111,8 +111,9 @@ def init_users_sheet(sh):
         return get_safe_dataframe(sh, "Users")
     return users_df
 
+HK_LOGO_B64 = "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"
+
 def login_section():
-    st.sidebar.title("🔐 WMS Login")
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
     if 'role' not in st.session_state:
@@ -121,27 +122,45 @@ def login_section():
         st.session_state['username'] = 'Unknown'
 
     if not st.session_state['logged_in']:
-        try:
-            sh = get_master_workbook()
-            users_df = init_users_sheet(sh)
-        except Exception as e:
-            st.sidebar.error("Google Sheets සම්බන්ධ වීමේ දෝෂයක්. Secrets පරීක්ෂා කරන්න.")
-            return False
+        # Show logo on main page login screen
+        st.markdown(f"""
+        <div style="display:flex; justify-content:center; align-items:center; padding: 40px 0 10px 0;">
+            <img src="data:image/jpeg;base64,{HK_LOGO_B64}" style="max-width:380px; width:100%;" />
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align:center; color:#555; margin-bottom:30px;'>Warehouse Management System</h3>", unsafe_allow_html=True)
 
-        user = st.sidebar.text_input("Username")
-        pw = st.sidebar.text_input("Password", type="password")
+        # Centered login form
+        col_l, col_mid, col_r = st.columns([1, 1.2, 1])
+        with col_mid:
+            st.markdown("#### 🔐 Login")
+            try:
+                sh = get_master_workbook()
+                users_df = init_users_sheet(sh)
+            except Exception as e:
+                st.error("Google Sheets සම්බන්ධ වීමේ දෝෂයක්. Secrets පරීක්ෂා කරන්න.")
+                return False
 
-        if st.sidebar.button("Login", type="primary"):
-            user_match = users_df[(users_df['Username'] == user) & (users_df['Password'] == str(pw))]
-            if not user_match.empty:
-                st.session_state['logged_in'] = True
-                st.session_state['role'] = user_match.iloc[0]['Role']
-                st.session_state['username'] = user
-                st.rerun()
-            else:
-                st.sidebar.error("වැරදි Username හෝ Password එකක්!")
+            user = st.text_input("Username", key="login_user")
+            pw = st.text_input("Password", type="password", key="login_pw")
+
+            if st.button("Login", type="primary", use_container_width=True):
+                user_match = users_df[(users_df['Username'] == user) & (users_df['Password'] == str(pw))]
+                if not user_match.empty:
+                    st.session_state['logged_in'] = True
+                    st.session_state['role'] = user_match.iloc[0]['Role']
+                    st.session_state['username'] = user
+                    st.rerun()
+                else:
+                    st.error("වැරදි Username හෝ Password එකක්!")
         return False
 
+    # Show logo in sidebar when logged in
+    st.sidebar.markdown(f"""
+    <div style="text-align:center; padding: 8px 0 12px 0;">
+        <img src="data:image/jpeg;base64,{HK_LOGO_B64}" style="max-width:200px; width:100%;" />
+    </div>
+    """, unsafe_allow_html=True)
     return True
 
 # --- 3. Inventory Logic ---
@@ -476,24 +495,25 @@ if login_section():
                     inv = reconcile_inventory(inv, sh)
 
                     # Check inventory Pallet + Actual Qty against Master_Pick_Data
+                    # Rule: Only pick if inventory Actual Qty > Master_Pick_Data total Actual Qty for same Pallet
+                    # Take only the EXCESS (inventory qty - master picked qty)
+                    # If inventory qty <= master picked qty → skip entirely (already fully picked or over-picked)
                     master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
                     if not master_pick_df.empty and 'Pallet' in master_pick_df.columns and 'Actual Qty' in master_pick_df.columns:
                         master_pick_df['Actual Qty'] = pd.to_numeric(master_pick_df['Actual Qty'], errors='coerce').fillna(0)
+                        # Sum ALL Actual Qty per Pallet in Master_Pick_Data
                         master_check = master_pick_df.groupby('Pallet')['Actual Qty'].sum().reset_index()
-                        master_check.columns = ['Pallet', 'Master_Picked_Qty']
+                        master_check.columns = ['Pallet', 'Master_Total_Picked']
 
                         inv['Actual Qty'] = pd.to_numeric(inv['Actual Qty'], errors='coerce').fillna(0)
                         inv = pd.merge(inv, master_check, on='Pallet', how='left')
-                        inv['Master_Picked_Qty'] = inv['Master_Picked_Qty'].fillna(0)
+                        inv['Master_Total_Picked'] = inv['Master_Total_Picked'].fillna(0)
 
-                        # If inventory Actual Qty == Master Picked Qty → skip (fully picked)
-                        # If inventory Actual Qty > Master Picked Qty → take the difference only
-                        inv['Available Qty'] = inv['Actual Qty'] - inv['Master_Picked_Qty']
-                        inv['Available Qty'] = inv['Available Qty'].clip(lower=0)
-
-                        # Update Actual Qty with available qty
-                        inv['Actual Qty'] = inv['Available Qty']
-                        inv = inv.drop(columns=['Master_Picked_Qty', 'Available Qty'], errors='ignore')
+                        # Available = inventory Actual Qty - total already picked in Master_Pick_Data
+                        # Only if inventory qty > master total picked → excess is available
+                        # If inventory qty <= master total picked → 0 available (skip)
+                        inv['Actual Qty'] = (inv['Actual Qty'] - inv['Master_Total_Picked']).clip(lower=0)
+                        inv = inv.drop(columns=['Master_Total_Picked'], errors='ignore')
                         inv = inv[inv['Actual Qty'] > 0].reset_index(drop=True)
 
                     pick_df, part_df, summ_df = process_picking(inv, req, batch_id)
@@ -587,45 +607,43 @@ if login_section():
                 if active_loads.empty:
                     st.info("සියලු Loads Completed හෝ Cancelled වී ඇත.")
                 else:
-                    # Display in card grid: 3 per row
+                    # Display in card grid: 4 per row (compact)
                     load_ids = active_loads['Generated Load ID'].dropna().unique().tolist()
 
-                    for i in range(0, len(load_ids), 3):
-                        cols = st.columns(3)
-                        for j, lid in enumerate(load_ids[i:i+3]):
+                    for i in range(0, len(load_ids), 4):
+                        cols = st.columns(4)
+                        for j, lid in enumerate(load_ids[i:i+4]):
                             with cols[j]:
                                 load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
                                 status = load_row.get('Pick Status', 'Pending')
                                 so_num = load_row.get('SO Number', '-')
                                 country = load_row.get('Country Name', '-')
                                 ship_mode = load_row.get('SHIP MODE', '-')
-                                date = load_row.get('Date', '-')
+                                date = str(load_row.get('Date', '-'))[:10]
 
                                 # Pick count for this load
                                 if not pick_df.empty and 'Load Id' in pick_df.columns:
-                                    pick_count = len(pick_df[pick_df['Load Id'].astype(str) == str(lid)])
-                                    pick_qty = pd.to_numeric(
-                                        pick_df[pick_df['Load Id'].astype(str) == str(lid)].get('Actual Qty', pd.Series()),
-                                        errors='coerce'
-                                    ).sum()
+                                    load_picks = pick_df[pick_df['Load Id'].astype(str) == str(lid)]
+                                    pick_count = len(load_picks)
+                                    pick_qty = pd.to_numeric(load_picks.get('Actual Qty', pd.Series()), errors='coerce').sum()
                                 else:
                                     pick_count = 0
                                     pick_qty = 0
 
-                                status_color = {
-                                    'Pending': '🟡',
-                                    'Processing': '🔵',
-                                }.get(status, '⚪')
+                                status_bg = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f8f9fa')
+                                status_color = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
+                                status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
 
                                 st.markdown(f"""
-                                <div style="border:1px solid #ddd; border-radius:10px; padding:15px; margin-bottom:10px; background:#f9f9f9;">
-                                    <h4 style="margin:0; color:#333;">📦 {lid}</h4>
-                                    <p style="margin:4px 0; font-size:13px;">{status_color} <b>Status:</b> {status}</p>
-                                    <p style="margin:4px 0; font-size:13px;">📋 <b>SO:</b> {so_num}</p>
-                                    <p style="margin:4px 0; font-size:13px;">🌍 <b>Country:</b> {country}</p>
-                                    <p style="margin:4px 0; font-size:13px;">🚢 <b>Ship Mode:</b> {ship_mode}</p>
-                                    <p style="margin:4px 0; font-size:13px;">📅 <b>Date:</b> {date}</p>
-                                    <p style="margin:4px 0; font-size:13px;">🧾 <b>Picks:</b> {pick_count} lines | <b>Qty:</b> {int(pick_qty)}</p>
+                                <div style="border:1px solid #ddd; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+                                    <div style="font-weight:700; font-size:12px; color:#222; margin-bottom:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{lid}">📦 {lid}</div>
+                                    <div style="display:inline-block; background:{status_bg}; color:{status_color}; font-size:10px; font-weight:600; padding:2px 7px; border-radius:10px; margin-bottom:5px;">{status_dot} {status}</div>
+                                    <div style="font-size:11px; color:#555; line-height:1.6;">
+                                        <div>📋 <b>SO:</b> {so_num}</div>
+                                        <div>🌍 {country} &nbsp;|&nbsp; 🚢 {ship_mode}</div>
+                                        <div>📅 {date}</div>
+                                        <div>🧾 <b>{pick_count}</b> lines &nbsp;|&nbsp; Qty: <b>{int(pick_qty)}</b></div>
+                                    </div>
                                 </div>
                                 """, unsafe_allow_html=True)
 
