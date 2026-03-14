@@ -232,7 +232,7 @@ def generate_unique_load_id(sh, so_num, so_counts):
         if candidate not in existing_ids:
             return candidate, count
 
-def process_picking(inv_df, req_df, batch_id):
+def process_picking(inv_df, req_df, batch_id, sh=None):
     pick_rows, partial_rows, summary = [], [], []
 
     supplier_col = next((c for c in inv_df.columns if 'supplier' in str(c).lower()), None)
@@ -241,6 +241,28 @@ def process_picking(inv_df, req_df, batch_id):
     temp_inv = inv_df.copy()
     temp_inv['Actual Qty'] = pd.to_numeric(temp_inv['Actual Qty'], errors='coerce').fillna(0)
     temp_inv = temp_inv[temp_inv['Actual Qty'] > 0].reset_index(drop=True)
+
+    # Load existing Gen Pallet IDs from Master_Partial_Data to avoid duplicates
+    existing_gen_pallet_ids = set()
+    if sh is not None:
+        try:
+            existing_partial = get_safe_dataframe(sh, "Master_Partial_Data")
+            if not existing_partial.empty and 'Gen Pallet ID' in existing_partial.columns:
+                existing_gen_pallet_ids = set(existing_partial['Gen Pallet ID'].astype(str).tolist())
+        except:
+            pass
+
+    # Counter for generating unique Gen Pallet IDs in this session
+    gen_pallet_counter = [0]
+
+    def make_unique_gen_pallet_id(pallet):
+        """Generate a unique Gen Pallet ID not in existing set or current session."""
+        while True:
+            gen_pallet_counter[0] += 1
+            candidate = f"{pallet}-P{gen_pallet_counter[0]:04d}"
+            if candidate not in existing_gen_pallet_ids:
+                existing_gen_pallet_ids.add(candidate)
+                return candidate
 
     for lid in req_df['Generated Load ID'].unique():
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
@@ -301,7 +323,8 @@ def process_picking(inv_df, req_df, batch_id):
                             'Batch ID': batch_id, 'SO Number': so_num, 'Pallet': item['Pallet'],
                             'Supplier': p_row['Supplier'], 'Load ID': lid,
                             'Country Name': country, 'Actual Qty': current_avail,
-                            'Partial Qty': take, 'Gen Pallet ID': f"{item['Pallet']}-P{len(partial_rows)+1:04d}"
+                            'Partial Qty': take,
+                            'Gen Pallet ID': make_unique_gen_pallet_id(str(item['Pallet']))
                         })
 
                     temp_inv.at[idx, 'Actual Qty'] -= take
@@ -534,7 +557,7 @@ if login_section():
 
                     inv = reconcile_inventory(inv, sh)
 
-                    pick_df, part_df, summ_df = process_picking(inv, req, batch_id)
+                    pick_df, part_df, summ_df = process_picking(inv, req, batch_id, sh)
 
                     if not pick_df.empty:
                         ws_pick = get_or_create_sheet(sh, "Master_Pick_Data", MASTER_PICK_HEADERS)
