@@ -178,27 +178,33 @@ def get_damage_pallets(sh):
 
 def reconcile_inventory(inv_df, sh):
     """
-    Subtract all previously picked quantities from inventory.
-    Also subtract damage quantities.
-    After subtraction, strictly remove any pallet rows where Actual Qty <= 0.
+    MAIN TASK CHECK:
+    - Inventory Pallet + Actual Qty vs Master_Pick_Data Pallet + total Actual Qty
+    - If inventory Actual Qty == Master_Pick_Data total Actual Qty → skip (do NOT pick)
+    - If inventory Actual Qty > Master_Pick_Data total Actual Qty → take ONLY the excess
+    - If inventory Actual Qty < Master_Pick_Data total Actual Qty → skip (over-picked)
+    - Also fully exclude Damage_Items pallets
     """
     try:
         pick_history = get_safe_dataframe(sh, "Master_Pick_Data")
         if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
             pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
+            # Sum ALL picked qty per Pallet across all Load IDs
             pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
             pick_summary.columns = ['Pallet', 'Total_Picked']
 
+            inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
             inv_df = pd.merge(inv_df, pick_summary, on='Pallet', how='left')
             inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
-            inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
-            inv_df['Actual Qty'] = inv_df['Actual Qty'] - inv_df['Total_Picked']
-            if 'Total_Picked' in inv_df.columns:
-                inv_df = inv_df.drop(columns=['Total_Picked'])
+
+            # Available = inventory Actual Qty - already picked qty
+            # Equal → 0 (skip), Greater → excess only, Less → negative → clip to 0 (skip)
+            inv_df['Actual Qty'] = (inv_df['Actual Qty'] - inv_df['Total_Picked']).clip(lower=0)
+            inv_df = inv_df.drop(columns=['Total_Picked'], errors='ignore')
     except Exception as e:
         st.warning(f"Inventory Reconcile Error: {e}")
 
-    # Fully exclude damage pallets from picking (regardless of qty)
+    # Fully exclude Damage_Items pallets from picking
     try:
         dmg_summary = get_damage_pallets(sh)
         if not dmg_summary.empty:
@@ -208,6 +214,7 @@ def reconcile_inventory(inv_df, sh):
         st.warning(f"Damage Exclude Error: {e}")
 
     inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
+    # Remove rows where Actual Qty <= 0 (fully picked, equal, or damage)
     inv_df = inv_df[inv_df['Actual Qty'] > 0].reset_index(drop=True)
     return inv_df
 
@@ -425,13 +432,22 @@ if login_section():
         st.session_state.clear()
         st.rerun()
 
+    # Reduce header font sizes globally
+    st.markdown("""
+    <style>
+    h1 { font-size: 1.4rem !important; }
+    h2 { font-size: 1.2rem !important; }
+    h3 { font-size: 1.05rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
     menu = []
     if current_role == 'ADMIN':
         menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items", "⚙️ Admin Settings"]
     elif current_role == 'SYSUSER':
         menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items"]
-    else:
-        menu = ["📊 Dashboard & Tracking", "📋 Inventory Details Report", "🔄 Revert/Delete Picks"]
+    else:  # user
+        menu = ["📊 Dashboard & Tracking", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items"]
 
     choice = st.sidebar.radio("Navigation Menu", menu)
     sh = get_master_workbook()
@@ -517,28 +533,6 @@ if login_section():
                         ws_hist.append_rows(new_hist_entries)
 
                     inv = reconcile_inventory(inv, sh)
-
-                    # Check inventory Pallet + Actual Qty against Master_Pick_Data
-                    # Rule: Only pick if inventory Actual Qty > Master_Pick_Data total Actual Qty for same Pallet
-                    # Take only the EXCESS (inventory qty - master picked qty)
-                    # If inventory qty <= master picked qty → skip entirely (already fully picked or over-picked)
-                    master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
-                    if not master_pick_df.empty and 'Pallet' in master_pick_df.columns and 'Actual Qty' in master_pick_df.columns:
-                        master_pick_df['Actual Qty'] = pd.to_numeric(master_pick_df['Actual Qty'], errors='coerce').fillna(0)
-                        # Sum ALL Actual Qty per Pallet in Master_Pick_Data
-                        master_check = master_pick_df.groupby('Pallet')['Actual Qty'].sum().reset_index()
-                        master_check.columns = ['Pallet', 'Master_Total_Picked']
-
-                        inv['Actual Qty'] = pd.to_numeric(inv['Actual Qty'], errors='coerce').fillna(0)
-                        inv = pd.merge(inv, master_check, on='Pallet', how='left')
-                        inv['Master_Total_Picked'] = inv['Master_Total_Picked'].fillna(0)
-
-                        # Available = inventory Actual Qty - total already picked in Master_Pick_Data
-                        # Only if inventory qty > master total picked → excess is available
-                        # If inventory qty <= master total picked → 0 available (skip)
-                        inv['Actual Qty'] = (inv['Actual Qty'] - inv['Master_Total_Picked']).clip(lower=0)
-                        inv = inv.drop(columns=['Master_Total_Picked'], errors='ignore')
-                        inv = inv[inv['Actual Qty'] > 0].reset_index(drop=True)
 
                     pick_df, part_df, summ_df = process_picking(inv, req, batch_id)
 
@@ -632,8 +626,18 @@ if login_section():
                 else:
                     load_ids = active_loads['Generated Load ID'].dropna().unique().tolist()
 
+                    # --- Status Filter ---
+                    filter_col1, filter_col2 = st.columns([2, 4])
+                    status_filter = filter_col1.selectbox(
+                        "🔽 Filter by Status:",
+                        ["All", "Pending", "Processing"],
+                        key="dash_status_filter"
+                    )
+                    if status_filter != "All":
+                        filtered_active = active_loads[active_loads['Pick Status'].astype(str) == status_filter]
+                        load_ids = filtered_active['Generated Load ID'].dropna().unique().tolist()
+
                     # --- Build per-load summary data ---
-                    # variance info from Summary_Data
                     summ_by_load = {}
                     if not summ_df.empty and 'Load ID' in summ_df.columns:
                         summ_df['Variance'] = pd.to_numeric(summ_df.get('Variance', 0), errors='coerce').fillna(0)
@@ -641,32 +645,27 @@ if login_section():
                         summ_df['Picked'] = pd.to_numeric(summ_df.get('Picked', 0), errors='coerce').fillna(0)
                         for lid_s in summ_df['Load ID'].dropna().unique():
                             rows = summ_df[summ_df['Load ID'].astype(str) == str(lid_s)]
-                            total_req = rows['Requested'].sum()
-                            total_picked = rows['Picked'].sum()
-                            total_var = rows['Variance'].sum()
                             summ_by_load[str(lid_s)] = {
-                                'requested': total_req,
-                                'picked': total_picked,
-                                'variance': total_var
+                                'requested': rows['Requested'].sum(),
+                                'picked': rows['Picked'].sum(),
+                                'variance': rows['Variance'].sum()
                             }
 
                     # Categorise loads
-                    zero_pick_ids = []
-                    shortage_ids = []
-                    full_pick_ids = []
-
+                    zero_pick_ids, shortage_ids, full_pick_ids = [], [], []
                     for lid in load_ids:
                         s = summ_by_load.get(str(lid), {})
-                        req = s.get('requested', 0)
-                        picked = s.get('picked', 0)
-                        var = s.get('variance', 0)
-
-                        if picked == 0 and req > 0:
+                        req_q = s.get('requested', 0)
+                        picked_q = s.get('picked', 0)
+                        var_q = s.get('variance', 0)
+                        if picked_q == 0 and req_q > 0:
                             zero_pick_ids.append(lid)
-                        elif var > 0:
+                        elif var_q > 0:
                             shortage_ids.append(lid)
                         else:
                             full_pick_ids.append(lid)
+
+                    STATUS_OPTIONS = ["Pending", "Processing", "Completed", "Cancelled"]
 
                     def render_load_cards(id_list, category_color):
                         for i in range(0, len(id_list), 4):
@@ -674,7 +673,7 @@ if login_section():
                             for j, lid in enumerate(id_list[i:i+4]):
                                 with cols[j]:
                                     load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
-                                    status = load_row.get('Pick Status', 'Pending')
+                                    status = str(load_row.get('Pick Status', 'Pending'))
                                     so_num = load_row.get('SO Number', '-')
                                     country = load_row.get('Country Name', '-')
                                     ship_mode = load_row.get('SHIP MODE', '-')
@@ -696,7 +695,7 @@ if login_section():
                                     requested = s.get('requested', 0)
 
                                     status_bg = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f8f9fa')
-                                    status_color = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
+                                    status_color_text = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
                                     status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
 
                                     variance_html = ""
@@ -704,44 +703,46 @@ if login_section():
                                         variance_html = f'<div style="margin-top:4px; background:#fff0f0; border:1px solid #ffcccc; border-radius:4px; padding:2px 6px; font-size:10px; color:#c0392b;">⚠️ Shortage: <b>{int(variance)}</b> / Req: <b>{int(requested)}</b></div>'
 
                                     st.markdown(f"""
-                                    <div style="border:1px solid {category_color}; border-left:4px solid {category_color}; border-radius:8px; padding:10px 12px; margin-bottom:8px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.07);">
-                                        <div style="font-weight:700; font-size:12px; color:#222; margin-bottom:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{lid}">📦 {lid}</div>
-                                        <div style="display:inline-block; background:{status_bg}; color:{status_color}; font-size:10px; font-weight:600; padding:2px 7px; border-radius:10px; margin-bottom:4px;">{status_dot} {status}</div>
-                                        <div style="font-size:11px; color:#555; line-height:1.7;">
+                                    <div style="border:1px solid {category_color}; border-left:4px solid {category_color}; border-radius:8px; padding:10px 12px; margin-bottom:4px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.07);">
+                                        <div style="font-weight:700; font-size:12px; color:#222; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{lid}">📦 {lid}</div>
+                                        <div style="display:inline-block; background:{status_bg}; color:{status_color_text}; font-size:10px; font-weight:600; padding:2px 7px; border-radius:10px; margin-bottom:3px;">{status_dot} {status}</div>
+                                        <div style="font-size:11px; color:#555; line-height:1.6;">
                                             <div>📋 <b>SO:</b> {so_num}</div>
                                             <div>🌍 {country} &nbsp;|&nbsp; 🚢 {ship_mode}</div>
-                                            <div>📅 {date}</div>
-                                            <div>🧾 <b>{pick_count}</b> lines &nbsp;|&nbsp; Qty: <b>{int(pick_qty)}</b></div>
+                                            <div>📅 {date} &nbsp;|&nbsp; 🧾 <b>{pick_count}</b> lines / Qty:<b>{int(pick_qty)}</b></div>
                                         </div>
                                         {variance_html}
                                     </div>
                                     """, unsafe_allow_html=True)
 
+                                    # Inline status update
+                                    safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
+                                    new_st = st.selectbox("", STATUS_OPTIONS, index=safe_idx, key=f"st_{lid}", label_visibility="collapsed")
+                                    if st.button("💾 Update", key=f"upd_{lid}", use_container_width=True):
+                                        try:
+                                            ws_hist_upd = sh.worksheet("Load_History")
+                                            cell = ws_hist_upd.find(str(lid))
+                                            if cell:
+                                                ws_hist_upd.update_cell(cell.row, 7, new_st)
+                                                st.success(f"✅ {lid} → {new_st}")
+                                                time.sleep(0.5)
+                                                st.rerun()
+                                        except Exception as ex:
+                                            st.error(f"Update failed: {ex}")
+
                     # --- Category 1: Zero Pick ---
                     if zero_pick_ids:
-                        st.markdown("""
-                        <div style="display:flex; align-items:center; gap:10px; margin:18px 0 8px 0;">
-                            <div style="background:#6c757d; color:white; font-size:11px; font-weight:700; padding:3px 12px; border-radius:12px;">⬜ NOT PICKED &nbsp;·&nbsp; {}</div>
-                        </div>
-                        """.format(len(zero_pick_ids)), unsafe_allow_html=True)
+                        st.markdown('<div style="background:#6c757d; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:14px 0 8px 0;">⬜ NOT PICKED &nbsp;·&nbsp; {}</div>'.format(len(zero_pick_ids)), unsafe_allow_html=True)
                         render_load_cards(zero_pick_ids, "#adb5bd")
 
                     # --- Category 2: Shortage ---
                     if shortage_ids:
-                        st.markdown("""
-                        <div style="display:flex; align-items:center; gap:10px; margin:18px 0 8px 0;">
-                            <div style="background:#e74c3c; color:white; font-size:11px; font-weight:700; padding:3px 12px; border-radius:12px;">⚠️ SHORTAGE &nbsp;·&nbsp; {}</div>
-                        </div>
-                        """.format(len(shortage_ids)), unsafe_allow_html=True)
+                        st.markdown('<div style="background:#e74c3c; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:14px 0 8px 0;">⚠️ SHORTAGE &nbsp;·&nbsp; {}</div>'.format(len(shortage_ids)), unsafe_allow_html=True)
                         render_load_cards(shortage_ids, "#e74c3c")
 
                     # --- Category 3: Full Pick ---
                     if full_pick_ids:
-                        st.markdown("""
-                        <div style="display:flex; align-items:center; gap:10px; margin:18px 0 8px 0;">
-                            <div style="background:#27ae60; color:white; font-size:11px; font-weight:700; padding:3px 12px; border-radius:12px;">✅ FULLY PICKED &nbsp;·&nbsp; {}</div>
-                        </div>
-                        """.format(len(full_pick_ids)), unsafe_allow_html=True)
+                        st.markdown('<div style="background:#27ae60; color:white; display:inline-block; font-size:11px; font-weight:700; padding:3px 14px; border-radius:12px; margin:14px 0 8px 0;">✅ FULLY PICKED &nbsp;·&nbsp; {}</div>'.format(len(full_pick_ids)), unsafe_allow_html=True)
                         render_load_cards(full_pick_ids, "#27ae60")
 
             st.divider()
@@ -775,27 +776,8 @@ if login_section():
             if search_by == "Load Id":
                 if 'Generated Load ID' in hist_df.columns:
                     search_term = col_s2.selectbox("Select Load ID:", hist_df['Generated Load ID'].dropna().unique())
-
-                    if search_term:
-                        current_status = hist_df[hist_df['Generated Load ID'] == search_term]['Pick Status'].iloc[0] if 'Pick Status' in hist_df.columns else "Pending"
-                        status_options = ["Pending", "Processing", "Completed", "Cancelled"]
-                        safe_index = status_options.index(current_status) if current_status in status_options else 0
-                        new_status = col_s3.selectbox("📝 Update Pick Status:", status_options, index=safe_index)
-
-                        if col_s3.button("Update Status"):
-                            ws_hist = sh.worksheet("Load_History")
-                            cell = ws_hist.find(search_term)
-                            if cell:
-                                ws_hist.update_cell(cell.row, 7, new_status)
-                                st.success(f"Status updated to {new_status}!")
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error("Error: Load ID cell not found in Google Sheet.")
                 else:
-                    st.warning("Generated Load ID column not found.")
-            else:
-                search_term = col_s2.text_input(f"Enter {search_by}:")
+                    search_term = col_s2.text_input(f"Enter {search_by}:")
                 col_s3.write("")
 
             if search_term:
