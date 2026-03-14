@@ -111,6 +111,9 @@ def init_users_sheet(sh):
         return get_safe_dataframe(sh, "Users")
     return users_df
 
+# --- Logo URL (GitHub raw URL) ---
+# ඔබගේ GitHub repo URL මෙහි paste කරන්න:
+# උදා: "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/helen_kaminski_logo.png"
 HK_LOGO_URL = st.secrets.get("general", {}).get("logo_url", "")
 
 def login_section():
@@ -123,11 +126,14 @@ def login_section():
 
     if not st.session_state['logged_in']:
         # Show logo on main page login screen
-        st.markdown(f"""
-        <div style="display:flex; justify-content:center; align-items:center; padding: 40px 0 10px 0;">
-            <img src="data:image/jpeg;base64,{HK_LOGO_B64}" style="max-width:380px; width:100%;" />
-        </div>
-        """, unsafe_allow_html=True)
+        if HK_LOGO_URL:
+            st.markdown(f"""
+            <div style="display:flex; justify-content:center; align-items:center; padding: 40px 0 10px 0;">
+                <img src="{HK_LOGO_URL}" style="max-width:380px; width:100%;" />
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("<h2 style='text-align:center; font-family:serif; letter-spacing:4px; padding:40px 0 10px 0;'>HELEN KAMINSKI</h2>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align:center; color:#555; margin-bottom:30px;'>Warehouse Management System</h3>", unsafe_allow_html=True)
 
         # Centered login form
@@ -156,11 +162,14 @@ def login_section():
         return False
 
     # Show logo in sidebar when logged in
-    st.sidebar.markdown(f"""
-    <div style="text-align:center; padding: 8px 0 12px 0;">
-        <img src="data:image/jpeg;base64,{HK_LOGO_B64}" style="max-width:200px; width:100%;" />
-    </div>
-    """, unsafe_allow_html=True)
+    if HK_LOGO_URL:
+        st.sidebar.markdown(f"""
+        <div style="text-align:center; padding: 8px 0 12px 0;">
+            <img src="{HK_LOGO_URL}" style="max-width:200px; width:100%;" />
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.sidebar.markdown("<div style='text-align:center; font-weight:bold; font-family:serif; letter-spacing:2px; padding:8px 0;'>HELEN KAMINSKI</div>", unsafe_allow_html=True)
     return True
 
 # --- 3. Inventory Logic ---
