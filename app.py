@@ -921,7 +921,7 @@ if login_section():
 
         # --- Option 1: Upload file ---
         with del_tab1:
-            st.info("Load ID, Pallet සහ Actual Qty අඩංගු Excel හෝ CSV ගොනුවක් Upload කිරීමෙන් එම දත්ත Master_Pick_Data සහ Load_History එකෙන් මකා දැමිය හැක.")
+            st.info("Load ID, Pallet සහ Actual Qty අඩංගු Excel හෝ CSV ගොනුවක් Upload කිරීමෙන් ගැලපෙන දත්ත **Master_Pick_Data** එකෙන් පමණක් මකා දැමිය හැක. Load_History record නොවෙනස්ව පවතී.")
 
             del_file = st.file_uploader("Upload Data to Delete", type=['csv', 'xlsx'], key="del_file_uploader")
             if del_file:
@@ -954,8 +954,6 @@ if login_section():
                             )
 
                             keys_to_delete = del_df['MATCH_KEY'].tolist()
-                            load_ids_to_delete = del_df['LOAD ID'].astype(str).str.strip().unique().tolist()
-
                             filtered_master = master_pick_df[~temp_master['MATCH_KEY'].isin(keys_to_delete)]
                             deleted_count = initial_len - len(filtered_master)
 
@@ -970,18 +968,8 @@ if login_section():
                                     save_df = filtered_master[MASTER_PICK_HEADERS]
                                     ws_pick.append_rows(save_df.astype(str).replace('nan', '').values.tolist())
 
-                                # Delete from Load_History as well
-                                hist_df = get_safe_dataframe(sh, "Load_History")
-                                if not hist_df.empty and 'Generated Load ID' in hist_df.columns:
-                                    filtered_hist = hist_df[~hist_df['Generated Load ID'].astype(str).isin(load_ids_to_delete)]
-                                    if len(filtered_hist) < len(hist_df):
-                                        ws_hist = sh.worksheet("Load_History")
-                                        ws_hist.clear()
-                                        ws_hist.append_row(SHEET_HEADERS["Load_History"])
-                                        if not filtered_hist.empty:
-                                            ws_hist.append_rows(filtered_hist.astype(str).replace('nan', '').values.tolist())
-
-                                st.success(f"✅ සාර්ථකව Master_Pick_Data සහ Load_History වලින් records {deleted_count} ක් මකා දමන ලදී!")
+                                # ✅ Load_History DELETE කරන්නේ නැහැ — record history රකිනවා
+                                st.success(f"✅ Master_Pick_Data එකෙන් records {deleted_count} ක් සාර්ථකව මකා දමන ලදී! (Load_History නොවෙනස්ව ඇත)")
                                 st.balloons()
                             else:
                                 st.warning("⚠️ Upload කල දත්ත හා ගැලපෙන වාර්තා Master_Pick_Data හි හමු නොවීය.")
@@ -990,17 +978,16 @@ if login_section():
 
         # --- Option 2: Delete by Load ID only ---
         with del_tab2:
-            st.info("Load ID එකක් ටයිප් කිරීමෙන් ඒ Load ID එකට අදාල සියලු data Master_Pick_Data සහ Load_History වලින් delete කළ හැක.")
+            st.info("Load ID එකක් ටයිප් කිරීමෙන් ඒ Load ID එකට අදාල සියලු data **Master_Pick_Data** එකෙන් පමණක් delete කළ හැක. Load_History record නොවෙනස්ව පවතී.")
 
             del_load_id = st.text_input("🆔 Enter Load ID to Delete:")
 
             if del_load_id:
-                # Preview what will be deleted
                 master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
                 if not master_pick_df.empty and 'Load Id' in master_pick_df.columns:
                     preview = master_pick_df[master_pick_df['Load Id'].astype(str).str.strip() == del_load_id.strip()]
                     if not preview.empty:
-                        st.warning(f"⚠️ Load ID **{del_load_id}** සඳහා {len(preview)} records මකා දැමෙනු ඇත.")
+                        st.warning(f"⚠️ Load ID **{del_load_id}** සඳහා Master_Pick_Data හි {len(preview)} records මකා දැමෙනු ඇත.")
                         st.dataframe(preview.astype(str), use_container_width=True)
                     else:
                         st.info(f"Load ID **{del_load_id}** සඳහා Master_Pick_Data හි records හමු නොවීය.")
@@ -1009,7 +996,6 @@ if login_section():
                     with st.spinner("Deleting..."):
                         master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
                         deleted_pick = 0
-                        deleted_hist = 0
 
                         if not master_pick_df.empty and 'Load Id' in master_pick_df.columns:
                             filtered = master_pick_df[master_pick_df['Load Id'].astype(str).str.strip() != del_load_id.strip()]
@@ -1025,18 +1011,8 @@ if login_section():
                                 save_df = filtered[MASTER_PICK_HEADERS]
                                 ws_pick.append_rows(save_df.astype(str).replace('nan', '').values.tolist())
 
-                        hist_df = get_safe_dataframe(sh, "Load_History")
-                        if not hist_df.empty and 'Generated Load ID' in hist_df.columns:
-                            filtered_hist = hist_df[hist_df['Generated Load ID'].astype(str).str.strip() != del_load_id.strip()]
-                            deleted_hist = len(hist_df) - len(filtered_hist)
-
-                            ws_hist = sh.worksheet("Load_History")
-                            ws_hist.clear()
-                            ws_hist.append_row(SHEET_HEADERS["Load_History"])
-                            if not filtered_hist.empty:
-                                ws_hist.append_rows(filtered_hist.astype(str).replace('nan', '').values.tolist())
-
-                        st.success(f"✅ Load ID **{del_load_id}** — Master_Pick_Data: {deleted_pick} records, Load_History: {deleted_hist} records මකා දමන ලදී!")
+                        # ✅ Load_History DELETE කරන්නේ නැහැ — Load ID history රකිනවා
+                        st.success(f"✅ Load ID **{del_load_id}** — Master_Pick_Data: {deleted_pick} records මකා දමන ලදී! (Load_History නොවෙනස්ව ඇත)")
                         st.balloons()
 
     # ==========================================
