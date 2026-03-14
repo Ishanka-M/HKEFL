@@ -774,7 +774,7 @@ if login_section():
                     filter_col1, filter_col2 = st.columns([2, 4])
                     status_filter = filter_col1.selectbox(
                         "🔽 Filter by Status:",
-                        ["All", "Pending", "Processing"],
+                        ["All", "Pending", "PL Pending", "Processing"],
                         key="dash_status_filter"
                     )
                     if status_filter != "All":
@@ -1078,7 +1078,7 @@ if login_section():
                         REPORT_HEADERS = [
                             'Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
                             'Client So', 'Pallet', 'Supplier Hu', 'Supplier',
-                            'Lot Number', 'Style', 'Color', 'Size', 'Client So',
+                            'Lot Number', 'Style', 'Color', 'Size', 'Client So 2',
                             'Inventory Type', 'Actual Qty'
                         ]
 
@@ -1158,6 +1158,10 @@ if login_section():
                                             row[h] = par_entry['gen_pallet']  # replace with Gen Pallet ID
                                         elif h == 'Actual Qty':
                                             row[h] = par_entry['partial_qty']
+                                        elif h == 'Client So 2':
+                                            # Fill with Client So data from inventory
+                                            client_so_col = inv_col_map_r.get('client so')
+                                            row[h] = inv_row.get(client_so_col, '') if client_so_col else ''
                                         elif src_col:
                                             row[h] = inv_row.get(src_col, '')
                                         else:
@@ -1174,7 +1178,11 @@ if login_section():
                                 for h in REPORT_HEADERS:
                                     h_key = h.strip().lower()
                                     src_col = inv_col_map_r.get(h_key)
-                                    if src_col:
+                                    if h == 'Client So 2':
+                                        # Fill with Client So data from inventory
+                                        client_so_col = inv_col_map_r.get('client so')
+                                        row[h] = inv_row.get(client_so_col, '') if client_so_col else ''
+                                    elif src_col:
                                         row[h] = inv_row.get(src_col, '')
                                     else:
                                         row[h] = ''
