@@ -1138,12 +1138,31 @@ if login_section():
                                         partial_map[opallet] = []
                                     partial_map[opallet].append({'gen_pallet': gpallet, 'partial_qty': pqty, 'load_id': loadid_p})
 
+                        # Build sets of pallets in Damage_Items for ATS check
+                        damage_pallets = set()
+                        if not dmg_df.empty and 'Pallet' in dmg_df.columns:
+                            damage_pallets = set(str(p).strip() for p in dmg_df['Pallet'].dropna())
+
+                        # Build total picked qty per pallet from Master_Pick_Data
+                        # ATS = Inventory Actual Qty - Total Picked Qty  (if pallet not damage, and result > 0)
+                        # If pallet fully picked (ATS <= 0) → empty
+                        # If pallet in damage → empty
+                        # If pallet not picked at all → full Actual Qty = ATS
+
                         # Build formatted report rows
                         fmt_rows = []
                         for _, inv_row in inv_data.iterrows():
-                            # Get pallet value
                             pallet_key_col = inv_col_map_r.get('pallet', 'Pallet')
                             orig_pallet = str(inv_row.get(pallet_key_col, '')).strip()
+
+                            actual_qty_col_r = inv_col_map_r.get('actual qty', 'Actual Qty')
+                            inv_actual_qty = pd.to_numeric(inv_row.get(actual_qty_col_r, 0), errors='coerce') or 0
+
+                            # ATS calculation
+                            is_damaged     = orig_pallet in damage_pallets
+                            total_picked   = pick_qty_map.get(orig_pallet, 0)
+                            ats_qty        = inv_actual_qty - total_picked
+                            ats_value      = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
 
                             # Check partial replace
                             partials = partial_map.get(orig_pallet, [])
@@ -1155,23 +1174,22 @@ if login_section():
                                         h_key = h.strip().lower()
                                         src_col = inv_col_map_r.get(h_key)
                                         if h == 'Pallet':
-                                            row[h] = par_entry['gen_pallet']  # replace with Gen Pallet ID
+                                            row[h] = par_entry['gen_pallet']
                                         elif h == 'Actual Qty':
                                             row[h] = par_entry['partial_qty']
                                         elif h == 'Client So 2':
-                                            # Fill with Client So data from inventory
                                             client_so_col = inv_col_map_r.get('client so')
                                             row[h] = inv_row.get(client_so_col, '') if client_so_col else ''
                                         elif src_col:
                                             row[h] = inv_row.get(src_col, '')
                                         else:
                                             row[h] = ''
-                                    pkey = par_entry['gen_pallet'] or orig_pallet
-                                    row['Pick Quantity']      = pick_qty_map.get(orig_pallet, '')
-                                    row['Destination Country']= pick_country_map.get(orig_pallet, '')
-                                    row['Order NO']           = pick_loadid_map.get(orig_pallet, '')
+                                    row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
+                                    row['Destination Country'] = pick_country_map.get(orig_pallet, '')
+                                    row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                     for rmk in damage_remarks:
                                         row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                    row['ATS'] = ''  # partial pallets are already allocated
                                     fmt_rows.append(row)
                             else:
                                 row = {}
@@ -1179,7 +1197,6 @@ if login_section():
                                     h_key = h.strip().lower()
                                     src_col = inv_col_map_r.get(h_key)
                                     if h == 'Client So 2':
-                                        # Fill with Client So data from inventory
                                         client_so_col = inv_col_map_r.get('client so')
                                         row[h] = inv_row.get(client_so_col, '') if client_so_col else ''
                                     elif src_col:
@@ -1191,12 +1208,14 @@ if login_section():
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks:
                                     row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                row['ATS'] = ats_value
                                 fmt_rows.append(row)
 
                         # Build final column order
                         final_cols = REPORT_HEADERS.copy()
                         final_cols += ['Pick Quantity', 'Destination Country', 'Order NO']
                         final_cols += damage_remarks
+                        final_cols += ['ATS']
 
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
                         st.success(f"✅ Formatted report generated! {len(fmt_df)} rows")
@@ -1220,6 +1239,10 @@ if login_section():
                                 elif col_name in damage_remarks:
                                     for ri in range(1, len(fmt_df)+1):
                                         ws_fmt.write(ri, ci, str(fmt_df.iloc[ri-1][col_name]), dmg_col_fmt)
+                                elif col_name == 'ATS':
+                                    ats_fmt = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
+                                    for ri in range(1, len(fmt_df)+1):
+                                        ws_fmt.write(ri, ci, str(fmt_df.iloc[ri-1][col_name]), ats_fmt)
                                 else:
                                     for ri in range(1, len(fmt_df)+1):
                                         ws_fmt.write(ri, ci, str(fmt_df.iloc[ri-1][col_name]), normal_fmt)
