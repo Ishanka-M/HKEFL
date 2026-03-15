@@ -1250,7 +1250,74 @@ if login_section():
                         final_cols += ['ATS']
 
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
-                        st.success(f"✅ Formatted report generated! {len(fmt_df)} rows")
+
+                        # ── Actual Qty Validation ──────────────────────────────────────
+                        inv_total_qty  = pd.to_numeric(inv_data['Actual Qty'], errors='coerce').fillna(0).sum()
+                        rpt_total_qty  = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
+                        qty_match      = abs(inv_total_qty - rpt_total_qty) < 0.01
+
+                        # Find mismatched pallets (inv qty vs report qty per pallet)
+                        inv_pallet_qty = inv_data.groupby('Pallet')['Actual Qty'].apply(
+                            lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
+                        ).to_dict()
+                        rpt_pallet_qty = {}
+                        for _, rr in fmt_df.iterrows():
+                            p = str(rr.get('Pallet','')).strip()
+                            # For Gen Pallet IDs, map back to original pallet
+                            base_p = p.split('-P')[0] if '-P' in p and p.split('-P')[-1].isdigit() else p
+                            rpt_pallet_qty[base_p] = rpt_pallet_qty.get(base_p, 0) + \
+                                pd.to_numeric(rr.get('Actual Qty', 0), errors='coerce') or 0
+
+                        mismatch_pallets = []
+                        for pal, inv_q in inv_pallet_qty.items():
+                            rpt_q = rpt_pallet_qty.get(pal, 0)
+                            if abs(inv_q - rpt_q) > 0.01:
+                                mismatch_pallets.append({
+                                    'Pallet': pal,
+                                    'Inventory Actual Qty': inv_q,
+                                    'Report Actual Qty': rpt_q,
+                                    'Difference': inv_q - rpt_q
+                                })
+
+                        # ── Summary ────────────────────────────────────────────────────
+                        total_pick_qty  = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0).sum()
+                        total_ats_qty   = pd.to_numeric(fmt_df['ATS'],          errors='coerce').fillna(0).sum()
+                        total_dmg_qty   = sum(
+                            pd.to_numeric(fmt_df[r], errors='coerce').fillna(0).sum()
+                            for r in damage_remarks
+                        )
+                        total_lines     = len(fmt_df)
+                        partial_lines   = sum(1 for r in fmt_rows if r.get('Order NO','') != '')
+
+                        # ── Display ─────────────────────────────────────────────────────
+                        # Qty match status banner
+                        if qty_match:
+                            st.success(f"✅ Actual Qty Match! Inventory: **{int(inv_total_qty)}** = Report: **{int(rpt_total_qty)}**")
+                        else:
+                            st.error(f"⚠️ Actual Qty Mismatch! Inventory: **{int(inv_total_qty)}** ≠ Report: **{int(rpt_total_qty)}** (diff: {int(inv_total_qty - rpt_total_qty)})")
+
+                        # Summary cards
+                        st.markdown("#### 📊 Report Summary")
+                        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+                        sc1.metric("Total Lines",    total_lines)
+                        sc2.metric("Pick Qty",       int(total_pick_qty))
+                        sc3.metric("ATS Qty",        int(total_ats_qty))
+                        sc4.metric("Damage Qty",     int(total_dmg_qty))
+                        sc5.metric("Partial Lines",  partial_lines)
+
+                        # Cross-check row: Inv total vs Pick+ATS+Damage
+                        accounted = total_pick_qty + total_ats_qty + total_dmg_qty
+                        if abs(inv_total_qty - accounted) < 0.01:
+                            st.success(f"✅ Qty Reconciled: Pick({int(total_pick_qty)}) + ATS({int(total_ats_qty)}) + Damage({int(total_dmg_qty)}) = {int(accounted)}")
+                        else:
+                            st.warning(f"⚠️ Unaccounted Qty: {int(inv_total_qty - accounted)} | Pick+ATS+Damage={int(accounted)} vs Inventory={int(inv_total_qty)}")
+
+                        # Mismatch detail table
+                        if mismatch_pallets:
+                            st.markdown("#### 🔍 Pallet Qty Mismatch Details")
+                            mm_df = pd.DataFrame(mismatch_pallets)
+                            st.dataframe(mm_df, use_container_width=True)
+
                         st.dataframe(fmt_df.astype(str), use_container_width=True)
 
                         out_fmt = io.BytesIO()
@@ -1258,6 +1325,53 @@ if login_section():
                             fmt_df.to_excel(writer, sheet_name='Pick_Report', index=False)
                             wb = writer.book
                             ws_fmt = writer.sheets['Pick_Report']
+
+                            # Summary sheet
+                            ws_summ_sheet = wb.add_worksheet('Summary')
+                            bold = wb.add_format({'bold': True, 'font_size': 11})
+                            val_fmt = wb.add_format({'font_size': 11, 'num_format': '#,##0'})
+                            ok_fmt  = wb.add_format({'bold': True, 'font_color': '#27ae60', 'font_size': 11})
+                            err_fmt = wb.add_format({'bold': True, 'font_color': '#e74c3c', 'font_size': 11})
+
+                            summary_rows = [
+                                ('Inventory Total Actual Qty', int(inv_total_qty)),
+                                ('Report Total Actual Qty',    int(rpt_total_qty)),
+                                ('Qty Match',                  'YES ✅' if qty_match else 'NO ⚠️'),
+                                ('', ''),
+                                ('Pick Quantity',              int(total_pick_qty)),
+                                ('ATS Quantity',               int(total_ats_qty)),
+                                ('Damage Quantity',            int(total_dmg_qty)),
+                                ('Total Accounted',            int(accounted)),
+                                ('Unaccounted',                int(inv_total_qty - accounted)),
+                                ('', ''),
+                                ('Total Report Lines',         total_lines),
+                                ('Partial Lines',              partial_lines),
+                            ]
+                            ws_summ_sheet.set_column(0, 0, 28)
+                            ws_summ_sheet.set_column(1, 1, 18)
+                            for ri, (label, value) in enumerate(summary_rows):
+                                ws_summ_sheet.write(ri, 0, label, bold)
+                                if isinstance(value, int):
+                                    ws_summ_sheet.write(ri, 1, value, val_fmt)
+                                elif 'YES' in str(value):
+                                    ws_summ_sheet.write(ri, 1, value, ok_fmt)
+                                elif 'NO' in str(value):
+                                    ws_summ_sheet.write(ri, 1, value, err_fmt)
+                                else:
+                                    ws_summ_sheet.write(ri, 1, value)
+
+                            # Mismatch sheet
+                            if mismatch_pallets:
+                                mm_sheet = wb.add_worksheet('Qty_Mismatch')
+                                mm_df2 = pd.DataFrame(mismatch_pallets)
+                                mm_hdr = wb.add_format({'bold': True, 'bg_color': '#e74c3c', 'font_color': '#fff'})
+                                for ci, col in enumerate(mm_df2.columns):
+                                    mm_sheet.write(0, ci, col, mm_hdr)
+                                    mm_sheet.set_column(ci, ci, 22)
+                                for ri2, row2 in mm_df2.iterrows():
+                                    for ci2, val2 in enumerate(row2):
+                                        mm_sheet.write(ri2+1, ci2, val2)
+
                             hdr_fmt = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
                             pick_col_fmt = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
                             dmg_col_fmt  = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
