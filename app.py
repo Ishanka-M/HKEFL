@@ -1071,7 +1071,28 @@ if login_section():
                 if st.button("📊 Generate Formatted Pick Report", type="primary", use_container_width=True, key="gen_fmt"):
                     with st.spinner("Generating Formatted Report..."):
                         inv_data = pd.read_csv(inv_report_file) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file)
+                        # Normalize column names: strip whitespace
                         inv_data.columns = [str(c).strip() for c in inv_data.columns]
+
+                        # Build lowercase map BEFORE rename
+                        inv_col_map_r = {str(c).strip().lower(): str(c).strip() for c in inv_data.columns}
+
+                        # Canonical header names we expect (REPORT_HEADERS exact names)
+                        CANONICAL = [
+                            'Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
+                            'Client So', 'Pallet', 'Supplier Hu', 'Supplier',
+                            'Lot Number', 'Style', 'Color', 'Size',
+                            'Inventory Type', 'Actual Qty'
+                        ]
+                        # Rename inv_data columns to canonical names (case-insensitive match)
+                        rename_map = {}
+                        for canon in CANONICAL:
+                            matched = inv_col_map_r.get(canon.strip().lower())
+                            if matched and matched != canon:
+                                rename_map[matched] = canon
+                        if rename_map:
+                            inv_data = inv_data.rename(columns=rename_map)
+                        # Rebuild map after rename
                         inv_col_map_r = {str(c).strip().lower(): str(c).strip() for c in inv_data.columns}
 
                         # Notepad headers order
@@ -1155,8 +1176,9 @@ if login_section():
                             pallet_key_col = inv_col_map_r.get('pallet', 'Pallet')
                             orig_pallet = str(inv_row.get(pallet_key_col, '')).strip()
 
-                            actual_qty_col_r = inv_col_map_r.get('actual qty', 'Actual Qty')
-                            inv_actual_qty = pd.to_numeric(inv_row.get(actual_qty_col_r, 0), errors='coerce') or 0
+                            actual_qty_col_r = 'Actual Qty' if 'Actual Qty' in inv_row.index else inv_col_map_r.get('actual qty', 'Actual Qty')
+                            inv_actual_qty = pd.to_numeric(inv_row.get(actual_qty_col_r, 0), errors='coerce')
+                            if pd.isna(inv_actual_qty): inv_actual_qty = 0
 
                             # ATS calculation
                             is_damaged     = orig_pallet in damage_pallets
@@ -1171,19 +1193,18 @@ if login_section():
                                 for par_entry in partials:
                                     row = {}
                                     for h in REPORT_HEADERS:
-                                        h_key = h.strip().lower()
-                                        src_col = inv_col_map_r.get(h_key)
                                         if h == 'Pallet':
                                             row[h] = par_entry['gen_pallet']
                                         elif h == 'Actual Qty':
                                             row[h] = par_entry['partial_qty']
                                         elif h == 'Client So 2':
-                                            client_so_col = inv_col_map_r.get('client so')
-                                            row[h] = inv_row.get(client_so_col, '') if client_so_col else ''
-                                        elif src_col:
-                                            row[h] = inv_row.get(src_col, '')
+                                            cs_col = inv_col_map_r.get('client so', 'Client So')
+                                            row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
+                                        elif h in inv_row.index:
+                                            row[h] = inv_row[h]
                                         else:
-                                            row[h] = ''
+                                            fb = inv_col_map_r.get(h.strip().lower())
+                                            row[h] = inv_row[fb] if fb and fb in inv_row.index else ''
                                     row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
                                     row['Destination Country'] = pick_country_map.get(orig_pallet, '')
                                     row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
@@ -1194,15 +1215,16 @@ if login_section():
                             else:
                                 row = {}
                                 for h in REPORT_HEADERS:
-                                    h_key = h.strip().lower()
-                                    src_col = inv_col_map_r.get(h_key)
                                     if h == 'Client So 2':
-                                        client_so_col = inv_col_map_r.get('client so')
-                                        row[h] = inv_row.get(client_so_col, '') if client_so_col else ''
-                                    elif src_col:
-                                        row[h] = inv_row.get(src_col, '')
+                                        # map to Client So column
+                                        cs_col = inv_col_map_r.get('client so', 'Client So')
+                                        row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
+                                    elif h in inv_row.index:
+                                        row[h] = inv_row[h]
                                     else:
-                                        row[h] = ''
+                                        # fallback: case-insensitive search
+                                        fb = inv_col_map_r.get(h.strip().lower())
+                                        row[h] = inv_row[fb] if fb and fb in inv_row.index else ''
                                 row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
                                 row['Destination Country'] = pick_country_map.get(orig_pallet, '')
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
