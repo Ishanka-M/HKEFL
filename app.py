@@ -109,42 +109,85 @@ def get_gsheet_client():
     )
     return gspread.authorize(creds)
 
-def get_master_workbook():
-    client = get_gsheet_client()
-    return client.open_by_url(st.secrets["general"]["spreadsheet_url"])
-
-def get_or_create_sheet(sh, name, headers):
-    try:
-        ws = sh.worksheet(name)
-        if not ws.get_all_values():
-            ws.append_row(headers)
-    except:
-        ws = sh.add_worksheet(title=name, rows="5000", cols=str(max(20, len(headers) + 5)))
-        ws.append_row(headers)
-    return ws
-
-def get_safe_dataframe(sh, sheet_name):
-    try:
-        ws = sh.worksheet(sheet_name)
-        data = ws.get_all_values()
-        if not data:
-            return pd.DataFrame()
-        raw_headers = [str(h).strip() for h in data[0]]
-        headers = []
-        seen = {}
-        for h in raw_headers:
-            if h in seen:
-                seen[h] += 1
-                headers.append(f"{h}_{seen[h]}")
+def get_master_workbook(retries=3, delay=5):
+    """Open workbook with retry logic for API quota/transient errors."""
+    for attempt in range(retries):
+        try:
+            client = get_gsheet_client()
+            return client.open_by_url(st.secrets["general"]["spreadsheet_url"])
+        except gspread.exceptions.APIError as e:
+            status = getattr(e.response, 'status_code', None)
+            # 429 = quota, 500/503 = server error → retry
+            if status in (429, 500, 502, 503) and attempt < retries - 1:
+                wait = delay * (attempt + 1)
+                st.warning(f"⏳ Google Sheets API busy (attempt {attempt+1}/{retries}). Retrying in {wait}s...")
+                time.sleep(wait)
             else:
-                seen[h] = 0
-                headers.append(h)
-        if len(data) > 1:
-            return pd.DataFrame(data[1:], columns=headers)
-        else:
-            return pd.DataFrame(columns=headers)
-    except Exception as e:
-        return pd.DataFrame()
+                if status == 403:
+                    st.error("❌ Google Sheets access denied (403). Service Account හට Spreadsheet Share කරලා ඇතිද confirm කරන්න.")
+                elif status == 429:
+                    st.error("❌ Google Sheets API quota exceeded. ටිකක් wait කරලා retry කරන්න.")
+                elif status == 404:
+                    st.error("❌ Spreadsheet හමු නොවීය (404). secrets.toml හි spreadsheet_url check කරන්න.")
+                else:
+                    st.error(f"❌ Google Sheets API Error ({status}). App restart කරලා retry කරන්න.")
+                raise
+        except Exception as e:
+            st.error(f"❌ Google Sheets connection error: {e}")
+            raise
+
+def get_or_create_sheet(sh, name, headers, retries=3):
+    """Create or get sheet with retry."""
+    for attempt in range(retries):
+        try:
+            ws = sh.worksheet(name)
+            if not ws.get_all_values():
+                ws.append_row(headers)
+            return ws
+        except gspread.exceptions.WorksheetNotFound:
+            try:
+                ws = sh.add_worksheet(title=name, rows="5000", cols=str(max(20, len(headers) + 5)))
+                ws.append_row(headers)
+                return ws
+            except gspread.exceptions.APIError as e:
+                if attempt < retries - 1:
+                    time.sleep(3 * (attempt + 1))
+                else:
+                    raise
+        except gspread.exceptions.APIError as e:
+            if attempt < retries - 1:
+                time.sleep(3 * (attempt + 1))
+            else:
+                raise
+
+def get_safe_dataframe(sh, sheet_name, retries=3):
+    for attempt in range(retries):
+        try:
+            ws = sh.worksheet(sheet_name)
+            data = ws.get_all_values()
+            if not data:
+                return pd.DataFrame()
+            raw_headers = [str(h).strip() for h in data[0]]
+            headers = []
+            seen = {}
+            for h in raw_headers:
+                if h in seen:
+                    seen[h] += 1
+                    headers.append(f"{h}_{seen[h]}")
+                else:
+                    seen[h] = 0
+                    headers.append(h)
+            if len(data) > 1:
+                return pd.DataFrame(data[1:], columns=headers)
+            else:
+                return pd.DataFrame(columns=headers)
+        except gspread.exceptions.APIError as e:
+            if attempt < retries - 1:
+                time.sleep(3 * (attempt + 1))
+            else:
+                return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
 
 # --- 2. User Management & Login ---
 def init_users_sheet(sh):
@@ -309,6 +352,19 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
     temp_inv[actual_qty_col] = pd.to_numeric(temp_inv[actual_qty_col], errors='coerce').fillna(0)
     temp_inv = temp_inv[temp_inv[actual_qty_col] > 0].reset_index(drop=True)
 
+    # ── Normalize Supplier column: float → integer string (remove .0 suffix) ──
+    # e.g. 657001362301.0 → "657001362301"  so UPC matching works correctly
+    if supplier_col and supplier_col in temp_inv.columns:
+        def normalize_supplier(val):
+            try:
+                f = float(val)
+                if f == int(f):
+                    return str(int(f))
+                return str(f)
+            except (ValueError, TypeError):
+                return str(val).strip()
+        temp_inv[supplier_col] = temp_inv[supplier_col].apply(normalize_supplier)
+
     # Load existing Gen Pallet IDs from Master_Partial_Data to avoid duplicates
     existing_gen_pallet_ids = set()
     if sh is not None:
@@ -352,7 +408,14 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
         ship_mode = str(current_reqs['SHIP MODE: (SEA/AIR)'].iloc[0]) if 'SHIP MODE: (SEA/AIR)' in current_reqs.columns else ""
 
         for _, req in current_reqs.iterrows():
-            upc = str(req['Product UPC'])
+            # Normalize UPC: remove .0 suffix if numeric (matches inventory Supplier format)
+            raw_upc = req['Product UPC']
+            try:
+                f_upc = float(raw_upc)
+                upc = str(int(f_upc)) if f_upc == int(f_upc) else str(f_upc)
+            except (ValueError, TypeError):
+                upc = str(raw_upc).strip()
+
             needed = float(req['PICK QTY'])
             country = req['Country Name']
 
@@ -557,7 +620,10 @@ if login_section():
         menu = ["📊 Dashboard & Tracking", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items"]
 
     choice = st.sidebar.radio("Navigation Menu", menu)
-    sh = get_master_workbook()
+    try:
+        sh = get_master_workbook()
+    except Exception:
+        st.stop()
 
     # ==========================================
     # TAB 1: PICKING OPERATIONS
