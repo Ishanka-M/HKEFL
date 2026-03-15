@@ -1164,73 +1164,83 @@ if login_section():
                         if not dmg_df.empty and 'Pallet' in dmg_df.columns:
                             damage_pallets = set(str(p).strip() for p in dmg_df['Pallet'].dropna())
 
-                        # Build total picked qty per pallet from Master_Pick_Data
-                        # ATS = Inventory Actual Qty - Total Picked Qty  (if pallet not damage, and result > 0)
-                        # If pallet fully picked (ATS <= 0) → empty
-                        # If pallet in damage → empty
-                        # If pallet not picked at all → full Actual Qty = ATS
+                        def build_row(inv_row, override_pallet=None, override_actual_qty=None):
+                            """Build a report row from an inventory row with optional overrides."""
+                            row = {}
+                            for h in REPORT_HEADERS:
+                                if h == 'Pallet':
+                                    row[h] = override_pallet if override_pallet is not None else (
+                                        inv_row['Pallet'] if 'Pallet' in inv_row.index else '')
+                                elif h == 'Actual Qty':
+                                    row[h] = override_actual_qty if override_actual_qty is not None else (
+                                        inv_row['Actual Qty'] if 'Actual Qty' in inv_row.index else '')
+                                elif h == 'Client So 2':
+                                    cs_col = inv_col_map_r.get('client so', 'Client So')
+                                    row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
+                                elif h in inv_row.index:
+                                    row[h] = inv_row[h]
+                                else:
+                                    fb = inv_col_map_r.get(h.strip().lower())
+                                    row[h] = inv_row[fb] if fb and fb in inv_row.index else ''
+                            return row
 
                         # Build formatted report rows
                         fmt_rows = []
                         for _, inv_row in inv_data.iterrows():
-                            pallet_key_col = inv_col_map_r.get('pallet', 'Pallet')
-                            orig_pallet = str(inv_row.get(pallet_key_col, '')).strip()
+                            orig_pallet = str(inv_row.get('Pallet', '')).strip()
 
-                            actual_qty_col_r = 'Actual Qty' if 'Actual Qty' in inv_row.index else inv_col_map_r.get('actual qty', 'Actual Qty')
-                            inv_actual_qty = pd.to_numeric(inv_row.get(actual_qty_col_r, 0), errors='coerce')
+                            inv_actual_qty = pd.to_numeric(inv_row.get('Actual Qty', 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0
 
-                            # ATS calculation
-                            is_damaged     = orig_pallet in damage_pallets
-                            total_picked   = pick_qty_map.get(orig_pallet, 0)
-                            ats_qty        = inv_actual_qty - total_picked
-                            ats_value      = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
+                            is_damaged   = orig_pallet in damage_pallets
+                            total_picked = pick_qty_map.get(orig_pallet, 0)
 
-                            # Check partial replace
+                            # Get partial entries for this pallet from Master_Partial_Data
                             partials = partial_map.get(orig_pallet, [])
+
                             if partials:
-                                # One row per partial entry
+                                # --- Line separation for partial pallets ---
+                                total_partial_qty = sum(p['partial_qty'] for p in partials)
+
+                                # Line 1..N: one line per partial entry → Gen Pallet ID + Partial Qty
                                 for par_entry in partials:
-                                    row = {}
-                                    for h in REPORT_HEADERS:
-                                        if h == 'Pallet':
-                                            row[h] = par_entry['gen_pallet']
-                                        elif h == 'Actual Qty':
-                                            row[h] = par_entry['partial_qty']
-                                        elif h == 'Client So 2':
-                                            cs_col = inv_col_map_r.get('client so', 'Client So')
-                                            row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
-                                        elif h in inv_row.index:
-                                            row[h] = inv_row[h]
-                                        else:
-                                            fb = inv_col_map_r.get(h.strip().lower())
-                                            row[h] = inv_row[fb] if fb and fb in inv_row.index else ''
-                                    row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
+                                    row = build_row(inv_row,
+                                                    override_pallet=par_entry['gen_pallet'],
+                                                    override_actual_qty=par_entry['partial_qty'])
+                                    row['Pick Quantity']       = par_entry['partial_qty']
                                     row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                    row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
+                                    row['Order NO']            = par_entry['load_id']
                                     for rmk in damage_remarks:
                                         row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                    row['ATS'] = ''  # partial pallets are already allocated
+                                    row['ATS'] = ''
                                     fmt_rows.append(row)
+
+                                # Balance line: Original Pallet + (Actual Qty - total partial qty) → ATS
+                                balance_qty = inv_actual_qty - total_partial_qty
+                                if balance_qty > 0 and not is_damaged:
+                                    bal_row = build_row(inv_row,
+                                                        override_pallet=orig_pallet,
+                                                        override_actual_qty=balance_qty)
+                                    bal_row['Pick Quantity']       = ''
+                                    bal_row['Destination Country'] = ''
+                                    bal_row['Order NO']            = ''
+                                    for rmk in damage_remarks:
+                                        bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                    bal_row['ATS'] = int(balance_qty)
+                                    fmt_rows.append(bal_row)
+
                             else:
-                                row = {}
-                                for h in REPORT_HEADERS:
-                                    if h == 'Client So 2':
-                                        # map to Client So column
-                                        cs_col = inv_col_map_r.get('client so', 'Client So')
-                                        row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
-                                    elif h in inv_row.index:
-                                        row[h] = inv_row[h]
-                                    else:
-                                        # fallback: case-insensitive search
-                                        fb = inv_col_map_r.get(h.strip().lower())
-                                        row[h] = inv_row[fb] if fb and fb in inv_row.index else ''
+                                # --- No partial: single line ---
+                                row = build_row(inv_row)
                                 row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
                                 row['Destination Country'] = pick_country_map.get(orig_pallet, '')
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks:
                                     row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                row['ATS'] = ats_value
+
+                                # ATS = Actual Qty - Total Picked (only if not damage and > 0)
+                                ats_qty   = inv_actual_qty - total_picked
+                                row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
                                 fmt_rows.append(row)
 
                         # Build final column order
