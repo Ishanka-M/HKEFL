@@ -1031,63 +1031,135 @@ if login_section():
                             st.download_button("⬇️ Download Batch Excel", data=out_total.getvalue(), file_name=f"Total_Report_{selected_batch}.xlsx", mime="application/vnd.ms-excel")
             st.divider()
 
-            # --- Advanced Search & Status Update ---
-            st.subheader("🔍 Advanced Search & Status Update")
-            col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
+            # --- Advanced Search & Download ---
+            st.subheader("🔍 Advanced Search & Pick Report Download")
+            col_s1, col_s2 = st.columns([2, 3])
 
             search_by = col_s1.selectbox("🔎 Search By:", ["Load Id", "Pallet", "Supplier (Product UPC)", "SO Number"])
 
             search_term = None
             if search_by == "Load Id":
-                if 'Generated Load ID' in hist_df.columns:
-                    search_term = col_s2.selectbox("Select Load ID:", hist_df['Generated Load ID'].dropna().unique())
+                if not hist_df.empty and 'Generated Load ID' in hist_df.columns:
+                    all_load_ids = hist_df['Generated Load ID'].dropna().unique().tolist()
+                    search_term = col_s2.selectbox("Select Load ID:", all_load_ids)
                 else:
-                    search_term = col_s2.text_input(f"Enter {search_by}:")
-                col_s3.write("")
+                    search_term = col_s2.text_input("Enter Load ID:")
+            elif search_by == "Pallet":
+                search_term = col_s2.text_input("Enter Pallet ID:")
+            elif search_by == "Supplier (Product UPC)":
+                search_term = col_s2.text_input("Enter Supplier / UPC:")
+            elif search_by == "SO Number":
+                if not hist_df.empty and 'SO Number' in hist_df.columns:
+                    so_options = hist_df['SO Number'].dropna().unique().tolist()
+                    search_term = col_s2.selectbox("Select SO Number:", so_options)
+                else:
+                    search_term = col_s2.text_input("Enter SO Number:")
 
             if search_term:
-                st.markdown(f"### Results for {search_by}: `{search_term}`")
-                tab_v, tab_p = st.tabs(["📉 Summary / Variance", "📦 Picked Items Detail"])
+                st.markdown(f"#### Results for **{search_by}**: `{search_term}`")
 
-                col_map_pick = {"Load Id": "Load Id", "Pallet": "Pallet", "Supplier (Product UPC)": "Supplier", "SO Number": "SO Number"}
-                col_map_summ = {"Load Id": "Load ID", "Pallet": None, "Supplier (Product UPC)": "UPC", "SO Number": "SO Number"}
+                col_map_pick = {
+                    "Load Id":              "Load Id",
+                    "Pallet":               "Pallet",
+                    "Supplier (Product UPC)": "Supplier",
+                    "SO Number":            "SO Number"
+                }
+                col_map_summ = {
+                    "Load Id":              "Load ID",
+                    "Pallet":               None,
+                    "Supplier (Product UPC)": "UPC",
+                    "SO Number":            "SO Number"
+                }
+
+                # --- Filter pick data ---
+                filtered_picks = pd.DataFrame()
+                if not pick_df.empty:
+                    pick_search_col = col_map_pick[search_by]
+                    # Find actual column name case-insensitively
+                    actual_col_name = next(
+                        (c for c in pick_df.columns if str(c).strip().lower() == pick_search_col.strip().lower()),
+                        None
+                    )
+                    if actual_col_name:
+                        if search_by == "Load Id":
+                            filtered_picks = pick_df[pick_df[actual_col_name].astype(str).str.strip() == str(search_term).strip()]
+                        else:
+                            filtered_picks = pick_df[pick_df[actual_col_name].astype(str).str.contains(str(search_term).strip(), case=False, na=False)]
+
+                # --- Filter summary data ---
+                filtered_summ = pd.DataFrame()
+                summ_search_key = col_map_summ[search_by]
+                if not summ_df.empty and summ_search_key:
+                    actual_summ_col = next(
+                        (c for c in summ_df.columns if str(c).strip().lower() == summ_search_key.strip().lower()),
+                        None
+                    )
+                    if actual_summ_col:
+                        if search_by in ("Load Id", "SO Number"):
+                            filtered_summ = summ_df[summ_df[actual_summ_col].astype(str).str.strip() == str(search_term).strip()]
+                        else:
+                            filtered_summ = summ_df[summ_df[actual_summ_col].astype(str).str.contains(str(search_term).strip(), case=False, na=False)]
+
+                tab_p, tab_v, tab_dl = st.tabs(["📦 Picked Items Detail", "📉 Summary / Variance", "⬇️ Download Pick Report"])
 
                 with tab_p:
-                    if not pick_df.empty and col_map_pick[search_by] in pick_df.columns:
-                        search_col = col_map_pick[search_by]
-                        if search_by == "Load Id":
-                            filtered_picks = pick_df[pick_df[search_col].astype(str) == str(search_term)]
-                        else:
-                            filtered_picks = pick_df[pick_df[search_col].astype(str).str.contains(str(search_term), case=False, na=False)]
+                    if not filtered_picks.empty:
+                        st.caption(f"{len(filtered_picks)} records found")
                         st.dataframe(filtered_picks.astype(str), use_container_width=True)
                     else:
-                        st.write("No pick data found for this search.")
+                        st.info("No pick data found for this search.")
 
                 with tab_v:
-                    if not summ_df.empty and col_map_summ[search_by]:
-                        search_col_s = col_map_summ[search_by]
-                        if search_col_s in summ_df.columns:
-                            if search_by == "Load Id":
-                                filtered_summ = summ_df[summ_df[search_col_s].astype(str) == str(search_term)]
-                            else:
-                                filtered_summ = summ_df[summ_df[search_col_s].astype(str).str.contains(str(search_term), case=False, na=False)]
-
-                            st.dataframe(filtered_summ.astype(str), use_container_width=True)
-
-                            if 'Variance' in filtered_summ.columns:
-                                filtered_summ['Variance'] = pd.to_numeric(filtered_summ['Variance'], errors='coerce')
-                                shortages = filtered_summ[filtered_summ['Variance'] > 0]
-                                if not shortages.empty:
-                                    st.warning("⚠️ Warning: Shortages detected!")
-                                    cols_to_show = [c for c in ['UPC', 'Requested', 'Picked', 'Variance'] if c in shortages.columns]
-                                    st.table(shortages[cols_to_show])
-                        else:
-                            st.write(f"Column '{search_col_s}' not found in Summary Data.")
+                    if not filtered_summ.empty:
+                        st.dataframe(filtered_summ.astype(str), use_container_width=True)
+                        if 'Variance' in filtered_summ.columns:
+                            filtered_summ_num = filtered_summ.copy()
+                            filtered_summ_num['Variance'] = pd.to_numeric(filtered_summ_num['Variance'], errors='coerce')
+                            shortages = filtered_summ_num[filtered_summ_num['Variance'] > 0]
+                            if not shortages.empty:
+                                st.warning("⚠️ Shortages detected!")
+                                cols_to_show = [c for c in ['UPC', 'Requested', 'Picked', 'Variance'] if c in shortages.columns]
+                                st.table(shortages[cols_to_show])
+                    elif not summ_search_key:
+                        st.info("Summary view is not available for Pallet search.")
                     else:
-                        if not col_map_summ[search_by]:
-                            st.info("Summary view is not available for Pallet search.")
-                        else:
-                            st.write("No summary data found.")
+                        st.info("No summary data found.")
+
+                with tab_dl:
+                    st.caption(f"Load ID / Search term: **{search_term}** හට අදාල Pick Report download කරන්න")
+                    if not filtered_picks.empty:
+                        # Build Excel with Pick + Summary sheets
+                        out_pick_dl = io.BytesIO()
+                        with pd.ExcelWriter(out_pick_dl, engine='xlsxwriter') as writer:
+                            filtered_picks.to_excel(writer, sheet_name='Pick_Report', index=False)
+                            if not filtered_summ.empty:
+                                filtered_summ.to_excel(writer, sheet_name='Variance_Summary', index=False)
+                            # Format
+                            wb_dl = writer.book
+                            hdr_dl = wb_dl.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#fff', 'border': 1})
+                            ws_dl  = writer.sheets['Pick_Report']
+                            for ci, col_name in enumerate(filtered_picks.columns):
+                                ws_dl.write(0, ci, col_name, hdr_dl)
+                                ws_dl.set_column(ci, ci, 16)
+                            ws_dl.freeze_panes(1, 0)
+
+                        safe_term = str(search_term).replace('/', '-').replace(' ', '_')
+                        st.download_button(
+                            f"⬇️ Download Pick Report — {search_term}",
+                            data=out_pick_dl.getvalue(),
+                            file_name=f"Pick_Report_{safe_term}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.ms-excel",
+                            use_container_width=True,
+                            type="primary"
+                        )
+                        # Quick summary metrics
+                        dl_qty = pd.to_numeric(filtered_picks.get('Actual Qty', pd.Series()), errors='coerce').sum()
+                        dl_lines = len(filtered_picks)
+                        mc1, mc2 = st.columns(2)
+                        mc1.metric("Pick Lines", dl_lines)
+                        mc2.metric("Total Pick Qty", int(dl_qty))
+                    else:
+                        st.info("Download කිරීමට data නොමැත.")
 
     # ==========================================
     # TAB 3: INVENTORY DETAILS REPORT
