@@ -292,22 +292,27 @@ def reconcile_inventory(inv_df, sh):
         pick_history = get_safe_dataframe(sh, "Master_Pick_Data")
         if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
             pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
+            # ✅ FIX: Convert Pallet to str to avoid int64 vs str merge error
+            pick_history['Pallet'] = pick_history['Pallet'].astype(str).str.strip()
             pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
-            pick_summary.columns = [pallet_col, 'Total_Picked']
+            pick_summary.columns = ['_pallet_key', 'Total_Picked']
 
-            inv_df = pd.merge(inv_df, pick_summary, on=pallet_col, how='left')
+            # ✅ FIX: Convert inv pallet to str for safe merge
+            inv_df['_pallet_key'] = inv_df[pallet_col].astype(str).str.strip()
+            inv_df = pd.merge(inv_df, pick_summary, on='_pallet_key', how='left')
+            inv_df = inv_df.drop(columns=['_pallet_key'], errors='ignore')
             inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
             inv_df[actual_col] = (inv_df[actual_col] - inv_df['Total_Picked']).clip(lower=0)
             inv_df = inv_df.drop(columns=['Total_Picked'], errors='ignore')
     except Exception as e:
         st.warning(f"Inventory Reconcile Error: {e}")
 
-    # Fully exclude Damage_Items pallets
+    # Fully exclude Damage_Items pallets (str comparison - safe for all types)
     try:
         dmg_summary = get_damage_pallets(sh)
         if not dmg_summary.empty:
-            damage_pallet_set = set(dmg_summary['Pallet'].astype(str).tolist())
-            inv_df = inv_df[~inv_df[pallet_col].astype(str).isin(damage_pallet_set)].reset_index(drop=True)
+            damage_pallet_set = set(dmg_summary['Pallet'].astype(str).str.strip().tolist())
+            inv_df = inv_df[~inv_df[pallet_col].astype(str).str.strip().isin(damage_pallet_set)].reset_index(drop=True)
     except Exception as e:
         st.warning(f"Damage Exclude Error: {e}")
 
