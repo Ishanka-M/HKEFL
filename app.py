@@ -755,6 +755,85 @@ if login_section():
 
                     pick_df, part_df, summ_df = process_picking(inv, req, batch_id, sh)
 
+                    # ── Cannot-Pick Diagnostic ──────────────────────────────────────
+                    # For each req UPC that has Picked=0 or Shortage, explain why
+                    cannot_pick_rows = []
+                    try:
+                        # Get original inventory (before reconcile) for comparison
+                        inv_orig = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
+                        inv_orig.columns = [str(c).strip() for c in inv_orig.columns]
+                        inv_orig_col = {str(c).strip().lower(): str(c).strip() for c in inv_orig.columns}
+                        orig_pallet_col = inv_orig_col.get('pallet', 'Pallet')
+                        orig_actual_col = inv_orig_col.get('actual qty', 'Actual Qty')
+                        orig_sup_col    = inv_orig_col.get('supplier', 'Supplier')
+
+                        def norm_sup(v):
+                            try:
+                                f = float(v)
+                                return str(int(f)) if f == int(f) else str(f)
+                            except:
+                                return str(v).strip()
+
+                        inv_orig[orig_actual_col] = pd.to_numeric(inv_orig[orig_actual_col], errors='coerce').fillna(0)
+                        inv_orig[orig_sup_col] = inv_orig[orig_sup_col].apply(norm_sup)
+
+                        # Get Master_Pick_Data for already-picked info
+                        mpd_df = get_safe_dataframe(sh, "Master_Pick_Data")
+                        mpd_picked = {}  # pallet → already picked qty
+                        if not mpd_df.empty and 'Pallet' in mpd_df.columns and 'Actual Qty' in mpd_df.columns:
+                            mpd_df['Actual Qty'] = pd.to_numeric(mpd_df['Actual Qty'], errors='coerce').fillna(0)
+                            for p, grp in mpd_df.groupby('Pallet'):
+                                mpd_picked[str(p).strip()] = grp['Actual Qty'].sum()
+
+                        # Damage pallets
+                        dmg_df = get_safe_dataframe(sh, "Damage_Items")
+                        dmg_pallets = set()
+                        if not dmg_df.empty and 'Pallet' in dmg_df.columns:
+                            dmg_pallets = set(dmg_df['Pallet'].astype(str).str.strip().tolist())
+
+                        for _, summ_row in summ_df.iterrows():
+                            upc     = str(summ_row.get('UPC', ''))
+                            picked  = float(summ_row.get('Picked', 0))
+                            requested = float(summ_row.get('Requested', 0))
+                            if picked >= requested:
+                                continue  # fully picked — no issue
+
+                            missing = requested - picked
+
+                            # Find pallets in orig inv with this UPC
+                            upc_pallets = inv_orig[inv_orig[orig_sup_col] == upc]
+
+                            for _, prow in upc_pallets.iterrows():
+                                pallet   = str(prow.get(orig_pallet_col, '')).strip()
+                                orig_qty = float(prow.get(orig_actual_col, 0))
+                                already  = mpd_picked.get(pallet, 0)
+                                avail    = max(0, orig_qty - already)
+                                is_dmg   = pallet in dmg_pallets
+
+                                if is_dmg:
+                                    reason = "🔴 Damage Item — excluded from picks"
+                                elif already >= orig_qty:
+                                    reason = f"✅ Fully picked in previous batch (Picked={int(already)}, Inv={int(orig_qty)})"
+                                elif already > 0:
+                                    reason = f"⚠️ Partially picked — available balance: {int(avail)} (Inv={int(orig_qty)}, Already picked={int(already)})"
+                                elif orig_qty == 0:
+                                    reason = "❌ Actual Qty = 0 in inventory"
+                                else:
+                                    reason = f"❓ Available={int(avail)} but not picked (check UPC match)"
+
+                                cannot_pick_rows.append({
+                                    'UPC': upc,
+                                    'Pallet': pallet,
+                                    'Inv Actual Qty': int(orig_qty),
+                                    'Already Picked': int(already),
+                                    'Available Now': int(avail),
+                                    'Requested': int(requested),
+                                    'Shortage': int(missing),
+                                    'Reason': reason
+                                })
+                    except Exception as diag_e:
+                        pass  # diagnostic errors must not block main flow
+
                     if not pick_df.empty:
                         ws_pick = get_or_create_sheet(sh, "Master_Pick_Data", MASTER_PICK_HEADERS)
                         # pick_df is already built with exact MASTER_PICK_HEADERS columns
@@ -777,6 +856,7 @@ if login_section():
                     st.session_state['summary_df'] = summ_df
                     st.session_state['batch_id'] = batch_id
                     st.session_state['show_verification'] = True
+                    st.session_state['cannot_pick_rows'] = cannot_pick_rows
 
                     st.success(f"✅ Data Processed! (Batch ID: {batch_id})")
 
@@ -785,6 +865,56 @@ if login_section():
             st.subheader("📋 Verification: Customer Requirement vs Picked Data")
             st.info("කරුණාකර පහත Summary එක පරීක්ෂා කර Download කිරීමට පෙර Verify කරන්න.")
             st.dataframe(st.session_state['summary_df'].astype(str), use_container_width=True)
+
+            # ── Cannot-Pick Diagnostic Table ──────────────────────────────
+            cannot_rows = st.session_state.get('cannot_pick_rows', [])
+            if cannot_rows:
+                import pandas as pd
+                cp_df = pd.DataFrame(cannot_rows)
+                st.divider()
+                st.markdown("### ⚠️ Pick කරන්න නොහැකි Pallets — හේතු සහිතව")
+                st.caption(f"Pick නොවූ හෝ Shortage ඇති UPC {cp_df['UPC'].nunique()} ක, Pallet {len(cp_df)} ක් සඳහා:")
+
+                # Color-code by reason type
+                def highlight_reason(row):
+                    if '✅' in str(row.get('Reason','')):
+                        return ['background-color: #fff3cd'] * len(row)
+                    elif '🔴' in str(row.get('Reason','')):
+                        return ['background-color: #ffe0e0'] * len(row)
+                    elif '⚠️' in str(row.get('Reason','')):
+                        return ['background-color: #fff8e1'] * len(row)
+                    elif '❌' in str(row.get('Reason','')):
+                        return ['background-color: #fce4ec'] * len(row)
+                    return [''] * len(row)
+
+                try:
+                    styled = cp_df.style.apply(highlight_reason, axis=1)
+                    st.dataframe(styled, use_container_width=True, hide_index=True)
+                except:
+                    st.dataframe(cp_df.astype(str), use_container_width=True, hide_index=True)
+
+                # Summary by reason
+                st.markdown("**හේතු Summary:**")
+                reason_summary = cp_df['Reason'].apply(lambda r: r.split('—')[0].split('(')[0].strip()).value_counts()
+                for reason, count in reason_summary.items():
+                    st.markdown(f"- {reason}: **{count} pallets**")
+
+                # Download cannot-pick report
+                out_cp = io.BytesIO()
+                with pd.ExcelWriter(out_cp, engine='xlsxwriter') as writer:
+                    cp_df.to_excel(writer, sheet_name='Cannot_Pick', index=False)
+                    wb = writer.book
+                    ws_cp = writer.sheets['Cannot_Pick']
+                    hdr_fmt = wb.add_format({'bold': True, 'bg_color': '1A1A1A', 'font_color': 'FFFFFF', 'border': 1})
+                    for ci, col_name in enumerate(cp_df.columns):
+                        ws_cp.write(0, ci, col_name, hdr_fmt)
+                        ws_cp.set_column(ci, ci, 20)
+                st.download_button(
+                    "⬇️ Download Cannot-Pick Report",
+                    data=out_cp.getvalue(),
+                    file_name=f"Cannot_Pick_{st.session_state['batch_id']}.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
 
             verify_check = st.checkbox("✅ මම Customer Requirement එක සහ Picked Data නිවැරදිදැයි පරීක්ෂා කළෙමි.")
 
