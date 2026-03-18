@@ -1679,96 +1679,106 @@ if login_section():
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
                         # ── Actual Qty Validation ──────────────────────────────────────
-                        inv_total_qty  = pd.to_numeric(inv_data['Actual Qty'], errors='coerce').fillna(0).sum()
-                        rpt_total_qty  = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
-                        qty_match      = abs(inv_total_qty - rpt_total_qty) < 0.01
+                        inv_total_qty = pd.to_numeric(inv_data['Actual Qty'], errors='coerce').fillna(0).sum()
+                        rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
+                        qty_match     = abs(inv_total_qty - rpt_total_qty) < 0.01
 
-                        # Find mismatched pallets (inv qty vs report qty per pallet)
-                        inv_pallet_qty = inv_data.groupby('Pallet')['Actual Qty'].apply(
-                            lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
-                        ).to_dict()
+                        # inv_pallet_qty: original inventory qty per pallet
+                        inv_pallet_qty = (
+                            inv_data.groupby('Pallet')['Actual Qty']
+                            .apply(lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum())
+                            .to_dict()
+                        )
+
+                        # rpt_pallet_qty: report qty per pallet
+                        # Gen Pallet IDs (e.g. PAL001-P0001) mapped back to original pallet
                         rpt_pallet_qty = {}
                         for _, rr in fmt_df.iterrows():
-                            p = str(rr.get('Pallet','')).strip()
-                            # For Gen Pallet IDs, map back to original pallet
-                            base_p = p.split('-P')[0] if '-P' in p and p.split('-P')[-1].isdigit() else p
-                            rpt_pallet_qty[base_p] = rpt_pallet_qty.get(base_p, 0) + \
-                                pd.to_numeric(rr.get('Actual Qty', 0), errors='coerce') or 0
+                            p      = str(rr.get('Pallet', '')).strip()
+                            parts  = p.split('-P')
+                            base_p = parts[0] if len(parts) >= 2 and parts[-1].isdigit() else p
+                            # BUG FIX: explicit fillna before add — avoid NaN propagation via 'or 0'
+                            val    = pd.to_numeric(rr.get('Actual Qty', 0), errors='coerce')
+                            val    = 0.0 if pd.isna(val) else float(val)
+                            rpt_pallet_qty[base_p] = rpt_pallet_qty.get(base_p, 0.0) + val
 
-                        # Load Master_Partial_Data for mismatch filtering
-                        partial_df_mm = get_safe_dataframe(sh, "Master_Partial_Data")
-                        # Build lookups for mismatch filtering
-                        # {orig_pallet → [{'balance_qty', 'partial_qty', 'gen_pallet_id'}]}
-                        partial_balance_map = {}   # orig_pallet → balance_qty list
-                        partial_qty_by_gen  = {}   # gen_pallet_id → partial_qty
-                        if not partial_df_mm.empty:
-                            pc_mm = {str(c).strip().lower(): str(c).strip() for c in partial_df_mm.columns}
-                            pp_mm  = pc_mm.get('pallet', 'Pallet')
-                            pb_mm  = pc_mm.get('balance qty', 'Balance Qty')
-                            ppq_mm = pc_mm.get('partial qty', 'Partial Qty')
-                            pg_mm  = pc_mm.get('gen pallet id', 'Gen Pallet ID')
-                            for _, pr_mm in partial_df_mm.iterrows():
-                                op  = str(pr_mm.get(pp_mm, '')).strip()
-                                bq  = pd.to_numeric(pr_mm.get(pb_mm, 0), errors='coerce') or 0
-                                pq  = pd.to_numeric(pr_mm.get(ppq_mm, 0), errors='coerce') or 0
-                                gp  = str(pr_mm.get(pg_mm, '')).strip()
-                                if op:
-                                    partial_balance_map.setdefault(op, []).append(bq)
-                                if gp:
-                                    partial_qty_by_gen[gp] = pq
-
+                        # ── Master_Partial_Data lookups for mismatch filtering ──────────
                         mismatch_pallets = []
-                        for pal, inv_q in inv_pallet_qty.items():
-                            rpt_q = rpt_pallet_qty.get(pal, 0)
-                            if abs(inv_q - rpt_q) <= 0.01:
-                                continue  # matches — no mismatch
+                        try:
+                            partial_df_mm   = get_safe_dataframe(sh, "Master_Partial_Data")
+                            partial_balance_map = {}  # orig_pallet → [balance_qty, ...]
+                            partial_qty_by_gen  = {}  # gen_pallet_id → partial_qty
 
-                            # Filter 1: Inventory Actual Qty == Balance Qty in Master_Partial_Data → skip
-                            balance_qtys = partial_balance_map.get(pal, [])
-                            if any(abs(inv_q - bq) <= 0.01 for bq in balance_qtys):
-                                continue  # matches balance qty — not a real mismatch
+                            if not partial_df_mm.empty:
+                                pc_mm  = {str(c).strip().lower(): str(c).strip() for c in partial_df_mm.columns}
+                                pp_mm  = pc_mm.get('pallet',        'Pallet')
+                                pb_mm  = pc_mm.get('balance qty',   'Balance Qty')
+                                ppq_mm = pc_mm.get('partial qty',   'Partial Qty')
+                                pg_mm  = pc_mm.get('gen pallet id', 'Gen Pallet ID')
 
-                            # Filter 2: Pallet matches a Gen Pallet ID AND
-                            #           Inventory Actual Qty == Partial Qty for that Gen Pallet ID → skip
-                            if pal in partial_qty_by_gen:
-                                pq_for_gen = partial_qty_by_gen[pal]
-                                if abs(inv_q - pq_for_gen) <= 0.01:
-                                    continue  # matches partial qty via Gen Pallet ID — not a mismatch
+                                for _, pr_mm in partial_df_mm.iterrows():
+                                    op = str(pr_mm.get(pp_mm, '')).strip()
+                                    bq = pd.to_numeric(pr_mm.get(pb_mm,  0), errors='coerce')
+                                    pq = pd.to_numeric(pr_mm.get(ppq_mm, 0), errors='coerce')
+                                    gp = str(pr_mm.get(pg_mm, '')).strip()
+                                    bq = 0.0 if pd.isna(bq) else float(bq)
+                                    pq = 0.0 if pd.isna(pq) else float(pq)
+                                    if op:
+                                        partial_balance_map.setdefault(op, []).append(bq)
+                                    if gp:
+                                        partial_qty_by_gen[gp] = pq
 
-                            mismatch_pallets.append({
-                                'Pallet': pal,
-                                'Inventory Actual Qty': inv_q,
-                                'Report Actual Qty': rpt_q,
-                                'Difference': inv_q - rpt_q
-                            })
+                            for pal, inv_q in inv_pallet_qty.items():
+                                rpt_q = rpt_pallet_qty.get(pal, 0.0)
 
-                        # ── Summary ────────────────────────────────────────────────────
-                        total_pick_qty  = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0).sum()
-                        total_ats_qty   = pd.to_numeric(fmt_df['ATS'],          errors='coerce').fillna(0).sum()
-                        total_dmg_qty   = sum(
+                                # Already matches report total → no mismatch
+                                if abs(inv_q - rpt_q) <= 0.01:
+                                    continue
+
+                                # Filter 1: inv_qty == Balance Qty in Master_Partial_Data → not a mismatch
+                                if any(abs(inv_q - bq) <= 0.01 for bq in partial_balance_map.get(pal, [])):
+                                    continue
+
+                                # Filter 2: Pallet is a Gen Pallet ID AND inv_qty == Partial Qty → not a mismatch
+                                if pal in partial_qty_by_gen and abs(inv_q - partial_qty_by_gen[pal]) <= 0.01:
+                                    continue
+
+                                mismatch_pallets.append({
+                                    'Pallet':               pal,
+                                    'Inventory Actual Qty': inv_q,
+                                    'Report Actual Qty':    rpt_q,
+                                    'Difference':           inv_q - rpt_q,
+                                })
+
+                        except Exception as _mm_err:
+                            st.warning(f"⚠️ Mismatch check error: {_mm_err}")
+
+                        # ── Summary — always renders regardless of mismatch errors ──────
+                        total_pick_qty = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0).sum()
+                        total_ats_qty  = pd.to_numeric(fmt_df['ATS'],           errors='coerce').fillna(0).sum()
+                        total_dmg_qty  = sum(
                             pd.to_numeric(fmt_df[r], errors='coerce').fillna(0).sum()
                             for r in damage_remarks
                         )
-                        total_lines     = len(fmt_df)
-                        partial_lines   = sum(1 for r in fmt_rows if r.get('Order NO','') != '')
+                        total_lines   = len(fmt_df)
+                        partial_lines = sum(1 for r in fmt_rows if r.get('Order NO', '') != '')
 
-                        # ── Display ─────────────────────────────────────────────────────
-                        # Qty match status banner
+                        # Qty match banner
                         if qty_match:
                             st.success(f"✅ Actual Qty Match! Inventory: **{int(inv_total_qty)}** = Report: **{int(rpt_total_qty)}**")
                         else:
                             st.error(f"⚠️ Actual Qty Mismatch! Inventory: **{int(inv_total_qty)}** ≠ Report: **{int(rpt_total_qty)}** (diff: {int(inv_total_qty - rpt_total_qty)})")
 
-                        # Summary cards
+                        # Summary metric cards
                         st.markdown("#### 📊 Report Summary")
                         sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-                        sc1.metric("Total Lines",    total_lines)
-                        sc2.metric("Pick Qty",       int(total_pick_qty))
-                        sc3.metric("ATS Qty",        int(total_ats_qty))
-                        sc4.metric("Damage Qty",     int(total_dmg_qty))
-                        sc5.metric("Partial Lines",  partial_lines)
+                        sc1.metric("Total Lines",   total_lines)
+                        sc2.metric("Pick Qty",      int(total_pick_qty))
+                        sc3.metric("ATS Qty",       int(total_ats_qty))
+                        sc4.metric("Damage Qty",    int(total_dmg_qty))
+                        sc5.metric("Partial Lines", partial_lines)
 
-                        # Cross-check row: Inv total vs Pick+ATS+Damage
+                        # Reconciliation cross-check
                         accounted = total_pick_qty + total_ats_qty + total_dmg_qty
                         if abs(inv_total_qty - accounted) < 0.01:
                             st.success(f"✅ Qty Reconciled: Pick({int(total_pick_qty)}) + ATS({int(total_ats_qty)}) + Damage({int(total_dmg_qty)}) = {int(accounted)}")
