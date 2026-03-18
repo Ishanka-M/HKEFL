@@ -1705,51 +1705,53 @@ if login_section():
                         # ── Master_Partial_Data lookups for mismatch filtering ──────────
                         mismatch_pallets = []
                         try:
-                            partial_df_mm   = get_safe_dataframe(sh, "Master_Partial_Data")
+                            partial_df_mm = get_safe_dataframe(sh, "Master_Partial_Data")
 
-                            # gen_pallet_id → partial_qty
-                            gen_to_partial_qty  = {}
-                            # orig_pallet → balance_qty
-                            orig_to_balance_qty = {}
+                            # Build lookups from Master_Partial_Data
+                            all_gen_pallet_ids  = set()   # all Gen Pallet IDs
+                            orig_to_balance_qty = {}      # orig_pallet → Balance Qty (calculated on the fly)
 
                             if not partial_df_mm.empty:
                                 pc_mm  = {str(c).strip().lower(): str(c).strip() for c in partial_df_mm.columns}
                                 pp_mm  = pc_mm.get('pallet',        'Pallet')
-                                pb_mm  = pc_mm.get('balance qty',   'Balance Qty')
                                 ppq_mm = pc_mm.get('partial qty',   'Partial Qty')
+                                paq_mm = pc_mm.get('actual qty',    'Actual Qty')
                                 pg_mm  = pc_mm.get('gen pallet id', 'Gen Pallet ID')
 
                                 for _, pr_mm in partial_df_mm.iterrows():
                                     op = str(pr_mm.get(pp_mm, '')).strip()
-                                    bq = pd.to_numeric(pr_mm.get(pb_mm,  0), errors='coerce')
-                                    pq = pd.to_numeric(pr_mm.get(ppq_mm, 0), errors='coerce')
                                     gp = str(pr_mm.get(pg_mm, '')).strip()
-                                    bq = 0.0 if pd.isna(bq) else float(bq)
+                                    # Calculate Balance Qty on the fly (don't rely on sheet column)
+                                    aq = pd.to_numeric(pr_mm.get(paq_mm, 0), errors='coerce')
+                                    pq = pd.to_numeric(pr_mm.get(ppq_mm, 0), errors='coerce')
+                                    aq = 0.0 if pd.isna(aq) else float(aq)
                                     pq = 0.0 if pd.isna(pq) else float(pq)
-                                    # orig_pallet → balance_qty (for original pallet rows)
+                                    bq = aq - pq  # Balance Qty = Actual Qty - Partial Qty
+
+                                    if gp:
+                                        all_gen_pallet_ids.add(gp)
                                     if op:
                                         orig_to_balance_qty[op] = bq
-                                    # gen_pallet_id → partial_qty (for Gen Pallet ID rows)
-                                    if gp:
-                                        gen_to_partial_qty[gp] = pq
 
-                            for pal, inv_q in inv_pallet_qty.items():
+                            # Re-build inv_pallet_qty EXCLUDING Gen Pallet ID rows
+                            # (inventory file may contain Gen Pallet IDs as separate rows)
+                            inv_pallet_qty_filtered = {}
+                            for _, inv_r in inv_data.iterrows():
+                                p = str(inv_r.get('Pallet', '')).strip()
+                                q = pd.to_numeric(inv_r.get('Actual Qty', 0), errors='coerce')
+                                q = 0.0 if pd.isna(q) else float(q)
+                                if p in all_gen_pallet_ids:
+                                    continue  # Skip — tracked via partial data
+                                inv_pallet_qty_filtered[p] = inv_pallet_qty_filtered.get(p, 0.0) + q
+
+                            for pal, inv_q in inv_pallet_qty_filtered.items():
                                 rpt_q = rpt_pallet_qty.get(pal, 0.0)
 
-                                # Already matches report total → no mismatch
+                                # Exact match with report → no mismatch
                                 if abs(inv_q - rpt_q) <= 0.01:
                                     continue
 
-                                # Filter 1: pal IS a Gen Pallet ID in Master_Partial_Data
-                                #   AND inv_qty == Partial Qty → inventory file has the split pallet row
-                                #   → not a real mismatch
-                                if pal in gen_to_partial_qty:
-                                    if abs(inv_q - gen_to_partial_qty[pal]) <= 0.01:
-                                        continue
-
-                                # Filter 2: pal is an original pallet with partials
-                                #   AND inv_qty == Balance Qty → inventory file has the remaining balance row
-                                #   → not a real mismatch
+                                # Pallet has partials: inv_qty should equal Balance Qty → not a mismatch
                                 if pal in orig_to_balance_qty:
                                     if abs(inv_q - orig_to_balance_qty[pal]) <= 0.01:
                                         continue
