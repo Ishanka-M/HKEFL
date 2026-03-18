@@ -1706,8 +1706,11 @@ if login_section():
                         mismatch_pallets = []
                         try:
                             partial_df_mm   = get_safe_dataframe(sh, "Master_Partial_Data")
-                            partial_balance_map = {}  # orig_pallet → [balance_qty, ...]
-                            partial_qty_by_gen  = {}  # gen_pallet_id → partial_qty
+
+                            # gen_pallet_id → partial_qty
+                            gen_to_partial_qty  = {}
+                            # orig_pallet → balance_qty
+                            orig_to_balance_qty = {}
 
                             if not partial_df_mm.empty:
                                 pc_mm  = {str(c).strip().lower(): str(c).strip() for c in partial_df_mm.columns}
@@ -1723,10 +1726,12 @@ if login_section():
                                     gp = str(pr_mm.get(pg_mm, '')).strip()
                                     bq = 0.0 if pd.isna(bq) else float(bq)
                                     pq = 0.0 if pd.isna(pq) else float(pq)
+                                    # orig_pallet → balance_qty (for original pallet rows)
                                     if op:
-                                        partial_balance_map.setdefault(op, []).append(bq)
+                                        orig_to_balance_qty[op] = bq
+                                    # gen_pallet_id → partial_qty (for Gen Pallet ID rows)
                                     if gp:
-                                        partial_qty_by_gen[gp] = pq
+                                        gen_to_partial_qty[gp] = pq
 
                             for pal, inv_q in inv_pallet_qty.items():
                                 rpt_q = rpt_pallet_qty.get(pal, 0.0)
@@ -1735,13 +1740,19 @@ if login_section():
                                 if abs(inv_q - rpt_q) <= 0.01:
                                     continue
 
-                                # Filter 1: inv_qty == Balance Qty in Master_Partial_Data → not a mismatch
-                                if any(abs(inv_q - bq) <= 0.01 for bq in partial_balance_map.get(pal, [])):
-                                    continue
+                                # Filter 1: pal IS a Gen Pallet ID in Master_Partial_Data
+                                #   AND inv_qty == Partial Qty → inventory file has the split pallet row
+                                #   → not a real mismatch
+                                if pal in gen_to_partial_qty:
+                                    if abs(inv_q - gen_to_partial_qty[pal]) <= 0.01:
+                                        continue
 
-                                # Filter 2: Pallet is a Gen Pallet ID AND inv_qty == Partial Qty → not a mismatch
-                                if pal in partial_qty_by_gen and abs(inv_q - partial_qty_by_gen[pal]) <= 0.01:
-                                    continue
+                                # Filter 2: pal is an original pallet with partials
+                                #   AND inv_qty == Balance Qty → inventory file has the remaining balance row
+                                #   → not a real mismatch
+                                if pal in orig_to_balance_qty:
+                                    if abs(inv_q - orig_to_balance_qty[pal]) <= 0.01:
+                                        continue
 
                                 mismatch_pallets.append({
                                     'Pallet':               pal,
