@@ -844,6 +844,22 @@ if login_section():
                         ws_part.append_rows(part_df.astype(str).replace('nan', '').values.tolist())
 
                     ws_summ = get_or_create_sheet(sh, "Summary_Data", SHEET_HEADERS["Summary_Data"])
+
+                    # ✅ FIX: Load ID same Batch ID 2කට save වෙන්නේ නැහැ
+                    # Existing Summary_Data load කරලා, current batch Load IDs remove කරලා, අලුත් data append
+                    existing_summ = get_safe_dataframe(sh, "Summary_Data")
+                    if not existing_summ.empty and 'Load ID' in existing_summ.columns:
+                        # Current batch load IDs
+                        new_load_ids = set(summ_df['Load ID'].astype(str).tolist()) if not summ_df.empty else set()
+                        # Remove any existing rows with same Load IDs (previous batch duplicate)
+                        existing_summ_clean = existing_summ[
+                            ~existing_summ['Load ID'].astype(str).isin(new_load_ids)
+                        ]
+                        # Rewrite sheet: clean existing + new
+                        ws_summ.clear()
+                        ws_summ.append_row(SHEET_HEADERS["Summary_Data"])
+                        if not existing_summ_clean.empty:
+                            ws_summ.append_rows(existing_summ_clean.astype(str).replace('nan', '').values.tolist())
                     ws_summ.append_rows(summ_df.astype(str).replace('nan', '').values.tolist())
 
                     output = io.BytesIO()
@@ -1679,7 +1695,7 @@ if login_section():
     elif choice == "🔄 Revert/Delete Picks":
         st.title("🔄 Revert / Delete Picked Data")
 
-        del_tab1, del_tab2 = st.tabs(["📁 Upload File to Delete", "🆔 Delete by Load ID Only"])
+        del_tab1, del_tab2, del_tab3 = st.tabs(["📁 Upload File to Delete", "🆔 Delete by Load ID Only", "🗂️ Delete by Batch ID"])
 
         # --- Option 1: Upload file ---
         with del_tab1:
@@ -1776,6 +1792,73 @@ if login_section():
                         # ✅ Load_History DELETE කරන්නේ නැහැ — Load ID history රකිනවා
                         st.success(f"✅ Load ID **{del_load_id}** — Master_Pick_Data: {deleted_pick} records මකා දමන ලදී! (Load_History නොවෙනස්ව ඇත)")
                         show_confetti()
+
+        # --- Option 3: Delete by Batch ID ---
+        with del_tab3:
+            st.info("Batch ID එකක් ගෙනහිර ඒ Batch ID එකට අදාල **සියලු** records **Master_Pick_Data** එකෙන් delete කළ හැක. Load_History නොවෙනස්ව පවතී.")
+
+            # Load Batch IDs from Master_Pick_Data
+            mpd_for_batch = get_safe_dataframe(sh, "Master_Pick_Data")
+            batch_col_mpd = next((c for c in (mpd_for_batch.columns if not mpd_for_batch.empty else []) 
+                                  if str(c).strip().lower() == 'batch id'), None)
+
+            if not mpd_for_batch.empty and batch_col_mpd:
+                available_batches_mpd = mpd_for_batch[batch_col_mpd].dropna().unique().tolist()
+                available_batches_mpd = [b for b in available_batches_mpd if str(b).strip()]
+
+                if available_batches_mpd:
+                    del_batch_id = st.selectbox("🗂️ Select Batch ID to Delete:", available_batches_mpd, key="del_batch_sel")
+
+                    if del_batch_id:
+                        preview_batch = mpd_for_batch[mpd_for_batch[batch_col_mpd].astype(str).str.strip() == str(del_batch_id).strip()]
+                        if not preview_batch.empty:
+                            st.warning(f"⚠️ Batch ID **{del_batch_id}** හි **{len(preview_batch)}** records මකා දැමෙනු ඇත.")
+
+                            # Show summary of what will be deleted
+                            bc1, bc2, bc3 = st.columns(3)
+                            bc1.metric("Records", len(preview_batch))
+                            load_id_col_b = next((c for c in preview_batch.columns if str(c).strip().lower() == 'generated load id'), None)
+                            if load_id_col_b:
+                                bc2.metric("Load IDs", preview_batch[load_id_col_b].nunique())
+                            aq_col_b = next((c for c in preview_batch.columns if str(c).strip().lower() == 'actual qty'), None)
+                            if aq_col_b:
+                                bc3.metric("Total Qty", int(pd.to_numeric(preview_batch[aq_col_b], errors='coerce').sum()))
+
+                            st.dataframe(preview_batch[[c for c in ['Generated Load ID','Pallet','Actual Qty','SO Number','Country Name'] 
+                                                         if c in preview_batch.columns]].astype(str).head(20), 
+                                         use_container_width=True)
+
+                        if st.button("🗑️ Delete by Batch ID", type="primary", key="del_batch_btn"):
+                            with st.spinner("Deleting..."):
+                                mpd_latest = get_safe_dataframe(sh, "Master_Pick_Data")
+                                batch_col_latest = next((c for c in (mpd_latest.columns if not mpd_latest.empty else [])
+                                                         if str(c).strip().lower() == 'batch id'), None)
+                                deleted_batch = 0
+
+                                if not mpd_latest.empty and batch_col_latest:
+                                    filtered_batch = mpd_latest[
+                                        mpd_latest[batch_col_latest].astype(str).str.strip() != str(del_batch_id).strip()
+                                    ]
+                                    deleted_batch = len(mpd_latest) - len(filtered_batch)
+
+                                    ws_pick_b = sh.worksheet("Master_Pick_Data")
+                                    ws_pick_b.clear()
+                                    ws_pick_b.append_row(MASTER_PICK_HEADERS)
+                                    if not filtered_batch.empty:
+                                        for col in MASTER_PICK_HEADERS:
+                                            if col not in filtered_batch.columns:
+                                                filtered_batch[col] = ''
+                                        ws_pick_b.append_rows(
+                                            filtered_batch[MASTER_PICK_HEADERS].astype(str).replace('nan', '').values.tolist()
+                                        )
+
+                                # Load_History නොවෙනස්ව
+                                st.success(f"✅ Batch ID **{del_batch_id}** — Master_Pick_Data: {deleted_batch} records මකා දමන ලදී! (Load_History නොවෙනස්ව ඇත)")
+                                show_confetti()
+                else:
+                    st.info("Master_Pick_Data හි Batch IDs නොමැත.")
+            else:
+                st.info("Master_Pick_Data හි data නොමැත.")
 
     # ==========================================
     # TAB 5: DAMAGE ITEMS
