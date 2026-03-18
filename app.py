@@ -38,7 +38,9 @@ HEADER_LOWER_MAP = {h.strip().lower(): h for h in MASTER_PICK_HEADERS}
 SHEET_HEADERS = {
     "Load_History": ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'],
     "Summary_Data": ['Batch ID', 'SO Number', 'Load ID', 'UPC', 'Country', 'Ship Mode', 'Requested', 'Picked', 'Variance', 'Status'],
-    "Master_Partial_Data": ['Batch ID', 'SO Number', 'Pallet', 'Supplier', 'Load ID', 'Country Name', 'Actual Qty', 'Partial Qty', 'Gen Pallet ID'],
+    "Master_Partial_Data": ['Batch ID', 'SO Number', 'Pallet', 'Supplier', 'Load ID', 'Country Name',
+                             'Actual Qty', 'Partial Qty', 'Gen Pallet ID', 'Balance Qty',
+                             'Location Id', 'Lot Number', 'Color', 'Size', 'Style', 'Customer Po Number'],
     "Master_Pick_Data": MASTER_PICK_HEADERS,
     "Damage_Items": ['Pallet', 'Actual Qty', 'Remark', 'Date Added', 'Added By']
 }
@@ -592,13 +594,28 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
 
                     pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
                     if take < current_avail:
+                        # Get extra fields from inventory row (case-insensitive)
+                        def _get(col_name):
+                            c = inv_col_map.get(col_name.lower())
+                            return str(item[c]) if c and c in item.index else ''
+
                         partial_rows.append({
-                            'Batch ID': batch_id, 'SO Number': so_num,
-                            'Pallet': pallet_val,
-                            'Supplier': p_row['Supplier'], 'Load ID': lid,
-                            'Country Name': country, 'Actual Qty': current_avail,
-                            'Partial Qty': take,
-                            'Gen Pallet ID': make_unique_gen_pallet_id(pallet_val)
+                            'Batch ID':           batch_id,
+                            'SO Number':          so_num,
+                            'Pallet':             pallet_val,
+                            'Supplier':           p_row['Supplier'],
+                            'Load ID':            lid,
+                            'Country Name':       country,
+                            'Actual Qty':         current_avail,
+                            'Partial Qty':        take,
+                            'Gen Pallet ID':      make_unique_gen_pallet_id(pallet_val),
+                            'Balance Qty':        current_avail - take,   # Actual Qty - Partial Qty
+                            'Location Id':        _get('location id'),
+                            'Lot Number':         _get('lot number'),
+                            'Color':              _get('color'),
+                            'Size':               _get('size'),
+                            'Style':              _get('style'),
+                            'Customer Po Number': _get('customer po number'),
                         })
 
                     temp_inv.at[idx, actual_qty_col] -= take
@@ -1678,16 +1695,52 @@ if login_section():
                             rpt_pallet_qty[base_p] = rpt_pallet_qty.get(base_p, 0) + \
                                 pd.to_numeric(rr.get('Actual Qty', 0), errors='coerce') or 0
 
+                        # Load Master_Partial_Data for mismatch filtering
+                        partial_df_mm = get_safe_dataframe(sh, "Master_Partial_Data")
+                        # Build lookups for mismatch filtering
+                        # {orig_pallet → [{'balance_qty', 'partial_qty', 'gen_pallet_id'}]}
+                        partial_balance_map = {}   # orig_pallet → balance_qty list
+                        partial_qty_by_gen  = {}   # gen_pallet_id → partial_qty
+                        if not partial_df_mm.empty:
+                            pc_mm = {str(c).strip().lower(): str(c).strip() for c in partial_df_mm.columns}
+                            pp_mm  = pc_mm.get('pallet', 'Pallet')
+                            pb_mm  = pc_mm.get('balance qty', 'Balance Qty')
+                            ppq_mm = pc_mm.get('partial qty', 'Partial Qty')
+                            pg_mm  = pc_mm.get('gen pallet id', 'Gen Pallet ID')
+                            for _, pr_mm in partial_df_mm.iterrows():
+                                op  = str(pr_mm.get(pp_mm, '')).strip()
+                                bq  = pd.to_numeric(pr_mm.get(pb_mm, 0), errors='coerce') or 0
+                                pq  = pd.to_numeric(pr_mm.get(ppq_mm, 0), errors='coerce') or 0
+                                gp  = str(pr_mm.get(pg_mm, '')).strip()
+                                if op:
+                                    partial_balance_map.setdefault(op, []).append(bq)
+                                if gp:
+                                    partial_qty_by_gen[gp] = pq
+
                         mismatch_pallets = []
                         for pal, inv_q in inv_pallet_qty.items():
                             rpt_q = rpt_pallet_qty.get(pal, 0)
-                            if abs(inv_q - rpt_q) > 0.01:
-                                mismatch_pallets.append({
-                                    'Pallet': pal,
-                                    'Inventory Actual Qty': inv_q,
-                                    'Report Actual Qty': rpt_q,
-                                    'Difference': inv_q - rpt_q
-                                })
+                            if abs(inv_q - rpt_q) <= 0.01:
+                                continue  # matches — no mismatch
+
+                            # Filter 1: Inventory Actual Qty == Balance Qty in Master_Partial_Data → skip
+                            balance_qtys = partial_balance_map.get(pal, [])
+                            if any(abs(inv_q - bq) <= 0.01 for bq in balance_qtys):
+                                continue  # matches balance qty — not a real mismatch
+
+                            # Filter 2: Pallet matches a Gen Pallet ID AND
+                            #           Inventory Actual Qty == Partial Qty for that Gen Pallet ID → skip
+                            if pal in partial_qty_by_gen:
+                                pq_for_gen = partial_qty_by_gen[pal]
+                                if abs(inv_q - pq_for_gen) <= 0.01:
+                                    continue  # matches partial qty via Gen Pallet ID — not a mismatch
+
+                            mismatch_pallets.append({
+                                'Pallet': pal,
+                                'Inventory Actual Qty': inv_q,
+                                'Report Actual Qty': rpt_q,
+                                'Difference': inv_q - rpt_q
+                            })
 
                         # ── Summary ────────────────────────────────────────────────────
                         total_pick_qty  = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0).sum()
