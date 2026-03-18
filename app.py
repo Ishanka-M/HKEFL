@@ -1702,66 +1702,42 @@ if login_section():
                             val    = 0.0 if pd.isna(val) else float(val)
                             rpt_pallet_qty[base_p] = rpt_pallet_qty.get(base_p, 0.0) + val
 
-                        # ── Master_Partial_Data lookups for mismatch filtering ──────────
+                        # ── Qty Mismatch Detection ─────────────────────────────────────
+                        # Strategy: group inventory rows by base pallet (Gen Pallet IDs mapped
+                        # back to original), sum total inv qty, compare to report total.
+                        # This way T0503260046(3) + T0503260046-P0001(2) = 5 == report(5) → OK
+                        # No dependency on Master_Partial_Data for this check.
+                        import re as _re
+                        _gen_pat = _re.compile(r'^(.+)-P(\d+)$')
+
+                        def _base_pallet(p):
+                            m = _gen_pat.match(str(p).strip())
+                            return m.group(1) if m else str(p).strip()
+
                         mismatch_pallets = []
                         try:
-                            partial_df_mm = get_safe_dataframe(sh, "Master_Partial_Data")
-
-                            # Build lookups from Master_Partial_Data
-                            all_gen_pallet_ids  = set()   # all Gen Pallet IDs
-                            orig_to_balance_qty = {}      # orig_pallet → Balance Qty (calculated on the fly)
-
-                            if not partial_df_mm.empty:
-                                pc_mm  = {str(c).strip().lower(): str(c).strip() for c in partial_df_mm.columns}
-                                pp_mm  = pc_mm.get('pallet',        'Pallet')
-                                ppq_mm = pc_mm.get('partial qty',   'Partial Qty')
-                                paq_mm = pc_mm.get('actual qty',    'Actual Qty')
-                                pg_mm  = pc_mm.get('gen pallet id', 'Gen Pallet ID')
-
-                                for _, pr_mm in partial_df_mm.iterrows():
-                                    op = str(pr_mm.get(pp_mm, '')).strip()
-                                    gp = str(pr_mm.get(pg_mm, '')).strip()
-                                    # Calculate Balance Qty on the fly (don't rely on sheet column)
-                                    aq = pd.to_numeric(pr_mm.get(paq_mm, 0), errors='coerce')
-                                    pq = pd.to_numeric(pr_mm.get(ppq_mm, 0), errors='coerce')
-                                    aq = 0.0 if pd.isna(aq) else float(aq)
-                                    pq = 0.0 if pd.isna(pq) else float(pq)
-                                    bq = aq - pq  # Balance Qty = Actual Qty - Partial Qty
-
-                                    if gp:
-                                        all_gen_pallet_ids.add(gp)
-                                    if op:
-                                        orig_to_balance_qty[op] = bq
-
-                            # Re-build inv_pallet_qty EXCLUDING Gen Pallet ID rows
-                            # (inventory file may contain Gen Pallet IDs as separate rows)
-                            inv_pallet_qty_filtered = {}
+                            # orig_total_inv: total inventory qty per base pallet
+                            # (orig row + all Gen Pallet ID variant rows summed together)
+                            orig_total_inv = {}
                             for _, inv_r in inv_data.iterrows():
                                 p = str(inv_r.get('Pallet', '')).strip()
                                 q = pd.to_numeric(inv_r.get('Actual Qty', 0), errors='coerce')
                                 q = 0.0 if pd.isna(q) else float(q)
-                                if p in all_gen_pallet_ids:
-                                    continue  # Skip — tracked via partial data
-                                inv_pallet_qty_filtered[p] = inv_pallet_qty_filtered.get(p, 0.0) + q
+                                base = _base_pallet(p)
+                                orig_total_inv[base] = orig_total_inv.get(base, 0.0) + q
 
-                            for pal, inv_q in inv_pallet_qty_filtered.items():
+                            # Compare: orig_total_inv vs rpt_pallet_qty per base pallet
+                            all_pallets = set(orig_total_inv) | set(rpt_pallet_qty)
+                            for pal in all_pallets:
+                                inv_q = orig_total_inv.get(pal, 0.0)
                                 rpt_q = rpt_pallet_qty.get(pal, 0.0)
-
-                                # Exact match with report → no mismatch
-                                if abs(inv_q - rpt_q) <= 0.01:
-                                    continue
-
-                                # Pallet has partials: inv_qty should equal Balance Qty → not a mismatch
-                                if pal in orig_to_balance_qty:
-                                    if abs(inv_q - orig_to_balance_qty[pal]) <= 0.01:
-                                        continue
-
-                                mismatch_pallets.append({
-                                    'Pallet':               pal,
-                                    'Inventory Actual Qty': inv_q,
-                                    'Report Actual Qty':    rpt_q,
-                                    'Difference':           inv_q - rpt_q,
-                                })
+                                if abs(inv_q - rpt_q) > 0.01:
+                                    mismatch_pallets.append({
+                                        'Pallet':               pal,
+                                        'Inventory Actual Qty': inv_q,
+                                        'Report Actual Qty':    rpt_q,
+                                        'Difference':           inv_q - rpt_q,
+                                    })
 
                         except Exception as _mm_err:
                             st.warning(f"⚠️ Mismatch check error: {_mm_err}")
