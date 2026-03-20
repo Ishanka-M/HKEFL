@@ -458,7 +458,7 @@ def generate_unique_load_id(sh, so_num, so_counts):
         if candidate not in existing_ids:
             return candidate, count
 
-def process_picking(inv_df, req_df, batch_id, sh=None):
+def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
     pick_rows, partial_rows, summary = [], [], []
 
     # Normalize inventory column names: strip whitespace
@@ -480,6 +480,22 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
     actual_qty_col = next((inv_col_map[k] for k in inv_col_map if k == 'actual qty'), 'Actual Qty')
     temp_inv[actual_qty_col] = pd.to_numeric(temp_inv[actual_qty_col], errors='coerce').fillna(0)
     temp_inv = temp_inv[temp_inv[actual_qty_col] > 0].reset_index(drop=True)
+
+    # ── Build original qty map per pallet (before reconcile) ──────────────
+    # Used for partial detection: if total picked < original qty → partial
+    orig_qty_map = {}  # pallet → original Actual Qty (from inv_original)
+    if inv_original is not None:
+        inv_orig_norm = inv_original.copy()
+        inv_orig_norm.columns = [str(c).strip() for c in inv_orig_norm.columns]
+        orig_col_map = {str(c).strip().lower(): str(c).strip() for c in inv_orig_norm.columns}
+        orig_pallet_col = orig_col_map.get('pallet', 'Pallet')
+        orig_actual_col = orig_col_map.get('actual qty', 'Actual Qty')
+        if orig_pallet_col in inv_orig_norm.columns and orig_actual_col in inv_orig_norm.columns:
+            inv_orig_norm[orig_actual_col] = pd.to_numeric(inv_orig_norm[orig_actual_col], errors='coerce').fillna(0)
+            for _, orig_row in inv_orig_norm.iterrows():
+                p = str(orig_row[orig_pallet_col]).strip()
+                q = float(orig_row[orig_actual_col])
+                orig_qty_map[p] = q
 
     # ── Normalize Supplier column: float → integer string (remove .0 suffix) ──
     # e.g. 657001362301.0 → "657001362301"  so UPC matching works correctly
@@ -593,7 +609,14 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                     pick_rows.append(p_row)
 
                     pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
-                    if take < current_avail:
+
+                    # Partial detection:
+                    # Case 1: take < current_avail (standard - picking less than what's left after reconcile)
+                    # Case 2: orig_qty > take (original inventory had more - previous picks already happened)
+                    orig_qty = orig_qty_map.get(pallet_val, current_avail)
+                    is_partial = (take < current_avail) or (orig_qty > take)
+
+                    if is_partial:
                         # Get extra fields from inventory row (case-insensitive)
                         def _get(col_name):
                             c = inv_col_map.get(col_name.lower())
@@ -606,10 +629,10 @@ def process_picking(inv_df, req_df, batch_id, sh=None):
                             'Supplier':           p_row['Supplier'],
                             'Load ID':            lid,
                             'Country Name':       country,
-                            'Actual Qty':         current_avail,
+                            'Actual Qty':         orig_qty,           # original inventory qty
                             'Partial Qty':        take,
                             'Gen Pallet ID':      make_unique_gen_pallet_id(pallet_val),
-                            'Balance Qty':        current_avail - take,   # Actual Qty - Partial Qty
+                            'Balance Qty':        orig_qty - take,    # original - picked
                             'Location Id':        _get('location id'),
                             'Lot Number':         _get('lot number'),
                             'Color':              _get('color'),
@@ -890,9 +913,10 @@ if login_section():
                     if new_hist_entries:
                         ws_hist.append_rows(new_hist_entries)
 
+                    inv_original = inv.copy()   # keep original before reconcile
                     inv = reconcile_inventory(inv, sh)
 
-                    pick_df, part_df, summ_df = process_picking(inv, req, batch_id, sh)
+                    pick_df, part_df, summ_df = process_picking(inv, req, batch_id, sh, inv_original=inv_original)
 
                     # ── Cannot-Pick Diagnostic ──────────────────────────────────────
                     # For each req UPC that has Picked=0 or Shortage, explain why
