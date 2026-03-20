@@ -981,8 +981,16 @@ if login_section():
                         )
 
                     if not part_df.empty:
-                        ws_part = get_or_create_sheet(sh, "Master_Partial_Data", SHEET_HEADERS["Master_Partial_Data"])
-                        ws_part.append_rows(part_df.astype(str).replace('nan', '').values.tolist())
+                        # Align part_df columns to SHEET_HEADERS["Master_Partial_Data"] exact order
+                        mpd_headers = SHEET_HEADERS["Master_Partial_Data"]
+                        for col in mpd_headers:
+                            if col not in part_df.columns:
+                                part_df[col] = ''
+                        part_df_save = part_df[mpd_headers]
+                        APIManager.append_rows_to_sheet(
+                            sh, "Master_Partial_Data", mpd_headers,
+                            part_df_save.astype(str).replace('nan', '').values.tolist()
+                        )
 
                     # Summary_Data: Load ID can only belong to ONE Batch ID — deduplicate
                     existing_summ = APIManager.read_sheet(sh, "Summary_Data")
@@ -1868,7 +1876,12 @@ if login_section():
     elif choice == "🔄 Revert/Delete Picks":
         st.title("🔄 Revert / Delete Picked Data")
 
-        del_tab1, del_tab2, del_tab3 = st.tabs(["📁 Upload File to Delete", "🆔 Delete by Load ID Only", "🗂️ Delete by Batch ID"])
+        del_tab1, del_tab2, del_tab3, del_tab4 = st.tabs([
+            "📁 Upload File to Delete",
+            "🆔 Delete by Load ID Only",
+            "🗂️ Delete by Batch ID",
+            "📦 Delete by Pallet"
+        ])
 
         # --- Option 1: Upload file ---
         with del_tab1:
@@ -2032,6 +2045,90 @@ if login_section():
                     st.info("Master_Pick_Data හි Batch IDs නොමැත.")
             else:
                 st.info("Master_Pick_Data හි data නොමැත.")
+
+        # --- Option 4: Delete by Pallet ---
+        with del_tab4:
+            st.info("Pallet ID එකක් දීමෙන් ඒ Pallet හා සම්බන්ධ **සියලු data** — Master_Pick_Data, Master_Partial_Data, Damage_Items — වලින් delete කළ හැක. Load_History නොවෙනස්ව පවතී.")
+
+            # Load all pallets from Master_Pick_Data + Master_Partial_Data + Damage_Items
+            _mpd_pal   = get_safe_dataframe(sh, "Master_Pick_Data")
+            _mpart_pal = get_safe_dataframe(sh, "Master_Partial_Data")
+            _dmg_pal   = get_safe_dataframe(sh, "Damage_Items")
+
+            all_pallets_set = set()
+            for _df, _col in [(_mpd_pal, 'Pallet'), (_mpart_pal, 'Pallet'), (_dmg_pal, 'Pallet')]:
+                if not _df.empty and _col in _df.columns:
+                    all_pallets_set.update(_df[_col].dropna().astype(str).str.strip().tolist())
+            # Also include Gen Pallet IDs from Master_Partial_Data
+            if not _mpart_pal.empty and 'Gen Pallet ID' in _mpart_pal.columns:
+                all_pallets_set.update(_mpart_pal['Gen Pallet ID'].dropna().astype(str).str.strip().tolist())
+
+            all_pallets_list = sorted([p for p in all_pallets_set if p])
+
+            if all_pallets_list:
+                del_pallet = st.selectbox("📦 Select Pallet to Delete:", all_pallets_list, key="del_pallet_sel")
+
+                if del_pallet:
+                    # Preview counts across all sheets
+                    def _count_rows(df, col, val):
+                        if df.empty or col not in df.columns:
+                            return 0
+                        return len(df[df[col].astype(str).str.strip() == str(val).strip()])
+
+                    mpd_count   = _count_rows(_mpd_pal, 'Pallet', del_pallet)
+                    mpart_count = _count_rows(_mpart_pal, 'Pallet', del_pallet)
+                    # Also count Gen Pallet ID matches in partial data
+                    mpart_gen_count = _count_rows(_mpart_pal, 'Gen Pallet ID', del_pallet) if not _mpart_pal.empty and 'Gen Pallet ID' in _mpart_pal.columns else 0
+                    dmg_count   = _count_rows(_dmg_pal, 'Pallet', del_pallet)
+
+                    st.warning(f"⚠️ Pallet **{del_pallet}** හා සම්බන්ධ records:")
+                    pc1, pc2, pc3 = st.columns(3)
+                    pc1.metric("Master_Pick_Data",    mpd_count)
+                    pc2.metric("Master_Partial_Data", mpart_count + mpart_gen_count)
+                    pc3.metric("Damage_Items",        dmg_count)
+
+                    if st.button("🗑️ Delete Pallet from All Sheets", type="primary", key="del_pallet_btn"):
+                        with st.spinner("Deleting..."):
+                            results = []
+
+                            # 1. Master_Pick_Data
+                            mpd_fresh = get_safe_dataframe(sh, "Master_Pick_Data")
+                            if not mpd_fresh.empty and 'Pallet' in mpd_fresh.columns:
+                                filtered_mpd = mpd_fresh[
+                                    mpd_fresh['Pallet'].astype(str).str.strip() != str(del_pallet).strip()
+                                ]
+                                deleted = len(mpd_fresh) - len(filtered_mpd)
+                                APIManager.overwrite_sheet(sh, "Master_Pick_Data", MASTER_PICK_HEADERS, filtered_mpd)
+                                results.append(f"Master_Pick_Data: {deleted} records")
+
+                            # 2. Master_Partial_Data — Pallet column AND Gen Pallet ID column
+                            mpart_fresh = get_safe_dataframe(sh, "Master_Partial_Data")
+                            mpd_hdr = SHEET_HEADERS["Master_Partial_Data"]
+                            if not mpart_fresh.empty:
+                                mask = pd.Series([True] * len(mpart_fresh))
+                                if 'Pallet' in mpart_fresh.columns:
+                                    mask &= mpart_fresh['Pallet'].astype(str).str.strip() != str(del_pallet).strip()
+                                if 'Gen Pallet ID' in mpart_fresh.columns:
+                                    mask &= mpart_fresh['Gen Pallet ID'].astype(str).str.strip() != str(del_pallet).strip()
+                                filtered_mpart = mpart_fresh[mask]
+                                deleted = len(mpart_fresh) - len(filtered_mpart)
+                                APIManager.overwrite_sheet(sh, "Master_Partial_Data", mpd_hdr, filtered_mpart)
+                                results.append(f"Master_Partial_Data: {deleted} records")
+
+                            # 3. Damage_Items
+                            dmg_fresh = get_safe_dataframe(sh, "Damage_Items")
+                            if not dmg_fresh.empty and 'Pallet' in dmg_fresh.columns:
+                                filtered_dmg = dmg_fresh[
+                                    dmg_fresh['Pallet'].astype(str).str.strip() != str(del_pallet).strip()
+                                ]
+                                deleted = len(dmg_fresh) - len(filtered_dmg)
+                                APIManager.overwrite_sheet(sh, "Damage_Items", SHEET_HEADERS["Damage_Items"], filtered_dmg)
+                                results.append(f"Damage_Items: {deleted} records")
+
+                            st.success(f"✅ Pallet **{del_pallet}** deleted — {' | '.join(results)}")
+                            show_confetti()
+            else:
+                st.info("Delete කළ හැකි Pallets නොමැත.")
 
     # ==========================================
     # TAB 5: DAMAGE ITEMS
