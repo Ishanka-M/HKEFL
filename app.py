@@ -1031,9 +1031,69 @@ if login_section():
 
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        if not pick_df.empty: pick_df.to_excel(writer, sheet_name='Pick_Report', index=False)
-                        if not part_df.empty: part_df.to_excel(writer, sheet_name='Partial_Report', index=False)
-                        if not summ_df.empty: summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
+                        wb = writer.book
+
+                        if not pick_df.empty:
+                            # ── Pick_Report: preserve original inventory data ──────────
+                            # Rebuild from original inventory rows (exact format preserved)
+                            # Only WMS-added columns use processed values
+                            WMS_ONLY_COLS = ['Batch ID', 'SO Number', 'Generated Load ID',
+                                             'Country Name', 'Pick Quantity', 'Remark',
+                                             'Actual Qty', 'Order Type', 'Order Number',
+                                             'Store Order Number', 'Customer Po Number', 'Load Id']
+
+                            # inv_original has all 60 columns with original dtypes
+                            inv_orig_norm = inv_original.copy()
+                            inv_orig_norm.columns = [str(c).strip() for c in inv_orig_norm.columns]
+                            inv_orig_norm_map = {str(c).strip().lower(): str(c).strip() for c in inv_orig_norm.columns}
+                            inv_orig_pallet_col = inv_orig_norm_map.get('pallet', 'Pallet')
+                            # Pre-build pallet lookup dict: pallet → first matching row
+                            inv_orig_lookup = {}
+                            for _, orig_r in inv_orig_norm.iterrows():
+                                p_key = str(orig_r.get(inv_orig_pallet_col, '')).strip()
+                                if p_key and p_key not in inv_orig_lookup:
+                                    inv_orig_lookup[p_key] = orig_r
+
+                            pick_rows_excel = []
+                            for _, pr in pick_df.iterrows():
+                                prow_pallet = str(pr.get('Pallet', '')).strip()
+                                orig_row = inv_orig_lookup.get(prow_pallet)
+                                row_out = {}
+                                for col in MASTER_PICK_HEADERS:
+                                    if col in WMS_ONLY_COLS:
+                                        row_out[col] = pr.get(col, '')
+                                    else:
+                                        inv_col = inv_orig_norm_map.get(col.strip().lower())
+                                        if inv_col and orig_row is not None and inv_col in orig_row.index:
+                                            row_out[col] = orig_row[inv_col]
+                                        else:
+                                            row_out[col] = pr.get(col, '')
+                                pick_rows_excel.append(row_out)
+
+                            pick_df_excel = pd.DataFrame(pick_rows_excel, columns=MASTER_PICK_HEADERS)
+                            pick_df_excel.to_excel(writer, sheet_name='Pick_Report', index=False)
+
+                            # Format header row
+                            hdr_fmt = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
+                                                     'font_color': '#FFFFFF', 'border': 1})
+                            ws_pick_xl = writer.sheets['Pick_Report']
+                            for ci, col_name in enumerate(MASTER_PICK_HEADERS):
+                                ws_pick_xl.write(0, ci, col_name, hdr_fmt)
+                                ws_pick_xl.set_column(ci, ci, 16)
+                            ws_pick_xl.freeze_panes(1, 0)
+
+                        if not part_df.empty:
+                            part_df.to_excel(writer, sheet_name='Partial_Report', index=False)
+                            hdr_fmt2 = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
+                                                      'font_color': '#FFFFFF', 'border': 1})
+                            ws_part_xl = writer.sheets['Partial_Report']
+                            for ci, col_name in enumerate(part_df.columns):
+                                ws_part_xl.write(0, ci, col_name, hdr_fmt2)
+                                ws_part_xl.set_column(ci, ci, 18)
+                            ws_part_xl.freeze_panes(1, 0)
+
+                        if not summ_df.empty:
+                            summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
 
                     st.session_state['processed_excel'] = output.getvalue()
                     st.session_state['summary_df'] = summ_df
