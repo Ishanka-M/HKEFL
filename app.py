@@ -805,7 +805,7 @@ if login_section():
             if st.button("Generate Picks & Process", use_container_width=True, type="primary"):
                 with st.spinner("🔄 Processing Data & Saving to Google Sheets..."):
 
-                    inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
+                    inv = pd.read_csv(inv_file, keep_default_na=False, na_values=['']) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file, keep_default_na=False, na_values=[''])
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
 
                     # --- Validate files are not swapped ---
@@ -923,7 +923,7 @@ if login_section():
                     cannot_pick_rows = []
                     try:
                         # Get original inventory (before reconcile) for comparison
-                        inv_orig = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
+                        inv_orig = pd.read_csv(inv_file, keep_default_na=False, na_values=['']) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file, keep_default_na=False, na_values=[''])
                         inv_orig.columns = [str(c).strip() for c in inv_orig.columns]
                         inv_orig_col = {str(c).strip().lower(): str(c).strip() for c in inv_orig.columns}
                         orig_pallet_col = inv_orig_col.get('pallet', 'Pallet')
@@ -1073,13 +1073,45 @@ if login_section():
                             pick_df_excel = pd.DataFrame(pick_rows_excel, columns=MASTER_PICK_HEADERS)
                             pick_df_excel.to_excel(writer, sheet_name='Pick_Report', index=False)
 
-                            # Format header row
-                            hdr_fmt = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
-                                                     'font_color': '#FFFFFF', 'border': 1})
+                            # Format header + column widths + fix scientific notation
+                            hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
+                                                       'font_color': '#FFFFFF', 'border': 1})
+                            # Format for large integers (Supplier, Invoice Number1, etc.) — no scientific notation
+                            int_fmt   = wb.add_format({'num_format': '0'})
+                            float_fmt = wb.add_format({'num_format': '0.######'})
+
+                            # Columns that are large integers → force '0' format
+                            BIG_INT_COLS = {
+                                'Supplier', 'Invoice Number1', 'Stored Attribute Id',
+                                'Gate Pass Id', 'Client So Line', 'Asn Line Number', 'S Qty'
+                            }
+                            # Columns that are floats
+                            FLOAT_COLS = {
+                                'Received Gross Weight', 'Current Gross Weight',
+                                'Received Net Weight', 'Current Net Weight', 'Cbm', 'Container Type'
+                            }
+
                             ws_pick_xl = writer.sheets['Pick_Report']
                             for ci, col_name in enumerate(MASTER_PICK_HEADERS):
                                 ws_pick_xl.write(0, ci, col_name, hdr_fmt)
-                                ws_pick_xl.set_column(ci, ci, 16)
+                                ws_pick_xl.set_column(ci, ci, 18)
+                                # Re-write data cells with correct number format
+                                if col_name in BIG_INT_COLS:
+                                    for ri in range(1, len(pick_df_excel) + 1):
+                                        val = pick_df_excel.iloc[ri-1][col_name]
+                                        if pd.notna(val) and str(val) not in ('', 'nan', 'None'):
+                                            try:
+                                                ws_pick_xl.write_number(ri, ci, int(float(str(val))), int_fmt)
+                                            except:
+                                                ws_pick_xl.write(ri, ci, str(val))
+                                elif col_name in FLOAT_COLS:
+                                    for ri in range(1, len(pick_df_excel) + 1):
+                                        val = pick_df_excel.iloc[ri-1][col_name]
+                                        if pd.notna(val) and str(val) not in ('', 'nan', 'None'):
+                                            try:
+                                                ws_pick_xl.write_number(ri, ci, float(str(val)), float_fmt)
+                                            except:
+                                                ws_pick_xl.write(ri, ci, str(val))
                             ws_pick_xl.freeze_panes(1, 0)
 
                         if not part_df.empty:
@@ -1557,7 +1589,7 @@ if login_section():
                 st.caption("Inventory file allocation status report (Picked / Available / Damage)")
                 if st.button("🔍 Generate Basic Report", type="primary", use_container_width=True, key="gen_basic"):
                     with st.spinner("Generating..."):
-                        inv_data = pd.read_csv(inv_report_file) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file)
+                        inv_data = pd.read_csv(inv_report_file, keep_default_na=False, na_values=['']) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file, keep_default_na=False, na_values=[''])
                         report_df = generate_inventory_details_report(inv_data, sh)
                         if not report_df.empty:
                             st.success(f"✅ Total rows: {len(report_df)}")
@@ -1589,7 +1621,7 @@ if login_section():
                 """)
                 if st.button("📊 Generate Formatted Pick Report", type="primary", use_container_width=True, key="gen_fmt"):
                     with st.spinner("Generating Formatted Report..."):
-                        inv_data = pd.read_csv(inv_report_file) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file)
+                        inv_data = pd.read_csv(inv_report_file, keep_default_na=False, na_values=['']) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file, keep_default_na=False, na_values=[''])
                         # Normalize column names: strip whitespace
                         inv_data.columns = [str(c).strip() for c in inv_data.columns]
 
@@ -1689,10 +1721,10 @@ if login_section():
                             for h in REPORT_HEADERS:
                                 if h == 'Pallet':
                                     row[h] = override_pallet if override_pallet is not None else (
-                                        inv_row['Pallet'] if 'Pallet' in inv_row.index else '')
+                                        inv_row[_inv_pal_col] if _inv_pal_col in inv_row.index else '')
                                 elif h == 'Actual Qty':
                                     row[h] = override_actual_qty if override_actual_qty is not None else (
-                                        inv_row['Actual Qty'] if 'Actual Qty' in inv_row.index else '')
+                                        inv_row[_inv_aq_col] if _inv_aq_col in inv_row.index else '')
                                 elif h == 'Client So 2':
                                     cs_col = inv_col_map_r.get('client so', 'Client So')
                                     row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
@@ -1706,9 +1738,9 @@ if login_section():
                         # Build formatted report rows
                         fmt_rows = []
                         for _, inv_row in inv_data.iterrows():
-                            orig_pallet = str(inv_row.get('Pallet', '')).strip()
+                            orig_pallet = str(inv_row.get(_inv_pal_col, '')).strip()
 
-                            inv_actual_qty = pd.to_numeric(inv_row.get('Actual Qty', 0), errors='coerce')
+                            inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0
 
                             is_damaged   = orig_pallet in damage_pallets
@@ -1771,13 +1803,17 @@ if login_section():
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
                         # ── Actual Qty Validation ──────────────────────────────────────
-                        inv_total_qty = pd.to_numeric(inv_data['Actual Qty'], errors='coerce').fillna(0).sum()
+                        # Use inv_col_map_r for safe column access (handles any case/spacing)
+                        _inv_aq_col  = inv_col_map_r.get('actual qty', 'Actual Qty')
+                        _inv_pal_col = inv_col_map_r.get('pallet', 'Pallet')
+
+                        inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
                         rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
                         qty_match     = abs(inv_total_qty - rpt_total_qty) < 0.01
 
                         # inv_pallet_qty: original inventory qty per pallet
                         inv_pallet_qty = (
-                            inv_data.groupby('Pallet')['Actual Qty']
+                            inv_data.groupby(_inv_pal_col)[_inv_aq_col]
                             .apply(lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum())
                             .to_dict()
                         )
@@ -1809,11 +1845,10 @@ if login_section():
                         mismatch_pallets = []
                         try:
                             # orig_total_inv: total inventory qty per base pallet
-                            # (orig row + all Gen Pallet ID variant rows summed together)
                             orig_total_inv = {}
                             for _, inv_r in inv_data.iterrows():
-                                p = str(inv_r.get('Pallet', '')).strip()
-                                q = pd.to_numeric(inv_r.get('Actual Qty', 0), errors='coerce')
+                                p = str(inv_r.get(_inv_pal_col, '')).strip()
+                                q = pd.to_numeric(inv_r.get(_inv_aq_col, 0), errors='coerce')
                                 q = 0.0 if pd.isna(q) else float(q)
                                 base = _base_pallet(p)
                                 orig_total_inv[base] = orig_total_inv.get(base, 0.0) + q
