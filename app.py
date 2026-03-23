@@ -1646,6 +1646,10 @@ if login_section():
                         # Rebuild map after rename
                         inv_col_map_r = {str(c).strip().lower(): str(c).strip() for c in inv_data.columns}
 
+                        # Safe column name lookups — used throughout this section
+                        _inv_aq_col  = inv_col_map_r.get('actual qty', 'Actual Qty')
+                        _inv_pal_col = inv_col_map_r.get('pallet', 'Pallet')
+
                         # Notepad headers order
                         REPORT_HEADERS = [
                             'Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
@@ -1803,10 +1807,6 @@ if login_section():
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
                         # ── Actual Qty Validation ──────────────────────────────────────
-                        # Use inv_col_map_r for safe column access (handles any case/spacing)
-                        _inv_aq_col  = inv_col_map_r.get('actual qty', 'Actual Qty')
-                        _inv_pal_col = inv_col_map_r.get('pallet', 'Pallet')
-
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
                         rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
                         qty_match     = abs(inv_total_qty - rpt_total_qty) < 0.01
