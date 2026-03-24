@@ -124,13 +124,13 @@ class APIManager:
     - ws.update() replaces clear()+append_rows() (2 calls → 1)
     """
     _cache: dict = {}
-    _cache_ttl: int = 30
+    _cache_ttl: int = 60       # 60s cache — reduces repeat reads significantly
     _last_request: float = 0.0
-    _min_interval: float = 0.35
+    _min_interval: float = 0.2   # 5 req/sec max — safe under 300/min quota
     _lock = __import__('threading').Lock()
     _wb_cache = None
     _wb_ts: float = 0.0
-    _wb_ttl: int = 300
+    _wb_ttl: int = 600         # 10min workbook cache
 
     @classmethod
     def _throttle(cls):
@@ -413,7 +413,7 @@ def reconcile_inventory(inv_df, sh):
     inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
 
     try:
-        pick_history = get_safe_dataframe(sh, "Master_Pick_Data")
+        pick_history = APIManager.read_sheet(sh, "Master_Pick_Data")  # uses cache
         if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
             pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
             # ✅ FIX: Convert Pallet to str to avoid int64 vs str merge error
@@ -510,11 +510,11 @@ def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
                 return str(val).strip()
         temp_inv[supplier_col] = temp_inv[supplier_col].apply(normalize_supplier)
 
-    # Load existing Gen Pallet IDs from Master_Partial_Data to avoid duplicates
+    # Load existing Gen Pallet IDs from Master_Partial_Data (uses cache if available)
     existing_gen_pallet_ids = set()
     if sh is not None:
         try:
-            existing_partial = get_safe_dataframe(sh, "Master_Partial_Data")
+            existing_partial = APIManager.read_sheet(sh, "Master_Partial_Data")
             if not existing_partial.empty and 'Gen Pallet ID' in existing_partial.columns:
                 existing_gen_pallet_ids = set(existing_partial['Gen Pallet ID'].astype(str).tolist())
         except:
@@ -1290,31 +1290,21 @@ if login_section():
 
                     STATUS_OPTIONS = ["Pending", "PL Pending", "Processing", "Completed", "Cancelled"]
 
-                    # Pre-build pick counts per Load ID (fix column name flexibility)
+                    # Pre-build pick counts per Load ID — vectorized groupby (fast)
                     pick_counts_by_lid = {}
                     pick_qty_by_lid = {}
                     if not pick_df.empty:
-                        # Find Load Id column — try exact, then case-insensitive
-                        load_id_col_pick = None
-                        for c in pick_df.columns:
-                            if str(c).strip().lower() in ('load id', 'loadid', 'load_id'):
-                                load_id_col_pick = c
-                                break
-                        # Find Actual Qty column
-                        actual_col_pick = None
-                        for c in pick_df.columns:
-                            if str(c).strip().lower() == 'actual qty':
-                                actual_col_pick = c
-                                break
+                        load_id_col_pick = next((c for c in pick_df.columns if str(c).strip().lower() in ('load id','loadid','load_id')), None)
+                        actual_col_pick  = next((c for c in pick_df.columns if str(c).strip().lower() == 'actual qty'), None)
 
                         if load_id_col_pick:
-                            for lid_p in pick_df[load_id_col_pick].dropna().unique():
-                                rows_p = pick_df[pick_df[load_id_col_pick].astype(str).str.strip() == str(lid_p).strip()]
-                                pick_counts_by_lid[str(lid_p).strip()] = len(rows_p)
-                                if actual_col_pick:
-                                    pick_qty_by_lid[str(lid_p).strip()] = pd.to_numeric(rows_p[actual_col_pick], errors='coerce').sum()
-                                else:
-                                    pick_qty_by_lid[str(lid_p).strip()] = 0
+                            _lid_series = pick_df[load_id_col_pick].astype(str).str.strip()
+                            pick_counts_by_lid = _lid_series.value_counts().to_dict()
+                            if actual_col_pick:
+                                _qty_grp = pick_df.groupby(_lid_series)[actual_col_pick].apply(
+                                    lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
+                                )
+                                pick_qty_by_lid = _qty_grp.to_dict()
 
                     def render_load_list(id_list, category_color, category_label):
                         """Render loads as a table-style list."""
@@ -1658,8 +1648,9 @@ if login_section():
                             'Inventory Type', 'Actual Qty'
                         ]
 
-                        # Load Master_Pick_Data
-                        mpd_df = get_safe_dataframe(sh, "Master_Pick_Data")
+                        # Batch read all needed sheets at once (cached)
+                        _rpt_sheets = APIManager.batch_read(sh, ["Master_Pick_Data", "Damage_Items", "Master_Partial_Data"])
+                        mpd_df      = _rpt_sheets["Master_Pick_Data"]
                         mpd_col = {str(c).strip().lower(): str(c).strip() for c in (mpd_df.columns if not mpd_df.empty else [])}
 
                         # Build pick qty per pallet
@@ -1680,8 +1671,8 @@ if login_section():
                                 pick_country_map[pkey] = str(pr.get(cn_col,''))
                                 pick_loadid_map[pkey]  = str(pr.get(gl_col,''))
 
-                        # Load Damage_Items — build remark columns
-                        dmg_df = get_safe_dataframe(sh, "Damage_Items")
+                        # Load Damage_Items — build remark columns (already fetched above)
+                        dmg_df = _rpt_sheets["Damage_Items"]
                         # Distinct remarks → one column each
                         damage_remarks = []
                         dmg_pallet_remark_qty = {}  # (pallet, remark) → actual qty
@@ -1695,8 +1686,8 @@ if login_section():
                                 key = (pkey, rmk)
                                 dmg_pallet_remark_qty[key] = dmg_pallet_remark_qty.get(key, 0) + dqty
 
-                        # Load Master_Partial_Data for pallet replace
-                        partial_df = get_safe_dataframe(sh, "Master_Partial_Data")
+                        # Load Master_Partial_Data (already fetched above)
+                        partial_df = _rpt_sheets["Master_Partial_Data"]
                         partial_map = {}  # orig_pallet → (gen_pallet_id, partial_qty) list
                         if not partial_df.empty:
                             pc = {str(c).strip().lower(): str(c).strip() for c in partial_df.columns}
@@ -2066,7 +2057,7 @@ if login_section():
             del_load_id = st.text_input("🆔 Enter Load ID to Delete:")
 
             if del_load_id:
-                master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
+                master_pick_df = APIManager.read_sheet(sh, "Master_Pick_Data")
                 if not master_pick_df.empty and 'Load Id' in master_pick_df.columns:
                     preview = master_pick_df[master_pick_df['Load Id'].astype(str).str.strip() == del_load_id.strip()]
                     if not preview.empty:
@@ -2170,9 +2161,11 @@ if login_section():
             st.info("Pallet ID එකක් දීමෙන් ඒ Pallet හා සම්බන්ධ **සියලු data** — Master_Pick_Data, Master_Partial_Data, Damage_Items — වලින් delete කළ හැක. Load_History නොවෙනස්ව පවතී.")
 
             # Load all pallets from Master_Pick_Data + Master_Partial_Data + Damage_Items
-            _mpd_pal   = get_safe_dataframe(sh, "Master_Pick_Data")
-            _mpart_pal = get_safe_dataframe(sh, "Master_Partial_Data")
-            _dmg_pal   = get_safe_dataframe(sh, "Damage_Items")
+            # Batch read 3 sheets (cached, fast)
+            _del_batch = APIManager.batch_read(sh, ["Master_Pick_Data", "Master_Partial_Data", "Damage_Items"])
+            _mpd_pal   = _del_batch["Master_Pick_Data"]
+            _mpart_pal = _del_batch["Master_Partial_Data"]
+            _dmg_pal   = _del_batch["Damage_Items"]
 
             all_pallets_set = set()
             for _df, _col in [(_mpd_pal, 'Pallet'), (_mpart_pal, 'Pallet'), (_dmg_pal, 'Pallet')]:
