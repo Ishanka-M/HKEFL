@@ -2087,8 +2087,12 @@ if login_section():
                             temp_master = master_pick_df.copy()
                             temp_master.columns = temp_master.columns.str.strip().str.upper()
 
+                            # Use 'GENERATED LOAD ID' (WMS field) not 'LOAD ID' (inventory field)
+                            # Delete file 'Load Id' column contains Generated Load ID values (e.g. SO-23358-8)
+                            gen_lid_col = 'GENERATED LOAD ID' if 'GENERATED LOAD ID' in temp_master.columns else 'LOAD ID'
+
                             temp_master['MATCH_KEY'] = (
-                                temp_master['LOAD ID'].astype(str).str.strip() + "_" +
+                                temp_master[gen_lid_col].astype(str).str.strip() + "_" +
                                 temp_master['PALLET'].astype(str).str.strip() + "_" +
                                 pd.to_numeric(temp_master['ACTUAL QTY'], errors='coerce').fillna(0).astype(str)
                             )
