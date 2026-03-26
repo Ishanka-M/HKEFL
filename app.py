@@ -1758,55 +1758,71 @@ if login_section():
                             total_picked = pick_qty_map.get(orig_pallet, 0)
 
                             # ── Case 1: Inventory row Pallet IS a Gen Pallet ID ──────────
-                            # Tally: inv_actual_qty must match Partial Qty from Master_Partial_Data
+                            # Tally: inv_actual_qty must match LAST Partial Qty in Master_Partial_Data
                             if orig_pallet in gen_to_orig:
                                 real_orig = gen_to_orig[orig_pallet]
-                                # Find the matching partial entry
+                                # Find the matching partial entry for this Gen Pallet ID
                                 matching_partial = next(
                                     (p for p in partial_map.get(real_orig, [])
                                      if p['gen_pallet'] == orig_pallet),
                                     None
                                 )
                                 if matching_partial:
-                                    expected_qty = matching_partial['partial_qty']
-                                    if abs(inv_actual_qty - expected_qty) <= 0.01:
-                                        # Tally matches → show as picked partial line
+                                    # Tally against Partial Qty of this specific Gen Pallet ID
+                                    if abs(inv_actual_qty - matching_partial['partial_qty']) <= 0.01:
                                         row = build_row(inv_row)
-                                        row['Pick Quantity']       = expected_qty
+                                        row['Pick Quantity']       = matching_partial['partial_qty']
                                         row['Destination Country'] = pick_country_map.get(real_orig, '')
                                         row['Order NO']            = matching_partial['load_id']
                                         for rmk in damage_remarks:
                                             row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                         fmt_rows.append(row)
-                                    # If tally doesn't match → skip (handled by orig pallet branch)
-                                # If no matching partial entry → skip
+                                    # No match → skip
                                 continue
 
                             # ── Case 2: Inventory row Pallet is an original pallet ───────
-                            # Get partial entries for this pallet from Master_Partial_Data
                             partials = partial_map.get(orig_pallet, [])
 
                             if partials:
-                                # Tally: inv_actual_qty must match Balance Qty
-                                # Balance Qty = mpd_actual - total_partial_qty
-                                mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
-                                total_partial_qty = sum(p['partial_qty'] for p in partials)
-                                expected_balance  = mpd_actual - total_partial_qty
+                                # Use LAST partial entry for tally
+                                last_p        = partials[-1]
+                                last_balance  = last_p['mpd_actual'] - last_p['partial_qty']
 
-                                if abs(inv_actual_qty - expected_balance) <= 0.01:
-                                    # Tally matches → show as balance line (ATS)
+                                if last_balance <= 0.01:
+                                    # Balance Qty = 0 → tally against last Actual Qty
+                                    tally_qty  = last_p['mpd_actual']
+                                    tally_type = 'picked'  # fully picked pallet
+                                else:
+                                    # Balance Qty > 0 → tally against last Balance Qty
+                                    tally_qty  = last_balance
+                                    tally_type = 'balance'
+
+                                if abs(inv_actual_qty - tally_qty) <= 0.01:
+                                    # Tally matches
                                     row = build_row(inv_row)
-                                    row['Pick Quantity']       = ''
-                                    row['Destination Country'] = ''
-                                    row['Order NO']            = ''
-                                    for rmk in damage_remarks:
-                                        row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                    row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
+                                    if tally_type == 'balance':
+                                        # Show as ATS/balance line
+                                        row['Pick Quantity']       = ''
+                                        row['Destination Country'] = ''
+                                        row['Order NO']            = ''
+                                        for rmk in damage_remarks:
+                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
+                                    else:
+                                        # Balance=0: fully consumed — show as picked line
+                                        row['Pick Quantity']       = last_p['partial_qty']
+                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
+                                        row['Order NO']            = last_p['load_id']
+                                        for rmk in damage_remarks:
+                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                        row['ATS'] = ''
                                     fmt_rows.append(row)
                                 else:
-                                    # Tally doesn't match inventory qty → show full partial breakdown
-                                    # Line 1..N: Gen Pallet ID lines
+                                    # Tally doesn't match → show full partial breakdown from scratch
+                                    mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
+                                    total_partial_qty = sum(p['partial_qty'] for p in partials)
+
                                     for par_entry in partials:
                                         row = build_row(inv_row,
                                                         override_pallet=par_entry['gen_pallet'],
@@ -1819,7 +1835,6 @@ if login_section():
                                         row['ATS'] = ''
                                         fmt_rows.append(row)
 
-                                    # Balance line
                                     balance_qty = max(0.0, mpd_actual - total_partial_qty)
                                     if balance_qty > 0 and not is_damaged:
                                         bal_row = build_row(inv_row,
@@ -1841,8 +1856,6 @@ if login_section():
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks:
                                     row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-
-                                # ATS = Actual Qty - Total Picked (only if not damage and > 0)
                                 ats_qty   = inv_actual_qty - total_picked
                                 row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
                                 fmt_rows.append(row)
