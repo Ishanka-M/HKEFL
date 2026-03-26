@@ -2090,12 +2090,12 @@ if login_section():
                             temp_master['MATCH_KEY'] = (
                                 temp_master['LOAD ID'].astype(str).str.strip() + "_" +
                                 temp_master['PALLET'].astype(str).str.strip() + "_" +
-                                temp_master['ACTUAL QTY'].astype(float).astype(str)
+                                pd.to_numeric(temp_master['ACTUAL QTY'], errors='coerce').fillna(0).astype(str)
                             )
                             del_df['MATCH_KEY'] = (
                                 del_df['LOAD ID'].astype(str).str.strip() + "_" +
                                 del_df['PALLET'].astype(str).str.strip() + "_" +
-                                del_df['ACTUAL QTY'].astype(float).astype(str)
+                                pd.to_numeric(del_df['ACTUAL QTY'], errors='coerce').fillna(0).astype(str)
                             )
 
                             keys_to_delete = del_df['MATCH_KEY'].tolist()
