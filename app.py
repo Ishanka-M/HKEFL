@@ -1688,22 +1688,38 @@ if login_section():
 
                         # Load Master_Partial_Data (already fetched above)
                         partial_df = _rpt_sheets["Master_Partial_Data"]
-                        partial_map = {}  # orig_pallet → (gen_pallet_id, partial_qty) list
+                        partial_map = {}     # orig_pallet → list of {gen_pallet, partial_qty, load_id, mpd_actual_qty}
+                        gen_to_orig = {}     # gen_pallet_id → orig_pallet  (for inventory rows that are Gen Pallet IDs)
+
                         if not partial_df.empty:
                             pc = {str(c).strip().lower(): str(c).strip() for c in partial_df.columns}
-                            pp_col  = pc.get('pallet','Pallet')
-                            pq_col  = pc.get('partial qty','Partial Qty')
-                            pg_col  = pc.get('gen pallet id','Gen Pallet ID')
-                            pl_col  = pc.get('load id','Load ID')
+                            pp_col  = pc.get('pallet',        'Pallet')
+                            pq_col  = pc.get('partial qty',   'Partial Qty')
+                            pg_col  = pc.get('gen pallet id', 'Gen Pallet ID')
+                            pl_col  = pc.get('load id',       'Load ID')
+                            pa_col  = pc.get('actual qty',    'Actual Qty')  # original qty in partial data
+
                             for _, par in partial_df.iterrows():
-                                opallet  = str(par.get(pp_col,'')).strip()
-                                gpallet  = str(par.get(pg_col,'')).strip()
-                                pqty     = pd.to_numeric(par.get(pq_col,0), errors='coerce') or 0
-                                loadid_p = str(par.get(pl_col,'')).strip()
+                                opallet  = str(par.get(pp_col, '')).strip()
+                                gpallet  = str(par.get(pg_col, '')).strip()
+                                pqty     = pd.to_numeric(par.get(pq_col, 0), errors='coerce')
+                                pqty     = 0.0 if pd.isna(pqty) else float(pqty)
+                                loadid_p = str(par.get(pl_col, '')).strip()
+                                aqty     = pd.to_numeric(par.get(pa_col, 0), errors='coerce')
+                                aqty     = 0.0 if pd.isna(aqty) else float(aqty)
+
                                 if opallet:
                                     if opallet not in partial_map:
                                         partial_map[opallet] = []
-                                    partial_map[opallet].append({'gen_pallet': gpallet, 'partial_qty': pqty, 'load_id': loadid_p})
+                                    partial_map[opallet].append({
+                                        'gen_pallet':  gpallet,
+                                        'partial_qty': pqty,
+                                        'load_id':     loadid_p,
+                                        'mpd_actual':  aqty,   # Actual Qty recorded at pick time
+                                    })
+                                # Build reverse map: gen_pallet_id → orig_pallet
+                                if gpallet and opallet:
+                                    gen_to_orig[gpallet] = opallet
 
                         # Build sets of pallets in Damage_Items for ATS check
                         damage_pallets = set()
@@ -1741,39 +1757,81 @@ if login_section():
                             is_damaged   = orig_pallet in damage_pallets
                             total_picked = pick_qty_map.get(orig_pallet, 0)
 
+                            # ── Case 1: Inventory row Pallet IS a Gen Pallet ID ──────────
+                            # Tally: inv_actual_qty must match Partial Qty from Master_Partial_Data
+                            if orig_pallet in gen_to_orig:
+                                real_orig = gen_to_orig[orig_pallet]
+                                # Find the matching partial entry
+                                matching_partial = next(
+                                    (p for p in partial_map.get(real_orig, [])
+                                     if p['gen_pallet'] == orig_pallet),
+                                    None
+                                )
+                                if matching_partial:
+                                    expected_qty = matching_partial['partial_qty']
+                                    if abs(inv_actual_qty - expected_qty) <= 0.01:
+                                        # Tally matches → show as picked partial line
+                                        row = build_row(inv_row)
+                                        row['Pick Quantity']       = expected_qty
+                                        row['Destination Country'] = pick_country_map.get(real_orig, '')
+                                        row['Order NO']            = matching_partial['load_id']
+                                        for rmk in damage_remarks:
+                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                        row['ATS'] = ''
+                                        fmt_rows.append(row)
+                                    # If tally doesn't match → skip (handled by orig pallet branch)
+                                # If no matching partial entry → skip
+                                continue
+
+                            # ── Case 2: Inventory row Pallet is an original pallet ───────
                             # Get partial entries for this pallet from Master_Partial_Data
                             partials = partial_map.get(orig_pallet, [])
 
                             if partials:
-                                # --- Line separation for partial pallets ---
+                                # Tally: inv_actual_qty must match Balance Qty
+                                # Balance Qty = mpd_actual - total_partial_qty
+                                mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
                                 total_partial_qty = sum(p['partial_qty'] for p in partials)
+                                expected_balance  = mpd_actual - total_partial_qty
 
-                                # Line 1..N: one line per partial entry → Gen Pallet ID + Partial Qty
-                                for par_entry in partials:
-                                    row = build_row(inv_row,
-                                                    override_pallet=par_entry['gen_pallet'],
-                                                    override_actual_qty=par_entry['partial_qty'])
-                                    row['Pick Quantity']       = par_entry['partial_qty']
-                                    row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                    row['Order NO']            = par_entry['load_id']
+                                if abs(inv_actual_qty - expected_balance) <= 0.01:
+                                    # Tally matches → show as balance line (ATS)
+                                    row = build_row(inv_row)
+                                    row['Pick Quantity']       = ''
+                                    row['Destination Country'] = ''
+                                    row['Order NO']            = ''
                                     for rmk in damage_remarks:
                                         row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                    row['ATS'] = ''
+                                    row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     fmt_rows.append(row)
+                                else:
+                                    # Tally doesn't match inventory qty → show full partial breakdown
+                                    # Line 1..N: Gen Pallet ID lines
+                                    for par_entry in partials:
+                                        row = build_row(inv_row,
+                                                        override_pallet=par_entry['gen_pallet'],
+                                                        override_actual_qty=par_entry['partial_qty'])
+                                        row['Pick Quantity']       = par_entry['partial_qty']
+                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
+                                        row['Order NO']            = par_entry['load_id']
+                                        for rmk in damage_remarks:
+                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                        row['ATS'] = ''
+                                        fmt_rows.append(row)
 
-                                # Balance line: Original Pallet + (Actual Qty - total partial qty) → ATS
-                                balance_qty = inv_actual_qty - total_partial_qty
-                                if balance_qty > 0 and not is_damaged:
-                                    bal_row = build_row(inv_row,
-                                                        override_pallet=orig_pallet,
-                                                        override_actual_qty=balance_qty)
-                                    bal_row['Pick Quantity']       = ''
-                                    bal_row['Destination Country'] = ''
-                                    bal_row['Order NO']            = ''
-                                    for rmk in damage_remarks:
-                                        bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                    bal_row['ATS'] = int(balance_qty)
-                                    fmt_rows.append(bal_row)
+                                    # Balance line
+                                    balance_qty = max(0.0, mpd_actual - total_partial_qty)
+                                    if balance_qty > 0 and not is_damaged:
+                                        bal_row = build_row(inv_row,
+                                                            override_pallet=orig_pallet,
+                                                            override_actual_qty=balance_qty)
+                                        bal_row['Pick Quantity']       = ''
+                                        bal_row['Destination Country'] = ''
+                                        bal_row['Order NO']            = ''
+                                        for rmk in damage_remarks:
+                                            bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                        bal_row['ATS'] = int(balance_qty)
+                                        fmt_rows.append(bal_row)
 
                             else:
                                 # --- No partial: single line ---
