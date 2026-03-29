@@ -2068,6 +2068,17 @@ if login_section():
         with del_tab1:
             st.info("Load ID, Pallet සහ Actual Qty අඩංගු Excel හෝ CSV ගොනුවක් Upload කිරීමෙන් ගැලපෙන දත්ත **Master_Pick_Data** එකෙන් පමණක් මකා දැමිය හැක. Load_History record නොවෙනස්ව පවතී.")
 
+            # Required headers info
+            st.markdown("""
+            **📋 Upload File Required Headers:**
+            | Column | Description |
+            |---|---|
+            | `Load Id` | Generated Load ID (e.g. SO-23358-8) |
+            | `Pallet` | Pallet ID |
+            | `Actual Qty` | Pick Quantity |
+            """)
+            st.caption("💡 Dashboard → Advanced Search → Load ID select → Download Pick Report → ඒ file upload කළ හැකිය.")
+
             del_file = st.file_uploader("Upload Data to Delete", type=['csv', 'xlsx'], key="del_file_uploader")
             if del_file:
                 if st.button("🗑️ Delete Matching Records", type="primary"):
@@ -2127,27 +2138,53 @@ if login_section():
 
         # --- Option 2: Delete by Load ID only ---
         with del_tab2:
-            st.info("Load ID එකක් ටයිප් කිරීමෙන් ඒ Load ID එකට අදාල සියලු data **Master_Pick_Data** එකෙන් පමණක් delete කළ හැක. Load_History record නොවෙනස්ව පවතී.")
+            st.info("Load ID එකක් ටයිප් කිරීමෙන් හෝ Load ID ලැයිස්තුවක් Excel/CSV ගොනුවෙන් upload කිරීමෙන් ඒ Load ID වලට අදාල සියලු data **Master_Pick_Data** එකෙන් පමණක් delete කළ හැක. Load_History record නොවෙනස්ව පවතී.")
 
-            del_load_id = st.text_input("🆔 Enter Load ID to Delete:")
+            lid_method = st.radio("Delete Method:", ["⌨️ Type Load ID", "📂 Upload Load ID List (Excel/CSV)"],
+                                  horizontal=True, key="lid_del_method")
 
-            if del_load_id:
-                master_pick_df = APIManager.read_sheet(sh, "Master_Pick_Data")
-                if not master_pick_df.empty and 'Load Id' in master_pick_df.columns:
-                    preview = master_pick_df[master_pick_df['Load Id'].astype(str).str.strip() == del_load_id.strip()]
-                    if not preview.empty:
-                        st.warning(f"⚠️ Load ID **{del_load_id}** සඳහා Master_Pick_Data හි {len(preview)} records මකා දැමෙනු ඇත.")
-                        st.dataframe(preview.astype(str), use_container_width=True)
+            if lid_method == "⌨️ Type Load ID":
+                del_load_id = st.text_input("🆔 Enter Load ID to Delete:")
+                load_ids_to_delete = [del_load_id.strip()] if del_load_id.strip() else []
+
+            else:  # Upload Excel
+                st.caption("Excel/CSV file හි **`Load Id`** column එකක් තිබිය යුතුය. එක් column එකක Load ID ලැයිස්තුව.")
+                lid_file = st.file_uploader("📂 Upload Load ID List", type=['csv', 'xlsx'], key="lid_file_uploader")
+                load_ids_to_delete = []
+                if lid_file:
+                    lid_df = pd.read_csv(lid_file) if lid_file.name.endswith('.csv') else pd.read_excel(lid_file)
+                    lid_col = next((c for c in lid_df.columns if str(c).strip().lower() == 'load id'), None)
+                    if lid_col:
+                        load_ids_to_delete = [str(v).strip() for v in lid_df[lid_col].dropna().unique() if str(v).strip()]
+                        st.success(f"✅ {len(load_ids_to_delete)} Load IDs found")
+                        st.dataframe(pd.DataFrame(load_ids_to_delete, columns=['Load ID']), use_container_width=True, height=200)
                     else:
-                        st.info(f"Load ID **{del_load_id}** සඳහා Master_Pick_Data හි records හමු නොවීය.")
+                        st.error("❌ File හි 'Load Id' column හමු නොවීය.")
 
-                if st.button("🗑️ Delete by Load ID", type="primary"):
+            if load_ids_to_delete:
+                master_pick_df = APIManager.read_sheet(sh, "Master_Pick_Data")
+                lid_col_mpd = next((c for c in (master_pick_df.columns if not master_pick_df.empty else [])
+                                    if str(c).strip().lower() in ('load id', 'generated load id')), 'Load Id')
+
+                if not master_pick_df.empty and lid_col_mpd in master_pick_df.columns:
+                    preview = master_pick_df[master_pick_df[lid_col_mpd].astype(str).str.strip().isin(load_ids_to_delete)]
+                    if not preview.empty:
+                        st.warning(f"⚠️ **{len(load_ids_to_delete)}** Load ID(s) සඳහා Master_Pick_Data හි **{len(preview)}** records මකා දැමෙනු ඇත.")
+                        st.dataframe(preview[['Generated Load ID','Pallet','Actual Qty']].astype(str) if 'Generated Load ID' in preview.columns else preview.astype(str),
+                                     use_container_width=True, height=200)
+                    else:
+                        st.info("ගැලපෙන records Master_Pick_Data හි හමු නොවීය.")
+
+                if st.button("🗑️ Delete by Load ID", type="primary", key="del_lid_btn"):
                     with st.spinner("Deleting..."):
                         master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
                         deleted_pick = 0
 
-                        if not master_pick_df.empty and 'Load Id' in master_pick_df.columns:
-                            filtered = master_pick_df[master_pick_df['Load Id'].astype(str).str.strip() != del_load_id.strip()]
+                        lid_col_del = next((c for c in (master_pick_df.columns if not master_pick_df.empty else [])
+                                            if str(c).strip().lower() == 'generated load id'), 'Load Id')
+
+                        if not master_pick_df.empty and lid_col_del in master_pick_df.columns:
+                            filtered = master_pick_df[~master_pick_df[lid_col_del].astype(str).str.strip().isin(load_ids_to_delete)]
                             deleted_pick = len(master_pick_df) - len(filtered)
 
                             ws_pick = sh.worksheet("Master_Pick_Data")
@@ -2161,7 +2198,8 @@ if login_section():
                                 ws_pick.append_rows(save_df.astype(str).replace('nan', '').values.tolist())
 
                         # ✅ Load_History DELETE කරන්නේ නැහැ — Load ID history රකිනවා
-                        st.success(f"✅ Load ID **{del_load_id}** — Master_Pick_Data: {deleted_pick} records මකා දමන ලදී! (Load_History නොවෙනස්ව ඇත)")
+                        ids_str = ', '.join(load_ids_to_delete[:3]) + ('...' if len(load_ids_to_delete) > 3 else '')
+                        st.success(f"✅ Load ID(s) [{ids_str}] — Master_Pick_Data: {deleted_pick} records මකා දමන ලදී! (Load_History නොවෙනස්ව ඇත)")
                         show_confetti()
 
         # --- Option 3: Delete by Batch ID ---
