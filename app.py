@@ -492,10 +492,11 @@ def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
         orig_actual_col = orig_col_map.get('actual qty', 'Actual Qty')
         if orig_pallet_col in inv_orig_norm.columns and orig_actual_col in inv_orig_norm.columns:
             inv_orig_norm[orig_actual_col] = pd.to_numeric(inv_orig_norm[orig_actual_col], errors='coerce').fillna(0)
-            for _, orig_row in inv_orig_norm.iterrows():
-                p = str(orig_row[orig_pallet_col]).strip()
-                q = float(orig_row[orig_actual_col])
-                orig_qty_map[p] = q
+            # ⚡ Vectorized: build dict directly without iterrows
+            orig_qty_map = dict(zip(
+                inv_orig_norm[orig_pallet_col].astype(str).str.strip(),
+                inv_orig_norm[orig_actual_col].astype(float)
+            ))
 
     # ── Normalize Supplier column: float → integer string (remove .0 suffix) ──
     # e.g. 657001362301.0 → "657001362301"  so UPC matching works correctly
@@ -691,17 +692,25 @@ def generate_inventory_details_report(inv_df, sh):
         try:
             dmg_df = get_safe_dataframe(sh, "Damage_Items")
             if not dmg_df.empty and 'Pallet' in dmg_df.columns:
-                for _, dr in dmg_df.iterrows():
-                    p = str(dr.get('Pallet', '')).strip()
-                    r = str(dr.get('Remark', 'Damage')).strip()
-                    qty = str(dr.get('Actual Qty', '')).strip()
+                # ⚡ Vectorized damage_lookup build
+                dmg_df['_pallet'] = dmg_df['Pallet'].astype(str).str.strip()
+                dmg_df['_remark'] = dmg_df.get('Remark', 'Damage').astype(str).str.strip()
+                dmg_df['_qty']    = dmg_df.get('Actual Qty', '').astype(str).str.strip()
+                dmg_df['_entry']  = dmg_df.apply(
+                    lambda r: f"DAMAGE: {r['_remark']} (Qty:{r['_qty']})" if r['_qty'] else f"DAMAGE: {r['_remark']}", axis=1
+                )
+                for p, grp in dmg_df.groupby('_pallet'):
                     if p:
-                        # If same pallet has multiple damage rows, concatenate remarks
-                        existing = damage_lookup.get(p, '')
-                        new_remark = f"DAMAGE: {r} (Qty:{qty})" if qty else f"DAMAGE: {r}"
-                        damage_lookup[p] = (existing + ' | ' + new_remark).lstrip(' | ') if existing else new_remark
-        except Exception as e:
+                        damage_lookup[p] = ' | '.join(grp['_entry'].tolist())
+        except Exception:
             pass
+
+        # ⚡ Pre-build pick lookup: {pallet: [list of pick rows as dicts]} — avoid repeated per-row filtering
+        pick_by_pallet = {}
+        if not pick_df.empty and 'Pallet' in pick_df.columns:
+            pick_df['_pkey'] = pick_df['Pallet'].astype(str).str.strip()
+            for pkey, grp in pick_df.groupby('_pkey'):
+                pick_by_pallet[pkey] = grp.to_dict('records')
 
         report_rows = []
 
@@ -722,33 +731,21 @@ def generate_inventory_details_report(inv_df, sh):
                 continue  # Don't check picks for damage pallets
 
             # --- Check if this pallet has been picked ---
-            if not pick_df.empty and 'Pallet' in pick_df.columns:
-                pallet_picks = pick_df[pick_df['Pallet'].astype(str).str.strip() == pallet]
-
-                if not pallet_picks.empty:
-                    # One line per pick allocation
-                    for _, pick_row in pallet_picks.iterrows():
-                        row = inv_row.copy()
-                        row['Batch ID'] = pick_row.get('Batch ID', '')
-                        row['SO Number'] = pick_row.get('SO Number', '')
-                        row['Generated Load ID'] = pick_row.get('Generated Load ID', pick_row.get('Load Id', ''))
-                        row['Country Name'] = pick_row.get('Country Name', '')
-                        row['Pick Quantity'] = pick_row.get('Pick Quantity', pick_row.get('Actual Qty', ''))
-                        row['Remark'] = pick_row.get('Remark', 'Allocated')
-                        row['Allocation Status'] = 'Picked'
-                        report_rows.append(row)
-                else:
-                    # Available - not picked, not damaged
+            pallet_pick_rows = pick_by_pallet.get(pallet)
+            if pallet_pick_rows:
+                # One line per pick allocation
+                for pick_rec in pallet_pick_rows:
                     row = inv_row.copy()
-                    row['Batch ID'] = ''
-                    row['SO Number'] = ''
-                    row['Generated Load ID'] = ''
-                    row['Country Name'] = ''
-                    row['Pick Quantity'] = ''
-                    row['Remark'] = ''
-                    row['Allocation Status'] = 'Available'
+                    row['Batch ID'] = pick_rec.get('Batch ID', '')
+                    row['SO Number'] = pick_rec.get('SO Number', '')
+                    row['Generated Load ID'] = pick_rec.get('Generated Load ID', pick_rec.get('Load Id', ''))
+                    row['Country Name'] = pick_rec.get('Country Name', '')
+                    row['Pick Quantity'] = pick_rec.get('Pick Quantity', pick_rec.get('Actual Qty', ''))
+                    row['Remark'] = pick_rec.get('Remark', 'Allocated')
+                    row['Allocation Status'] = 'Picked'
                     report_rows.append(row)
             else:
+                # Available - not picked, not damaged
                 row = inv_row.copy()
                 row['Batch ID'] = ''
                 row['SO Number'] = ''
@@ -934,8 +931,7 @@ if login_section():
                     cannot_pick_rows = []
                     try:
                         # Get original inventory (before reconcile) for comparison
-                        # ✅ FIX: inv_file pointer is already consumed — use inv_original.copy() instead
-                        inv_orig = inv_original.copy()
+                        inv_orig = pd.read_csv(inv_file, keep_default_na=False, na_values=['']) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file, keep_default_na=False, na_values=[''])
                         inv_orig.columns = [str(c).strip() for c in inv_orig.columns]
                         inv_orig_col = {str(c).strip().lower(): str(c).strip() for c in inv_orig.columns}
                         orig_pallet_col = inv_orig_col.get('pallet', 'Pallet')
@@ -966,6 +962,13 @@ if login_section():
                         if not dmg_df.empty and 'Pallet' in dmg_df.columns:
                             dmg_pallets = set(dmg_df['Pallet'].astype(str).str.strip().tolist())
 
+                        # ⚡ Vectorized mpd_picked via groupby (already done above via groupby loop — keep as is, it's fast)
+                        # ⚡ Pre-build UPC → pallet rows lookup to avoid repeated DataFrame filtering
+                        inv_orig_by_upc = {}
+                        if orig_sup_col in inv_orig.columns:
+                            for upc_key, grp in inv_orig.groupby(orig_sup_col):
+                                inv_orig_by_upc[str(upc_key).strip()] = grp
+
                         for _, summ_row in summ_df.iterrows():
                             upc     = str(summ_row.get('UPC', ''))
                             picked  = float(summ_row.get('Picked', 0))
@@ -975,8 +978,10 @@ if login_section():
 
                             missing = requested - picked
 
-                            # Find pallets in orig inv with this UPC
-                            upc_pallets = inv_orig[inv_orig[orig_sup_col] == upc]
+                            # Find pallets in orig inv with this UPC — use pre-built lookup
+                            upc_pallets = inv_orig_by_upc.get(upc)
+                            if upc_pallets is None:
+                                continue
 
                             for _, prow in upc_pallets.iterrows():
                                 pallet   = str(prow.get(orig_pallet_col, '')).strip()
@@ -1060,33 +1065,47 @@ if login_section():
                             inv_orig_norm.columns = [str(c).strip() for c in inv_orig_norm.columns]
                             inv_orig_norm_map = {str(c).strip().lower(): str(c).strip() for c in inv_orig_norm.columns}
                             inv_orig_pallet_col = inv_orig_norm_map.get('pallet', 'Pallet')
-                            # Pre-build pallet lookup dict: pallet → first matching row
-                            inv_orig_lookup = {}
-                            for _, orig_r in inv_orig_norm.iterrows():
-                                p_key = str(orig_r.get(inv_orig_pallet_col, '')).strip()
-                                if p_key and p_key not in inv_orig_lookup:
-                                    inv_orig_lookup[p_key] = orig_r
+                            # ⚡ Vectorized: drop_duplicates keeps first match per pallet
+                            inv_orig_norm['_pallet_key'] = inv_orig_norm[inv_orig_pallet_col].astype(str).str.strip()
+                            inv_orig_dedup = inv_orig_norm.drop_duplicates(subset='_pallet_key').set_index('_pallet_key')
 
-                            pick_rows_excel = []
-                            for _, pr in pick_df.iterrows():
-                                prow_pallet = str(pr.get('Pallet', '')).strip()
-                                orig_row = inv_orig_lookup.get(prow_pallet)
-                                row_out = {}
-                                for col in MASTER_PICK_HEADERS:
-                                    if col in WMS_ONLY_COLS:
-                                        row_out[col] = pr.get(col, '')
-                                    else:
-                                        inv_col = inv_orig_norm_map.get(col.strip().lower())
-                                        if inv_col and orig_row is not None and inv_col in orig_row.index:
-                                            row_out[col] = orig_row[inv_col]
-                                        else:
-                                            row_out[col] = pr.get(col, '')
-                                # Add Gen Pallet ID column (from pick_df, only set for partial rows)
-                                row_out['Gen Pallet ID'] = pr.get('Gen Pallet ID', '')
-                                pick_rows_excel.append(row_out)
+                            # ⚡ Build pick_df_excel via merge instead of row-by-row iterrows
+                            pick_df_wms = pick_df[MASTER_PICK_HEADERS + ['Gen Pallet ID']].copy()
+                            pick_df_wms['_pallet_key'] = pick_df_wms['Pallet'].astype(str).str.strip()
 
+                            # For non-WMS columns: pull from inv_original via pallet key
+                            NON_WMS_COLS = [c for c in MASTER_PICK_HEADERS if c not in WMS_ONLY_COLS]
+                            inv_non_wms = inv_orig_dedup[[
+                                col for col in [inv_orig_norm_map.get(c.strip().lower()) for c in NON_WMS_COLS]
+                                if col is not None and col in inv_orig_dedup.columns
+                            ]].copy()
+                            # Rename inv columns back to canonical MASTER_PICK_HEADERS names
+                            inv_col_rename = {}
+                            for c in NON_WMS_COLS:
+                                matched = inv_orig_norm_map.get(c.strip().lower())
+                                if matched and matched in inv_non_wms.columns and matched != c:
+                                    inv_col_rename[matched] = c
+                            inv_non_wms = inv_non_wms.rename(columns=inv_col_rename)
+                            inv_non_wms.index.name = '_pallet_key'
+                            inv_non_wms = inv_non_wms.reset_index()
+
+                            pick_df_excel = pick_df_wms.merge(inv_non_wms, on='_pallet_key', how='left', suffixes=('', '_inv'))
+                            # For any NON_WMS col that exists in both: prefer inv value
+                            for c in NON_WMS_COLS:
+                                inv_c = c + '_inv'
+                                if inv_c in pick_df_excel.columns:
+                                    pick_df_excel[c] = pick_df_excel[inv_c].where(
+                                        pick_df_excel[inv_c].notna(), pick_df_excel.get(c, '')
+                                    )
+                                    pick_df_excel.drop(columns=[inv_c], inplace=True)
+                            # Ensure column order and drop helper
                             EXCEL_PICK_COLS = MASTER_PICK_HEADERS + ['Gen Pallet ID']
-                            pick_df_excel = pd.DataFrame(pick_rows_excel, columns=EXCEL_PICK_COLS)
+                            for col in EXCEL_PICK_COLS:
+                                if col not in pick_df_excel.columns:
+                                    pick_df_excel[col] = ''
+                            pick_df_excel = pick_df_excel[EXCEL_PICK_COLS].drop(
+                                columns=[c for c in ['_pallet_key'] if c in pick_df_excel.columns], errors='ignore'
+                            )
                             pick_df_excel.to_excel(writer, sheet_name='Pick_Report', index=False)
 
                             # Format header + column widths + fix scientific notation
@@ -1680,13 +1699,15 @@ if login_section():
                             aq_col = mpd_col.get('actual qty','Actual Qty')
                             cn_col = mpd_col.get('country name','Country Name')
                             gl_col = mpd_col.get('generated load id','Generated Load ID')
-                            for _, pr in mpd_df.iterrows():
-                                pkey = str(pr.get(p_col,'')).strip()
-                                if not pkey: continue
-                                aq = pd.to_numeric(pr.get(aq_col,0), errors='coerce') or 0
-                                pick_qty_map[pkey]     = pick_qty_map.get(pkey, 0) + aq
-                                pick_country_map[pkey] = str(pr.get(cn_col,''))
-                                pick_loadid_map[pkey]  = str(pr.get(gl_col,''))
+                            # ⚡ Vectorized groupby instead of iterrows
+                            _mpd = mpd_df[[p_col, aq_col, cn_col, gl_col]].copy()
+                            _mpd['_pkey'] = _mpd[p_col].astype(str).str.strip()
+                            _mpd[aq_col]  = pd.to_numeric(_mpd[aq_col], errors='coerce').fillna(0)
+                            pick_qty_map     = _mpd.groupby('_pkey')[aq_col].sum().to_dict()
+                            # last value per pallet for country/load (same logic as before)
+                            _last = _mpd.drop_duplicates('_pkey', keep='last').set_index('_pkey')
+                            pick_country_map = _last[cn_col].astype(str).to_dict()
+                            pick_loadid_map  = _last[gl_col].astype(str).to_dict()
 
                         # Load Damage_Items — build remark columns (already fetched above)
                         dmg_df = _rpt_sheets["Damage_Items"]
@@ -1694,14 +1715,14 @@ if login_section():
                         damage_remarks = []
                         dmg_pallet_remark_qty = {}  # (pallet, remark) → actual qty
                         if not dmg_df.empty and 'Pallet' in dmg_df.columns and 'Remark' in dmg_df.columns:
-                            for _, dr in dmg_df.iterrows():
-                                pkey = str(dr.get('Pallet','')).strip()
-                                rmk  = str(dr.get('Remark','Damage')).strip()
-                                dqty = pd.to_numeric(dr.get('Actual Qty', 0), errors='coerce') or 0
-                                if rmk not in damage_remarks:
-                                    damage_remarks.append(rmk)
-                                key = (pkey, rmk)
-                                dmg_pallet_remark_qty[key] = dmg_pallet_remark_qty.get(key, 0) + dqty
+                            # ⚡ Vectorized: build damage_remarks list and dmg_pallet_remark_qty dict
+                            _dmg = dmg_df.copy()
+                            _dmg['_pkey'] = _dmg['Pallet'].astype(str).str.strip()
+                            _dmg['_rmk']  = _dmg['Remark'].astype(str).str.strip()
+                            _dmg['_dqty'] = pd.to_numeric(_dmg.get('Actual Qty', 0), errors='coerce').fillna(0)
+                            damage_remarks = list(_dmg['_rmk'].unique())
+                            _dmg_grp = _dmg.groupby(['_pkey', '_rmk'])['_dqty'].sum()
+                            dmg_pallet_remark_qty = {(p, r): v for (p, r), v in _dmg_grp.items()}
 
                         # Load Master_Partial_Data (already fetched above)
                         partial_df = _rpt_sheets["Master_Partial_Data"]
@@ -1714,16 +1735,18 @@ if login_section():
                             pq_col  = pc.get('partial qty',   'Partial Qty')
                             pg_col  = pc.get('gen pallet id', 'Gen Pallet ID')
                             pl_col  = pc.get('load id',       'Load ID')
-                            pa_col  = pc.get('actual qty',    'Actual Qty')  # original qty in partial data
+                            pa_col  = pc.get('actual qty',    'Actual Qty')
 
-                            for _, par in partial_df.iterrows():
-                                opallet  = str(par.get(pp_col, '')).strip()
-                                gpallet  = str(par.get(pg_col, '')).strip()
-                                pqty     = pd.to_numeric(par.get(pq_col, 0), errors='coerce')
-                                pqty     = 0.0 if pd.isna(pqty) else float(pqty)
-                                loadid_p = str(par.get(pl_col, '')).strip()
-                                aqty     = pd.to_numeric(par.get(pa_col, 0), errors='coerce')
-                                aqty     = 0.0 if pd.isna(aqty) else float(aqty)
+                            # ⚡ itertuples is 5-10x faster than iterrows for dict building
+                            _pdf = partial_df[[pp_col, pq_col, pg_col, pl_col, pa_col]].copy()
+                            _pdf[pq_col] = pd.to_numeric(_pdf[pq_col], errors='coerce').fillna(0)
+                            _pdf[pa_col] = pd.to_numeric(_pdf[pa_col], errors='coerce').fillna(0)
+                            for row in _pdf.itertuples(index=False):
+                                opallet  = str(getattr(row, pp_col.replace(' ','_'), '')).strip()
+                                gpallet  = str(getattr(row, pg_col.replace(' ','_'), '')).strip()
+                                pqty     = float(getattr(row, pq_col.replace(' ','_'), 0))
+                                loadid_p = str(getattr(row, pl_col.replace(' ','_'), '')).strip()
+                                aqty     = float(getattr(row, pa_col.replace(' ','_'), 0))
 
                                 if opallet:
                                     if opallet not in partial_map:
@@ -1732,9 +1755,8 @@ if login_section():
                                         'gen_pallet':  gpallet,
                                         'partial_qty': pqty,
                                         'load_id':     loadid_p,
-                                        'mpd_actual':  aqty,   # Actual Qty recorded at pick time
+                                        'mpd_actual':  aqty,
                                     })
-                                # Build reverse map: gen_pallet_id → orig_pallet
                                 if gpallet and opallet:
                                     gen_to_orig[gpallet] = opallet
 
@@ -1899,21 +1921,7 @@ if login_section():
 
                         # rpt_pallet_qty: report qty per pallet
                         # Gen Pallet IDs (e.g. PAL001-P0001) mapped back to original pallet
-                        rpt_pallet_qty = {}
-                        for _, rr in fmt_df.iterrows():
-                            p      = str(rr.get('Pallet', '')).strip()
-                            parts  = p.split('-P')
-                            base_p = parts[0] if len(parts) >= 2 and parts[-1].isdigit() else p
-                            # BUG FIX: explicit fillna before add — avoid NaN propagation via 'or 0'
-                            val    = pd.to_numeric(rr.get('Actual Qty', 0), errors='coerce')
-                            val    = 0.0 if pd.isna(val) else float(val)
-                            rpt_pallet_qty[base_p] = rpt_pallet_qty.get(base_p, 0.0) + val
-
-                        # ── Qty Mismatch Detection ─────────────────────────────────────
-                        # Strategy: group inventory rows by base pallet (Gen Pallet IDs mapped
-                        # back to original), sum total inv qty, compare to report total.
-                        # This way T0503260046(3) + T0503260046-P0001(2) = 5 == report(5) → OK
-                        # No dependency on Master_Partial_Data for this check.
+                        # ⚡ Vectorized: apply base_pallet mapping on whole column
                         import re as _re
                         _gen_pat = _re.compile(r'^(.+)-P(\d+)$')
 
@@ -1921,16 +1929,16 @@ if login_section():
                             m = _gen_pat.match(str(p).strip())
                             return m.group(1) if m else str(p).strip()
 
+                        _rpt_pal = fmt_df['Pallet'].astype(str).str.strip().apply(_base_pallet)
+                        _rpt_qty = pd.to_numeric(fmt_df['Actual Qty'], errors='coerce').fillna(0)
+                        rpt_pallet_qty = _rpt_qty.groupby(_rpt_pal).sum().to_dict()
+
                         mismatch_pallets = []
                         try:
-                            # orig_total_inv: total inventory qty per base pallet
-                            orig_total_inv = {}
-                            for _, inv_r in inv_data.iterrows():
-                                p = str(inv_r.get(_inv_pal_col, '')).strip()
-                                q = pd.to_numeric(inv_r.get(_inv_aq_col, 0), errors='coerce')
-                                q = 0.0 if pd.isna(q) else float(q)
-                                base = _base_pallet(p)
-                                orig_total_inv[base] = orig_total_inv.get(base, 0.0) + q
+                            # ⚡ Vectorized orig_total_inv: vectorized apply + groupby
+                            _inv_pals = inv_data[_inv_pal_col].astype(str).str.strip().apply(_base_pallet)
+                            _inv_qtys = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                            orig_total_inv = _inv_qtys.groupby(_inv_pals).sum().to_dict()
 
                             # Compare: orig_total_inv vs rpt_pallet_qty per base pallet
                             all_pallets = set(orig_total_inv) | set(rpt_pallet_qty)
