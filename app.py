@@ -622,6 +622,13 @@ def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
                             c = inv_col_map.get(col_name.lower())
                             return str(item[c]) if c and c in item.index else ''
 
+                        gen_pallet_id = make_unique_gen_pallet_id(pallet_val)
+
+                        # Update pick row: Remark = 'Partial', Gen Pallet ID in Remark area
+                        # Remark already in MASTER_PICK_HEADERS — set to 'Partial'
+                        pick_rows[-1]['Remark']       = 'Partial'
+                        pick_rows[-1]['Gen Pallet ID'] = gen_pallet_id  # extra col appended later
+
                         partial_rows.append({
                             'Batch ID':           batch_id,
                             'SO Number':          so_num,
@@ -629,10 +636,10 @@ def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
                             'Supplier':           p_row['Supplier'],
                             'Load ID':            lid,
                             'Country Name':       country,
-                            'Actual Qty':         orig_qty,           # original inventory qty
+                            'Actual Qty':         orig_qty,
                             'Partial Qty':        take,
-                            'Gen Pallet ID':      make_unique_gen_pallet_id(pallet_val),
-                            'Balance Qty':        orig_qty - take,    # original - picked
+                            'Gen Pallet ID':      gen_pallet_id,
+                            'Balance Qty':        orig_qty - take,
                             'Location Id':        _get('location id'),
                             'Lot Number':         _get('lot number'),
                             'Color':              _get('color'),
@@ -640,6 +647,8 @@ def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
                             'Style':              _get('style'),
                             'Customer Po Number': _get('customer po number'),
                         })
+                    else:
+                        pick_rows[-1]['Gen Pallet ID'] = ''
 
                     temp_inv.at[idx, actual_qty_col] -= take
                     needed -= take
@@ -655,12 +664,14 @@ def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
             })
 
     # Build pick_df strictly from MASTER_PICK_HEADERS — correct column order guaranteed
+    # Plus Gen Pallet ID as extra column for partial picks
+    PICK_REPORT_COLS = MASTER_PICK_HEADERS + ['Gen Pallet ID']
     if pick_rows:
-        pick_df = pd.DataFrame(pick_rows, columns=MASTER_PICK_HEADERS)
+        pick_df = pd.DataFrame(pick_rows, columns=PICK_REPORT_COLS)
         pick_df['Actual Qty'] = pd.to_numeric(pick_df['Actual Qty'], errors='coerce').fillna(0)
         pick_df = pick_df[pick_df['Actual Qty'] > 0].reset_index(drop=True)
     else:
-        pick_df = pd.DataFrame(columns=MASTER_PICK_HEADERS)
+        pick_df = pd.DataFrame(columns=PICK_REPORT_COLS)
 
     return pick_df, pd.DataFrame(partial_rows), pd.DataFrame(summary)
 
@@ -998,10 +1009,11 @@ if login_section():
                         pass  # diagnostic errors must not block main flow
 
                     if not pick_df.empty:
-                        # Append new picks (batch, throttled)
+                        # Save to Google Sheets using only MASTER_PICK_HEADERS (exclude Gen Pallet ID)
+                        pick_save_df = pick_df[MASTER_PICK_HEADERS] if all(c in pick_df.columns for c in MASTER_PICK_HEADERS) else pick_df[[c for c in MASTER_PICK_HEADERS if c in pick_df.columns]]
                         APIManager.append_rows_to_sheet(
                             sh, "Master_Pick_Data", MASTER_PICK_HEADERS,
-                            pick_df.astype(str).replace('nan', '').values.tolist()
+                            pick_save_df.astype(str).replace('nan', '').values.tolist()
                         )
 
                     if not part_df.empty:
@@ -1068,34 +1080,38 @@ if login_section():
                                             row_out[col] = orig_row[inv_col]
                                         else:
                                             row_out[col] = pr.get(col, '')
+                                # Add Gen Pallet ID column (from pick_df, only set for partial rows)
+                                row_out['Gen Pallet ID'] = pr.get('Gen Pallet ID', '')
                                 pick_rows_excel.append(row_out)
 
-                            pick_df_excel = pd.DataFrame(pick_rows_excel, columns=MASTER_PICK_HEADERS)
+                            EXCEL_PICK_COLS = MASTER_PICK_HEADERS + ['Gen Pallet ID']
+                            pick_df_excel = pd.DataFrame(pick_rows_excel, columns=EXCEL_PICK_COLS)
                             pick_df_excel.to_excel(writer, sheet_name='Pick_Report', index=False)
 
                             # Format header + column widths + fix scientific notation
-                            hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
-                                                       'font_color': '#FFFFFF', 'border': 1})
-                            # Format for large integers (Supplier, Invoice Number1, etc.) — no scientific notation
-                            int_fmt   = wb.add_format({'num_format': '0'})
-                            float_fmt = wb.add_format({'num_format': '0.######'})
+                            hdr_fmt      = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
+                                                          'font_color': '#FFFFFF', 'border': 1})
+                            partial_hdr  = wb.add_format({'bold': True, 'bg_color': '#1A6B3C',
+                                                          'font_color': '#FFFFFF', 'border': 1})
+                            int_fmt      = wb.add_format({'num_format': '0'})
+                            float_fmt    = wb.add_format({'num_format': '0.######'})
+                            partial_fmt  = wb.add_format({'bg_color': '#FFF9C4', 'font_color': '#856404', 'border': 1})
 
-                            # Columns that are large integers → force '0' format
                             BIG_INT_COLS = {
                                 'Supplier', 'Invoice Number1', 'Stored Attribute Id',
                                 'Gate Pass Id', 'Client So Line', 'Asn Line Number', 'S Qty'
                             }
-                            # Columns that are floats
                             FLOAT_COLS = {
                                 'Received Gross Weight', 'Current Gross Weight',
                                 'Received Net Weight', 'Current Net Weight', 'Cbm', 'Container Type'
                             }
 
                             ws_pick_xl = writer.sheets['Pick_Report']
-                            for ci, col_name in enumerate(MASTER_PICK_HEADERS):
-                                ws_pick_xl.write(0, ci, col_name, hdr_fmt)
-                                ws_pick_xl.set_column(ci, ci, 18)
-                                # Re-write data cells with correct number format
+                            for ci, col_name in enumerate(EXCEL_PICK_COLS):
+                                # Green header for Gen Pallet ID, dark for others
+                                ws_pick_xl.write(0, ci, col_name,
+                                                 partial_hdr if col_name == 'Gen Pallet ID' else hdr_fmt)
+                                ws_pick_xl.set_column(ci, ci, 20 if col_name == 'Gen Pallet ID' else 18)
                                 if col_name in BIG_INT_COLS:
                                     for ri in range(1, len(pick_df_excel) + 1):
                                         val = pick_df_excel.iloc[ri-1][col_name]
