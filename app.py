@@ -934,7 +934,8 @@ if login_section():
                     cannot_pick_rows = []
                     try:
                         # Get original inventory (before reconcile) for comparison
-                        inv_orig = pd.read_csv(inv_file, keep_default_na=False, na_values=['']) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file, keep_default_na=False, na_values=[''])
+                        # ✅ FIX: inv_file pointer is already consumed — use inv_original.copy() instead
+                        inv_orig = inv_original.copy()
                         inv_orig.columns = [str(c).strip() for c in inv_orig.columns]
                         inv_orig_col = {str(c).strip().lower(): str(c).strip() for c in inv_orig.columns}
                         orig_pallet_col = inv_orig_col.get('pallet', 'Pallet')
