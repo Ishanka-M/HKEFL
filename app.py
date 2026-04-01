@@ -166,7 +166,7 @@ class DBManager:
       to snake_case before inserting.
     """
     _cache: dict = {}
-    _cache_ttl: int = 10
+    _cache_ttl: int = 0
 
     # ── column maps per table ────────────────────────────────────────────────
     _COL_MAP = {
