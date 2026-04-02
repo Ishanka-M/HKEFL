@@ -31,15 +31,18 @@ HEADER_LOWER_MAP = {h.strip().lower(): h for h in MASTER_PICK_HEADERS}
 SHEET_HEADERS = {
     "Load_History": ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'],
     "Summary_Data": ['Batch ID', 'SO Number', 'Load ID', 'UPC', 'Country', 'Ship Mode', 'Requested', 'Picked', 'Variance', 'Status'],
+    # ── UPDATED: Vendor Name added to Master_Partial_Data ──
     "Master_Partial_Data": ['Batch ID', 'SO Number', 'Pallet', 'Supplier', 'Load ID', 'Country Name',
                              'Actual Qty', 'Partial Qty', 'Gen Pallet ID', 'Balance Qty',
-                             'Location Id', 'Lot Number', 'Color', 'Size', 'Style', 'Customer Po Number'],
+                             'Location Id', 'Lot Number', 'Color', 'Size', 'Style', 'Customer Po Number',
+                             'Vendor Name'],
     "Master_Pick_Data": MASTER_PICK_HEADERS,
-    "Damage_Items": ['Pallet', 'Actual Qty', 'Remark', 'Date Added', 'Added By']
+    "Damage_Items": ['Pallet', 'Actual Qty', 'Remark', 'Date Added', 'Added By'],
+    # ── NEW: Vendor Maintain table headers ──
+    "Vendor_Maintain": ['Vendor Name', 'Country'],
 }
 
 # --- DB column name mapping: app header → supabase column ---
-# Supabase columns are snake_case, app headers are Title Case
 PICK_COL_MAP = {
     'Wh Id': 'wh_id', 'Client Code': 'client_code', 'Pallet': 'pallet',
     'Invoice Number': 'invoice_number', 'Location Id': 'location_id', 'Item Number': 'item_number',
@@ -67,12 +70,14 @@ PICK_COL_MAP = {
 }
 PICK_COL_MAP_REV = {v: k for k, v in PICK_COL_MAP.items()}
 
+# ── UPDATED: Vendor Name added to PARTIAL_COL_MAP ──
 PARTIAL_COL_MAP = {
     'Batch ID': 'batch_id', 'SO Number': 'so_number', 'Pallet': 'pallet', 'Supplier': 'supplier',
     'Load ID': 'load_id', 'Country Name': 'country_name', 'Actual Qty': 'actual_qty',
     'Partial Qty': 'partial_qty', 'Gen Pallet ID': 'gen_pallet_id', 'Balance Qty': 'balance_qty',
     'Location Id': 'location_id', 'Lot Number': 'lot_number', 'Color': 'color', 'Size': 'size',
     'Style': 'style', 'Customer Po Number': 'customer_po_number',
+    'Vendor Name': 'vendor_name',
 }
 PARTIAL_COL_MAP_REV = {v: k for k, v in PARTIAL_COL_MAP.items()}
 
@@ -99,6 +104,13 @@ USERS_COL_MAP = {
     'Username': 'username', 'Password': 'password', 'Role': 'role',
 }
 USERS_COL_MAP_REV = {v: k for k, v in USERS_COL_MAP.items()}
+
+# ── NEW: Vendor Maintain column map ──
+VENDOR_COL_MAP = {
+    'Vendor Name': 'vendor_name',
+    'Country':     'country',
+}
+VENDOR_COL_MAP_REV = {v: k for k, v in VENDOR_COL_MAP.items()}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -155,20 +167,12 @@ def get_supabase_client() -> Client:
     return create_client(url, key)
 
 
-# ── DB Manager (replaces APIManager) ─────────────────────────────────────────
+# ── DB Manager ────────────────────────────────────────────────────────────────
 
 class DBManager:
-    """
-    Centralised Supabase DB access layer.
-    - In-memory TTL cache (60 s) per table — same behaviour as Google Sheets version.
-    - All reads return DataFrames with the original app-level (Title Case) column names.
-    - All writes accept DataFrames / lists with Title Case column names and translate
-      to snake_case before inserting.
-    """
     _cache: dict = {}
     _cache_ttl: int = 30
 
-    # ── column maps per table ────────────────────────────────────────────────
     _COL_MAP = {
         "master_pick_data":    PICK_COL_MAP,
         "master_partial_data": PARTIAL_COL_MAP,
@@ -176,6 +180,8 @@ class DBManager:
         "summary_data":        SUMMARY_COL_MAP,
         "damage_items":        DAMAGE_COL_MAP,
         "users":               USERS_COL_MAP,
+        # ── NEW ──
+        "vendor_maintain":     VENDOR_COL_MAP,
     }
     _COL_MAP_REV = {
         "master_pick_data":    PICK_COL_MAP_REV,
@@ -184,11 +190,12 @@ class DBManager:
         "summary_data":        SUMMARY_COL_MAP_REV,
         "damage_items":        DAMAGE_COL_MAP_REV,
         "users":               USERS_COL_MAP_REV,
+        # ── NEW ──
+        "vendor_maintain":     VENDOR_COL_MAP_REV,
     }
 
     @classmethod
     def _table_key(cls, sheet_name: str) -> str:
-        """Normalise sheet name → supabase table name."""
         return sheet_name.lower().replace(" ", "_")
 
     @classmethod
@@ -200,11 +207,9 @@ class DBManager:
 
     @classmethod
     def _db_to_app_df(cls, table_key: str, records: list) -> pd.DataFrame:
-        """Convert list-of-dicts (snake_case) → DataFrame (Title Case)."""
         if not records:
             return pd.DataFrame()
         df = pd.DataFrame(records)
-        # Drop internal supabase columns
         df.drop(columns=[c for c in ['id', 'created_at'] if c in df.columns], inplace=True, errors='ignore')
         col_rev = cls._COL_MAP_REV.get(table_key, {})
         df.rename(columns=col_rev, inplace=True)
@@ -212,12 +217,10 @@ class DBManager:
 
     @classmethod
     def _app_row_to_db(cls, table_key: str, row: dict) -> dict:
-        """Convert single dict (Title Case) → snake_case for DB insert."""
         col_map = cls._COL_MAP.get(table_key, {})
         out = {}
         for k, v in row.items():
             db_col = col_map.get(k, k.lower().replace(" ", "_"))
-            # Convert None / 'nan' / '' to None for numeric columns
             if v in (None, 'nan', 'None', ''):
                 out[db_col] = None
             else:
@@ -226,7 +229,6 @@ class DBManager:
 
     @classmethod
     def read_table(cls, table_name: str, force: bool = False) -> pd.DataFrame:
-        """Read full table with TTL cache. Returns DataFrame with app column names."""
         key = cls._table_key(table_name)
         now = time.time()
         if not force and key in cls._cache:
@@ -235,7 +237,6 @@ class DBManager:
                 return df.copy()
         try:
             sb = get_supabase_client()
-            # Paginate — Supabase default limit is 1000 rows
             all_records = []
             offset = 0
             page_size = 1000
@@ -261,14 +262,12 @@ class DBManager:
 
     @classmethod
     def insert_rows(cls, table_name: str, rows: list) -> bool:
-        """Insert list-of-dicts (Title Case). Returns True on success."""
         if not rows:
             return True
         key = cls._table_key(table_name)
         try:
             sb = get_supabase_client()
             db_rows = [cls._app_row_to_db(key, r) for r in rows]
-            # Batch in chunks of 500 to avoid payload limits
             chunk_size = 500
             for i in range(0, len(db_rows), chunk_size):
                 sb.table(key).insert(db_rows[i:i+chunk_size]).execute()
@@ -280,16 +279,13 @@ class DBManager:
 
     @classmethod
     def delete_where(cls, table_name: str, column: str, values: list) -> int:
-        """Delete rows where column IN values. Returns deleted count estimate."""
         if not values:
             return 0
         key = cls._table_key(table_name)
-        # Map app column name → db column name
         col_map = cls._COL_MAP.get(key, {})
         db_col = col_map.get(column, column.lower().replace(" ", "_"))
         try:
             sb = get_supabase_client()
-            # Supabase Python SDK: delete with in_ filter
             res = sb.table(key).delete().in_(db_col, [str(v) for v in values]).execute()
             cls.invalidate(table_name)
             deleted = len(res.data) if res.data else 0
@@ -300,7 +296,6 @@ class DBManager:
 
     @classmethod
     def delete_where_eq(cls, table_name: str, column: str, value) -> int:
-        """Delete rows where column = value."""
         key = cls._table_key(table_name)
         col_map = cls._COL_MAP.get(key, {})
         db_col = col_map.get(column, column.lower().replace(" ", "_"))
@@ -315,20 +310,14 @@ class DBManager:
 
     @classmethod
     def delete_match_keys(cls, table_name: str, keys: list, key_cols: list) -> int:
-        """
-        Delete rows that match composite key (Load ID + Pallet + Actual Qty).
-        Fallback: read, filter, overwrite.
-        """
         if not keys:
             return 0
         key = cls._table_key(table_name)
-        col_map = cls._COL_MAP.get(key, {})
         try:
             df = cls.read_table(table_name, force=True)
             if df.empty:
                 return 0
             initial = len(df)
-            # Build match key series from df
             def _make_key(row):
                 parts = []
                 for c in key_cols:
@@ -344,7 +333,6 @@ class DBManager:
             filtered = df[~df_keys.isin(set(keys))].reset_index(drop=True)
             deleted = initial - len(filtered)
             if deleted > 0:
-                # Overwrite table
                 cls._overwrite_table(table_name, filtered)
             return deleted
         except Exception as e:
@@ -353,11 +341,9 @@ class DBManager:
 
     @classmethod
     def _overwrite_table(cls, table_name: str, df: pd.DataFrame):
-        """Clear table and re-insert from DataFrame."""
         key = cls._table_key(table_name)
         try:
             sb = get_supabase_client()
-            # Delete all rows (use neq on id — always true — to satisfy SDK requirement)
             sb.table(key).delete().neq('id', -1).execute()
             cls.invalidate(table_name)
             if not df.empty:
@@ -382,7 +368,6 @@ class DBManager:
 
     @classmethod
     def update_cell(cls, table_name: str, match_col: str, match_val, update_col: str, new_val) -> bool:
-        """Update a single cell: WHERE match_col = match_val."""
         key = cls._table_key(table_name)
         col_map = cls._COL_MAP.get(key, {})
         db_match = col_map.get(match_col, match_col.lower().replace(" ", "_"))
@@ -397,13 +382,30 @@ class DBManager:
             return False
 
 
-# ── Drop-in compatibility helpers ─────────────────────────────────────────────
+# ── Drop-in compatibility helpers ──────────────────────────────────────────────
 
 def get_safe_dataframe(sh, sheet_name, retries=3):
     return DBManager.read_table(sheet_name)
 
 
-# ── 2. User Management & Login ────────────────────────────────────────────────
+# ── NEW: Vendor lookup helper ──────────────────────────────────────────────────
+
+def get_vendor_country_map() -> dict:
+    """Returns {vendor_name_lower: country} from vendor_maintain table."""
+    try:
+        vdf = DBManager.read_table("vendor_maintain")
+        if not vdf.empty and 'Vendor Name' in vdf.columns and 'Country' in vdf.columns:
+            return {
+                str(v).strip().lower(): str(c).strip()
+                for v, c in zip(vdf['Vendor Name'], vdf['Country'])
+                if str(v).strip()
+            }
+    except:
+        pass
+    return {}
+
+
+# ── 2. User Management & Login ─────────────────────────────────────────────────
 
 def login_section():
     if 'logged_in' not in st.session_state:
@@ -454,7 +456,7 @@ def login_section():
     return True
 
 
-# ── 3. Inventory Logic ────────────────────────────────────────────────────────
+# ── 3. Inventory Logic ─────────────────────────────────────────────────────────
 
 def get_damage_pallets():
     try:
@@ -518,9 +520,10 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
     inv_df.columns = [str(c).strip() for c in inv_df.columns]
     inv_col_map = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
 
-    supplier_col = next((inv_col_map[k] for k in inv_col_map if k == 'supplier'), None)
-    pick_id_col  = next((inv_col_map[k] for k in inv_col_map if k in ('pick id', 'pickid')), None)
-    pallet_col   = next((inv_col_map[k] for k in inv_col_map if k == 'pallet'), 'Pallet')
+    supplier_col    = next((inv_col_map[k] for k in inv_col_map if k == 'supplier'), None)
+    pick_id_col     = next((inv_col_map[k] for k in inv_col_map if k in ('pick id', 'pickid')), None)
+    pallet_col      = next((inv_col_map[k] for k in inv_col_map if k == 'pallet'), 'Pallet')
+    vendor_name_col = next((inv_col_map[k] for k in inv_col_map if k == 'vendor name'), None)
 
     temp_inv = inv_df.copy()
     actual_qty_col = next((inv_col_map[k] for k in inv_col_map if k == 'actual qty'), 'Actual Qty')
@@ -617,6 +620,12 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                     for header in MASTER_PICK_HEADERS:
                         p_row[header] = get_inv_val(item, header)
 
+                    # ── Vendor Name from inventory ──
+                    vendor_name_val = ''
+                    if vendor_name_col and vendor_name_col in item.index:
+                        vendor_name_val = str(item[vendor_name_col]).strip()
+                    p_row['Vendor Name'] = vendor_name_val
+
                     p_row['Actual Qty']         = take
                     p_row['Pick Quantity']      = take
                     p_row['Pick Id']            = str(item[pick_id_col]) if pick_id_col and pick_id_col in item.index else ''
@@ -664,6 +673,8 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                             'Size':               _get('size'),
                             'Style':              _get('style'),
                             'Customer Po Number': _get('customer po number'),
+                            # ── UPDATED: Vendor Name saved in master_partial_data ──
+                            'Vendor Name':        vendor_name_val,
                         })
                     else:
                         pick_rows[-1]['Gen Pallet ID'] = ''
@@ -712,6 +723,22 @@ def generate_inventory_details_report(inv_df):
         except Exception:
             pass
 
+        # ── UPDATED: Load vendor_maintain for country lookup ──
+        vendor_country_map = get_vendor_country_map()
+
+        # ── UPDATED: Load master_partial_data for vendor_name lookup ──
+        partial_vendor_map = {}
+        try:
+            part_df_v = DBManager.read_table("master_partial_data")
+            if not part_df_v.empty and 'Pallet' in part_df_v.columns and 'Vendor Name' in part_df_v.columns:
+                for _, r in part_df_v.iterrows():
+                    p_key = str(r.get('Pallet', '')).strip()
+                    vn    = str(r.get('Vendor Name', '')).strip()
+                    if p_key and vn:
+                        partial_vendor_map[p_key] = vn
+        except:
+            pass
+
         pick_by_pallet = {}
         if not pick_df.empty and 'Pallet' in pick_df.columns:
             pick_df['_pkey'] = pick_df['Pallet'].astype(str).str.strip()
@@ -721,12 +748,22 @@ def generate_inventory_details_report(inv_df):
         report_rows = []
         for _, inv_row in inv_df.iterrows():
             pallet = str(inv_row.get('Pallet', '')).strip()
+
+            # Resolve vendor_name and country for this pallet
+            vendor_name_inv = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
+            # Fallback to partial data
+            if not vendor_name_inv:
+                vendor_name_inv = partial_vendor_map.get(pallet, '')
+            country_from_vendor = vendor_country_map.get(vendor_name_inv.lower(), '') if vendor_name_inv else ''
+
             if pallet in damage_lookup:
                 row = inv_row.copy()
                 row['Batch ID'] = row['SO Number'] = row['Generated Load ID'] = ''
                 row['Country Name'] = row['Pick Quantity'] = ''
                 row['Remark']            = damage_lookup[pallet]
                 row['Allocation Status'] = 'Damage'
+                row['Vendor Name']       = vendor_name_inv
+                row['Vendor Country']    = country_from_vendor
                 report_rows.append(row)
                 continue
 
@@ -741,12 +778,16 @@ def generate_inventory_details_report(inv_df):
                     row['Pick Quantity']      = pick_rec.get('Pick Quantity', pick_rec.get('Actual Qty', ''))
                     row['Remark']             = pick_rec.get('Remark', 'Allocated')
                     row['Allocation Status']  = 'Picked'
+                    row['Vendor Name']        = pick_rec.get('Vendor Name', vendor_name_inv)
+                    row['Vendor Country']     = country_from_vendor
                     report_rows.append(row)
             else:
                 row = inv_row.copy()
                 row['Batch ID'] = row['SO Number'] = row['Generated Load ID'] = ''
                 row['Country Name'] = row['Pick Quantity'] = row['Remark'] = ''
                 row['Allocation Status'] = 'Available'
+                row['Vendor Name']       = vendor_name_inv
+                row['Vendor Country']    = country_from_vendor
                 report_rows.append(row)
 
         return pd.DataFrame(report_rows)
@@ -756,7 +797,7 @@ def generate_inventory_details_report(inv_df):
         return pd.DataFrame()
 
 
-# ── 4. App UI & Navigation ────────────────────────────────────────────────────
+# ── 4. App UI & Navigation ─────────────────────────────────────────────────────
 
 if login_section():
     current_user = st.session_state.get('username', 'User')
@@ -782,10 +823,10 @@ if login_section():
 
     if current_role == 'ADMIN':
         menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "📋 Inventory Details Report",
-                "🔄 Revert/Delete Picks", "🩹 Damage Items", "⚙️ Admin Settings"]
+                "🔄 Revert/Delete Picks", "🩹 Damage Items", "🏷️ Vendor Maintain", "⚙️ Admin Settings"]
     elif current_role == 'SYSUSER':
         menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "📋 Inventory Details Report",
-                "🔄 Revert/Delete Picks", "🩹 Damage Items"]
+                "🔄 Revert/Delete Picks", "🩹 Damage Items", "🏷️ Vendor Maintain"]
     else:
         menu = ["📊 Dashboard & Tracking", "📋 Inventory Details Report",
                 "🔄 Revert/Delete Picks", "🩹 Damage Items"]
@@ -1002,7 +1043,6 @@ if login_section():
                     existing_summ = DBManager.read_table("summary_data")
                     if not existing_summ.empty and 'Load ID' in existing_summ.columns and not summ_df.empty:
                         new_load_ids = set(summ_df['Load ID'].astype(str).tolist())
-                        # Delete existing summary rows for these Load IDs
                         DBManager.delete_where("summary_data", "Load ID", list(new_load_ids))
                     if not summ_df.empty:
                         DBManager.insert_rows("summary_data", summ_df.astype(object).where(pd.notnull(summ_df), None).to_dict('records'))
@@ -1271,7 +1311,6 @@ if login_section():
                                 try:
                                     ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
                                     if ok and new_st == "Cancelled":
-                                        # Auto-delete from master_pick_data
                                         mpd = DBManager.read_table("master_pick_data")
                                         lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
                                         if not mpd.empty and lid_col:
@@ -1478,6 +1517,19 @@ if login_section():
                         mpd_df      = _rpt_sheets["master_pick_data"]
                         mpd_col     = {str(c).strip().lower(): str(c).strip() for c in (mpd_df.columns if not mpd_df.empty else [])}
 
+                        # ── UPDATED: Load vendor_maintain for country lookup ──
+                        vendor_country_map = get_vendor_country_map()
+
+                        # ── UPDATED: Load partial data vendor map ──
+                        partial_vendor_map_fmt = {}
+                        partial_df_raw = _rpt_sheets["master_partial_data"]
+                        if not partial_df_raw.empty and 'Pallet' in partial_df_raw.columns and 'Vendor Name' in partial_df_raw.columns:
+                            for _, r in partial_df_raw.iterrows():
+                                pk = str(r.get('Pallet', '')).strip()
+                                vn = str(r.get('Vendor Name', '')).strip()
+                                if pk and vn:
+                                    partial_vendor_map_fmt[pk] = vn
+
                         pick_qty_map = {}; pick_country_map = {}; pick_loadid_map = {}
                         if not mpd_df.empty:
                             p_col = mpd_col.get('pallet', 'Pallet'); aq_col = mpd_col.get('actual qty', 'Actual Qty')
@@ -1553,8 +1605,18 @@ if login_section():
                             is_damaged   = orig_pallet in damage_pallets
                             total_picked = pick_qty_map.get(orig_pallet, 0)
 
+                            # ── UPDATED: Resolve vendor_name and country ──
+                            vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
+                            if not vendor_name_row:
+                                vendor_name_row = partial_vendor_map_fmt.get(orig_pallet, '')
+                            vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
+
                             if orig_pallet in gen_to_orig:
                                 real_orig = gen_to_orig[orig_pallet]
+                                # fallback vendor from partial data for gen pallet
+                                if not vendor_name_row:
+                                    vendor_name_row = partial_vendor_map_fmt.get(real_orig, '')
+                                    vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
                                 matching_partial = next((p for p in partial_map.get(real_orig, []) if p['gen_pallet'] == orig_pallet), None)
                                 if matching_partial and abs(inv_actual_qty - matching_partial['partial_qty']) <= 0.01:
                                     row = build_row(inv_row)
@@ -1563,6 +1625,9 @@ if login_section():
                                     row['Order NO'] = matching_partial['load_id']
                                     for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                     row['ATS'] = ''
+                                    # ── UPDATED: add vendor info ──
+                                    row['Vendor Name']    = vendor_name_row
+                                    row['Vendor Country'] = vendor_country_row
                                     fmt_rows.append(row)
                                 continue
 
@@ -1587,6 +1652,9 @@ if login_section():
                                         row['Order NO'] = last_p['load_id']
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
+                                    # ── UPDATED: add vendor info ──
+                                    row['Vendor Name']    = vendor_name_row
+                                    row['Vendor Country'] = vendor_country_row
                                     fmt_rows.append(row)
                                 else:
                                     mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
@@ -1598,6 +1666,9 @@ if login_section():
                                         row['Order NO'] = par_entry['load_id']
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
+                                        # ── UPDATED: add vendor info ──
+                                        row['Vendor Name']    = vendor_name_row
+                                        row['Vendor Country'] = vendor_country_row
                                         fmt_rows.append(row)
                                     balance_qty = max(0.0, mpd_actual - total_partial_qty)
                                     if balance_qty > 0 and not is_damaged:
@@ -1605,6 +1676,9 @@ if login_section():
                                         bal_row['Pick Quantity'] = bal_row['Destination Country'] = bal_row['Order NO'] = ''
                                         for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         bal_row['ATS'] = int(balance_qty)
+                                        # ── UPDATED: add vendor info ──
+                                        bal_row['Vendor Name']    = vendor_name_row
+                                        bal_row['Vendor Country'] = vendor_country_row
                                         fmt_rows.append(bal_row)
                             else:
                                 row = build_row(inv_row)
@@ -1614,9 +1688,13 @@ if login_section():
                                 for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 ats_qty   = inv_actual_qty - total_picked
                                 row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
+                                # ── UPDATED: add vendor info ──
+                                row['Vendor Name']    = vendor_name_row
+                                row['Vendor Country'] = vendor_country_row
                                 fmt_rows.append(row)
 
-                        final_cols = REPORT_HEADERS + ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS']
+                        # ── UPDATED: Vendor Name and Vendor Country added to final_cols ──
+                        final_cols = REPORT_HEADERS + ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
@@ -1713,6 +1791,7 @@ if login_section():
                             pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
                             dmg_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
                             ats_fmt   = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
+                            vnd_fmt   = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
                             norm_fmt  = wb.add_format({'border': 1, 'font_size': 10})
                             for ci, col_name in enumerate(final_cols):
                                 ws_fmt.write(0, ci, col_name, hdr_fmt); ws_fmt.set_column(ci, ci, 15)
@@ -1721,6 +1800,7 @@ if login_section():
                                     if col_name in ['Pick Quantity', 'Destination Country', 'Order NO']: ws_fmt.write(ri, ci, val, pick_fmt)
                                     elif col_name in damage_remarks: ws_fmt.write(ri, ci, val, dmg_fmt)
                                     elif col_name == 'ATS': ws_fmt.write(ri, ci, val, ats_fmt)
+                                    elif col_name in ['Vendor Name', 'Vendor Country']: ws_fmt.write(ri, ci, val, vnd_fmt)
                                     else: ws_fmt.write(ri, ci, val, norm_fmt)
                             ws_fmt.freeze_panes(1, 0)
                         st.download_button("⬇️ Download Formatted Pick Report", data=out_fmt.getvalue(),
@@ -1811,6 +1891,7 @@ if login_section():
                     with st.spinner("Deleting..."):
                         master_pick_df = DBManager.read_table("master_pick_data", force=True)
                         lid_col_del    = next((c for c in (master_pick_df.columns if not master_pick_df.empty else []) if str(c).strip().lower() == 'generated load id'), 'Load Id')
+                        deleted_pick   = 0
                         if not master_pick_df.empty and lid_col_del in master_pick_df.columns:
                             filtered     = master_pick_df[~master_pick_df[lid_col_del].astype(str).str.strip().isin(load_ids_to_delete)]
                             deleted_pick = len(master_pick_df) - len(filtered)
@@ -1896,7 +1977,7 @@ if login_section():
                             mpart_fresh = DBManager.read_table("master_partial_data", force=True)
                             if not mpart_fresh.empty:
                                 mask = pd.Series([True] * len(mpart_fresh))
-                                if 'Pallet'       in mpart_fresh.columns: mask &= mpart_fresh['Pallet'].astype(str).str.strip()       != str(del_pallet).strip()
+                                if 'Pallet'        in mpart_fresh.columns: mask &= mpart_fresh['Pallet'].astype(str).str.strip()        != str(del_pallet).strip()
                                 if 'Gen Pallet ID' in mpart_fresh.columns: mask &= mpart_fresh['Gen Pallet ID'].astype(str).str.strip() != str(del_pallet).strip()
                                 filtered_mpart = mpart_fresh[mask]
                                 deleted = len(mpart_fresh) - len(filtered_mpart)
@@ -1975,7 +2056,113 @@ if login_section():
                         st.rerun()
 
     # ==========================================================================
-    # TAB 6: ADMIN SETTINGS
+    # TAB 6: VENDOR MAINTAIN  ── NEW ──
+    # ==========================================================================
+    elif choice == "🏷️ Vendor Maintain":
+        st.title("🏷️ Vendor Maintain")
+        st.info("Vendor Name සහ ඒ vendor ට අදාළ Country මෙහි register කරන්න. Reports වල Vendor Country column automatically populate වේ.")
+
+        vnd_tab1, vnd_tab2 = st.tabs(["➕ Add / Update Vendor", "📋 View All Vendors"])
+
+        with vnd_tab1:
+            st.subheader("Add New Vendor")
+            with st.form("add_vendor_form"):
+                new_vnd_name    = st.text_input("Vendor Name")
+                new_vnd_country = st.text_input("Country")
+                vnd_submitted   = st.form_submit_button("💾 Save Vendor", type="primary")
+                if vnd_submitted:
+                    if not new_vnd_name.strip():
+                        st.error("Vendor Name is required.")
+                    elif not new_vnd_country.strip():
+                        st.error("Country is required.")
+                    else:
+                        existing_vnd = DBManager.read_table("vendor_maintain")
+                        if not existing_vnd.empty and 'Vendor Name' in existing_vnd.columns:
+                            dup = existing_vnd[existing_vnd['Vendor Name'].astype(str).str.strip().str.lower() == new_vnd_name.strip().lower()]
+                            if not dup.empty:
+                                # Update existing
+                                DBManager._overwrite_table(
+                                    "vendor_maintain",
+                                    existing_vnd.assign(**{
+                                        'Country': existing_vnd.apply(
+                                            lambda r: new_vnd_country.strip() if str(r['Vendor Name']).strip().lower() == new_vnd_name.strip().lower() else r['Country'],
+                                            axis=1
+                                        )
+                                    })
+                                )
+                                st.success(f"✅ Vendor **{new_vnd_name}** updated → Country: **{new_vnd_country}**")
+                            else:
+                                DBManager.insert_rows("vendor_maintain", [{'Vendor Name': new_vnd_name.strip(), 'Country': new_vnd_country.strip()}])
+                                st.success(f"✅ Vendor **{new_vnd_name}** added!")
+                        else:
+                            DBManager.insert_rows("vendor_maintain", [{'Vendor Name': new_vnd_name.strip(), 'Country': new_vnd_country.strip()}])
+                            st.success(f"✅ Vendor **{new_vnd_name}** added!")
+                        DBManager.invalidate("vendor_maintain")
+                        show_confetti()
+
+            st.divider()
+            st.subheader("📤 Bulk Upload Vendors (CSV/Excel)")
+            st.caption("File columns: **Vendor Name**, **Country**")
+            vnd_file = st.file_uploader("Upload Vendor List", type=['csv', 'xlsx'], key="vnd_bulk_uploader")
+            if vnd_file:
+                vnd_upload_df = pd.read_csv(vnd_file) if vnd_file.name.endswith('.csv') else pd.read_excel(vnd_file)
+                vnd_upload_df.columns = [str(c).strip() for c in vnd_upload_df.columns]
+                st.dataframe(vnd_upload_df.astype(str), use_container_width=True)
+                vnd_col_l = {c.lower(): c for c in vnd_upload_df.columns}
+                vn_col = vnd_col_l.get('vendor name')
+                cn_col_v = vnd_col_l.get('country')
+                if not vn_col or not cn_col_v:
+                    st.error("❌ File must have 'Vendor Name' and 'Country' columns.")
+                else:
+                    if st.button("💾 Bulk Save Vendors", type="primary"):
+                        rows_v = [
+                            {'Vendor Name': str(r[vn_col]).strip(), 'Country': str(r[cn_col_v]).strip()}
+                            for _, r in vnd_upload_df.iterrows()
+                            if str(r.get(vn_col, '')).strip()
+                        ]
+                        # Overwrite with merge logic: keep existing + add new, update existing
+                        existing_vnd2 = DBManager.read_table("vendor_maintain")
+                        if not existing_vnd2.empty and 'Vendor Name' in existing_vnd2.columns:
+                            existing_map = {str(v).strip().lower(): i for i, v in enumerate(existing_vnd2['Vendor Name'])}
+                            for rv in rows_v:
+                                k = rv['Vendor Name'].lower()
+                                if k in existing_map:
+                                    existing_vnd2.at[existing_map[k], 'Country'] = rv['Country']
+                                else:
+                                    existing_vnd2 = pd.concat([existing_vnd2, pd.DataFrame([rv])], ignore_index=True)
+                            DBManager._overwrite_table("vendor_maintain", existing_vnd2)
+                        else:
+                            DBManager.insert_rows("vendor_maintain", rows_v)
+                        DBManager.invalidate("vendor_maintain")
+                        st.success(f"✅ {len(rows_v)} vendors saved!")
+                        show_confetti()
+
+        with vnd_tab2:
+            st.subheader("Vendor List")
+            vnd_df = DBManager.read_table("vendor_maintain")
+            if vnd_df.empty:
+                st.info("Vendor records නොමැත. 'Add / Update Vendor' tab හි vendors add කරන්න.")
+            else:
+                st.metric("Total Vendors", len(vnd_df))
+                st.dataframe(vnd_df.astype(str), use_container_width=True)
+                out_vnd = io.BytesIO()
+                with pd.ExcelWriter(out_vnd, engine='xlsxwriter') as writer:
+                    vnd_df.to_excel(writer, sheet_name='Vendor_Maintain', index=False)
+                st.download_button("⬇️ Download Vendor List", data=out_vnd.getvalue(),
+                    file_name=f"Vendor_List_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.ms-excel")
+
+                st.divider()
+                st.subheader("🗑️ Remove Vendor")
+                if 'Vendor Name' in vnd_df.columns:
+                    rem_vendor = st.selectbox("Select Vendor to Remove:", vnd_df['Vendor Name'].dropna().unique())
+                    if st.button("Remove Vendor", type="primary"):
+                        DBManager.delete_where_eq("vendor_maintain", "Vendor Name", rem_vendor)
+                        DBManager.invalidate("vendor_maintain")
+                        st.success(f"✅ Vendor **{rem_vendor}** removed.")
+                        st.rerun()
+
+    # ==========================================================================
+    # TAB 7: ADMIN SETTINGS
     # ==========================================================================
     elif choice == "⚙️ Admin Settings":
         st.title("⚙️ System Administration")
@@ -2000,12 +2187,14 @@ if login_section():
             st.subheader("⚠️ Database Management")
             st.warning("This will permanently delete all records from the selected table.")
             sheet_to_clear = st.selectbox("Select Data to Clear:", [
-                "master_pick_data", "master_partial_data", "summary_data", "load_history", "damage_items", "ALL_DATA"
+                "master_pick_data", "master_partial_data", "summary_data", "load_history",
+                "damage_items", "vendor_maintain", "ALL_DATA"
             ])
             confirm = st.text_input("Type 'CONFIRM' to proceed:")
             if st.button("🗑️ Clear Selected Data", type="primary"):
                 if confirm == 'CONFIRM':
-                    tables = ["master_pick_data", "master_partial_data", "summary_data", "load_history", "damage_items"] if sheet_to_clear == "ALL_DATA" else [sheet_to_clear]
+                    tables = ["master_pick_data", "master_partial_data", "summary_data", "load_history",
+                              "damage_items", "vendor_maintain"] if sheet_to_clear == "ALL_DATA" else [sheet_to_clear]
                     try:
                         sb = get_supabase_client()
                         for t in tables:
