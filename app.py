@@ -1595,21 +1595,37 @@ if login_section():
                         partial_map = {}; gen_to_orig = {}
                         if not partial_df.empty:
                             pc = {str(c).strip().lower(): str(c).strip() for c in partial_df.columns}
-                            pp_col = pc.get('pallet', 'Pallet'); pq_col = pc.get('partial qty', 'Partial Qty')
-                            pg_col = pc.get('gen pallet id', 'Gen Pallet ID'); pl_col = pc.get('load id', 'Load ID')
-                            pa_col = pc.get('actual qty', 'Actual Qty')
-                            _pdf = partial_df[[pp_col, pq_col, pg_col, pl_col, pa_col]].copy()
+                            pp_col  = pc.get('pallet', 'Pallet')
+                            pq_col  = pc.get('partial qty', 'Partial Qty')
+                            pg_col  = pc.get('gen pallet id', 'Gen Pallet ID')
+                            pl_col  = pc.get('load id', 'Load ID')
+                            pa_col  = pc.get('actual qty', 'Actual Qty')
+                            # ── Include Invoice Number + Grn Number from partial data ──
+                            pi_col  = pc.get('invoice number', 'Invoice Number')
+                            pg2_col = pc.get('grn number', 'Grn Number')
+
+                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col]
+                                         if c in partial_df.columns]
+                            _pdf = partial_df[_sel_cols].copy()
                             _pdf[pq_col] = pd.to_numeric(_pdf[pq_col], errors='coerce').fillna(0)
                             _pdf[pa_col] = pd.to_numeric(_pdf[pa_col], errors='coerce').fillna(0)
-                            for row in _pdf.itertuples(index=False):
-                                opallet  = str(getattr(row, pp_col.replace(' ', '_'), '')).strip()
-                                gpallet  = str(getattr(row, pg_col.replace(' ', '_'), '')).strip()
-                                pqty     = float(getattr(row, pq_col.replace(' ', '_'), 0))
-                                loadid_p = str(getattr(row, pl_col.replace(' ', '_'), '')).strip()
-                                aqty     = float(getattr(row, pa_col.replace(' ', '_'), 0))
+                            for _, _pr in _pdf.iterrows():
+                                opallet  = str(_pr.get(pp_col,  '')).strip()
+                                gpallet  = str(_pr.get(pg_col,  '')).strip()
+                                pqty     = float(_pr.get(pq_col, 0))
+                                loadid_p = str(_pr.get(pl_col,  '')).strip()
+                                aqty     = float(_pr.get(pa_col, 0))
+                                inv_num  = str(_pr.get(pi_col,  '')).strip()
+                                grn_num  = str(_pr.get(pg2_col, '')).strip()
+                                if inv_num in ('nan', 'None'): inv_num = ''
+                                if grn_num in ('nan', 'None'): grn_num = ''
                                 if opallet:
                                     if opallet not in partial_map: partial_map[opallet] = []
-                                    partial_map[opallet].append({'gen_pallet': gpallet, 'partial_qty': pqty, 'load_id': loadid_p, 'mpd_actual': aqty})
+                                    partial_map[opallet].append({
+                                        'gen_pallet': gpallet, 'partial_qty': pqty,
+                                        'load_id': loadid_p, 'mpd_actual': aqty,
+                                        'invoice_number': inv_num, 'grn_number': grn_num,
+                                    })
                                 if gpallet and opallet:
                                     gen_to_orig[gpallet] = opallet
 
@@ -1628,10 +1644,7 @@ if login_section():
                                     cs_col = inv_col_map_r.get('client so', 'Client So')
                                     row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
                                 elif h in ('Invoice Number', 'Grn Number'):
-                                    # ── Do NOT pull from inventory here — will be filled via
-                                    #    invoice_number_row / grn_number_row (which already
-                                    #    fall back to master_partial_data by pallet).
-                                    #    Keeping blank ensures the fill logic below always fires.
+                                    # ── Always blank here; filled later via partial_map / invoice_number_row ──
                                     row[h] = ''
                                 elif h in inv_row.index:
                                     row[h] = inv_row[h]
@@ -1643,22 +1656,27 @@ if login_section():
                         def _is_blank(val):
                             return not val or str(val).strip() in ('', 'nan', 'None')
 
-                        def fill_row_from_partial(row, pallet_key=None, gen_pallet_key=None):
+                        def fill_row_from_partial(row, pallet_key=None, gen_pallet_key=None, partial_entry=None):
                             """
                             Invoice Number, Grn Number blank/nan නම් සහ Vendor Name nan නම්
-                            master_partial_data වලින් gen_pallet_id හෝ pallet හරහා lookup කර fill කරයි.
-                            Vendor Country ද Vendor Name ට ගැලපෙන ලෙස update කරයි.
+                            1) partial_entry (partial_map dict entry) → directly from saved data
+                            2) master_partial_data gen_pallet_id lookup (inv_invoice_map_fmt)
+                            3) master_partial_data pallet lookup (pallet_invoice_map_fmt)
                             """
                             # ── Invoice Number fill ──
                             if _is_blank(row.get('Invoice Number')):
-                                if gen_pallet_key and not _is_blank(inv_invoice_map_fmt.get(gen_pallet_key, '')):
+                                if partial_entry and not _is_blank(partial_entry.get('invoice_number', '')):
+                                    row['Invoice Number'] = partial_entry['invoice_number']
+                                elif gen_pallet_key and not _is_blank(inv_invoice_map_fmt.get(gen_pallet_key, '')):
                                     row['Invoice Number'] = inv_invoice_map_fmt[gen_pallet_key]
                                 elif pallet_key and not _is_blank(pallet_invoice_map_fmt.get(pallet_key, '')):
                                     row['Invoice Number'] = pallet_invoice_map_fmt[pallet_key]
 
                             # ── Grn Number fill ──
                             if _is_blank(row.get('Grn Number')):
-                                if gen_pallet_key and not _is_blank(inv_grn_map_fmt.get(gen_pallet_key, '')):
+                                if partial_entry and not _is_blank(partial_entry.get('grn_number', '')):
+                                    row['Grn Number'] = partial_entry['grn_number']
+                                elif gen_pallet_key and not _is_blank(inv_grn_map_fmt.get(gen_pallet_key, '')):
                                     row['Grn Number'] = inv_grn_map_fmt[gen_pallet_key]
                                 elif pallet_key and not _is_blank(pallet_grn_map_fmt.get(pallet_key, '')):
                                     row['Grn Number'] = pallet_grn_map_fmt[pallet_key]
@@ -1721,12 +1739,9 @@ if login_section():
                                     row['ATS'] = ''
                                     row['Vendor Name']    = vendor_name_row
                                     row['Vendor Country'] = vendor_country_row
-                                    # ── UPDATED: fill Invoice/GRN from partial if blank in inv ──
-                                    if not row.get('Invoice Number') or str(row.get('Invoice Number', '')).strip() in ('', 'nan', 'None'):
-                                        row['Invoice Number'] = invoice_number_row
-                                    if not row.get('Grn Number') or str(row.get('Grn Number', '')).strip() in ('', 'nan', 'None'):
-                                        row['Grn Number'] = grn_number_row
-                                    row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet)
+                                    row['Invoice Number'] = invoice_number_row
+                                    row['Grn Number']     = grn_number_row
+                                    row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet, partial_entry=matching_partial)
                                     fmt_rows.append(row)
                                 continue
 
@@ -1753,11 +1768,9 @@ if login_section():
                                         row['ATS'] = ''
                                     row['Vendor Name']    = vendor_name_row
                                     row['Vendor Country'] = vendor_country_row
-                                    if not row.get('Invoice Number') or str(row.get('Invoice Number', '')).strip() in ('', 'nan', 'None'):
-                                        row['Invoice Number'] = invoice_number_row
-                                    if not row.get('Grn Number') or str(row.get('Grn Number', '')).strip() in ('', 'nan', 'None'):
-                                        row['Grn Number'] = grn_number_row
-                                    row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                                    row['Invoice Number'] = invoice_number_row
+                                    row['Grn Number']     = grn_number_row
+                                    row = fill_row_from_partial(row, pallet_key=orig_pallet, partial_entry=last_p)
                                     fmt_rows.append(row)
                                 else:
                                     mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
@@ -1771,15 +1784,11 @@ if login_section():
                                         row['ATS'] = ''
                                         row['Vendor Name']    = vendor_name_row
                                         row['Vendor Country'] = vendor_country_row
-                                        # ── For gen_pallet rows, look up by gen_pallet first ──
+                                        # ── Use invoice/grn directly from this partial entry ──
                                         gp = par_entry['gen_pallet']
-                                        r_inv = inv_invoice_map_fmt.get(gp, '') or invoice_number_row
-                                        r_grn = inv_grn_map_fmt.get(gp, '') or grn_number_row
-                                        if not row.get('Invoice Number') or str(row.get('Invoice Number', '')).strip() in ('', 'nan', 'None'):
-                                            row['Invoice Number'] = r_inv
-                                        if not row.get('Grn Number') or str(row.get('Grn Number', '')).strip() in ('', 'nan', 'None'):
-                                            row['Grn Number'] = r_grn
-                                        row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp)
+                                        row['Invoice Number'] = par_entry.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, '') or invoice_number_row
+                                        row['Grn Number']     = par_entry.get('grn_number', '')     or inv_grn_map_fmt.get(gp, '')    or grn_number_row
+                                        row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp, partial_entry=par_entry)
                                         fmt_rows.append(row)
                                     balance_qty = max(0.0, mpd_actual - total_partial_qty)
                                     if balance_qty > 0 and not is_damaged:
@@ -1789,10 +1798,8 @@ if login_section():
                                         bal_row['ATS'] = int(balance_qty)
                                         bal_row['Vendor Name']    = vendor_name_row
                                         bal_row['Vendor Country'] = vendor_country_row
-                                        if not bal_row.get('Invoice Number') or str(bal_row.get('Invoice Number', '')).strip() in ('', 'nan', 'None'):
-                                            bal_row['Invoice Number'] = invoice_number_row
-                                        if not bal_row.get('Grn Number') or str(bal_row.get('Grn Number', '')).strip() in ('', 'nan', 'None'):
-                                            bal_row['Grn Number'] = grn_number_row
+                                        bal_row['Invoice Number'] = invoice_number_row
+                                        bal_row['Grn Number']     = grn_number_row
                                         bal_row = fill_row_from_partial(bal_row, pallet_key=orig_pallet)
                                         fmt_rows.append(bal_row)
                             else:
@@ -1805,10 +1812,8 @@ if login_section():
                                 row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
                                 row['Vendor Name']    = vendor_name_row
                                 row['Vendor Country'] = vendor_country_row
-                                if not row.get('Invoice Number') or str(row.get('Invoice Number', '')).strip() in ('', 'nan', 'None'):
-                                    row['Invoice Number'] = invoice_number_row
-                                if not row.get('Grn Number') or str(row.get('Grn Number', '')).strip() in ('', 'nan', 'None'):
-                                    row['Grn Number'] = grn_number_row
+                                row['Invoice Number'] = invoice_number_row
+                                row['Grn Number']     = grn_number_row
                                 row = fill_row_from_partial(row, pallet_key=orig_pallet)
                                 fmt_rows.append(row)
 
@@ -1818,7 +1823,7 @@ if login_section():
                         final_cols = REPORT_HEADERS + [c for c in _extra_cols if c not in REPORT_HEADERS]
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
-                        # ── Remove rows where Pallet is blank / nan ──
+                        # ── Blank Pallet rows remove (gen_pallet blank නම් delete) ──
                         fmt_df = fmt_df[
                             fmt_df['Pallet'].astype(str).str.strip().replace({'nan': '', 'None': ''}) != ''
                         ].reset_index(drop=True)
