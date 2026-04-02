@@ -1817,53 +1817,6 @@ if login_section():
                                 row = fill_row_from_partial(row, pallet_key=orig_pallet)
                                 fmt_rows.append(row)
 
-                        # ── Qty_Mismatch pallets → missing balance rows add ──────────────────
-                        # mismatch_pallets list build කිරීමට කලින් ෆෝමුලාව ඇත, නමුත් fmt_rows
-                        # complete වීමෙන් පසු mismatch check කරන නිසා ↓ block එකේදී add කරනවා
-                        try:
-                            _rpt_pal_check = fmt_df['Pallet'].astype(str).str.strip().apply(_base_pallet) if fmt_rows else pd.Series(dtype=str)
-                            _rpt_qty_check = pd.to_numeric(fmt_df['Actual Qty'], errors='coerce').fillna(0) if fmt_rows else pd.Series(dtype=float)
-                            _rpt_pallet_qty_check = (_rpt_qty_check.groupby(_rpt_pal_check).sum().to_dict()) if fmt_rows else {}
-
-                            _inv_pals_mm  = inv_data[_inv_pal_col].astype(str).str.strip().apply(_base_pallet)
-                            _inv_qtys_mm  = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
-                            _orig_inv_mm  = _inv_qtys_mm.groupby(_inv_pals_mm).sum().to_dict()
-
-                            # Pallet -> inventory row mapping (first occurrence)
-                            _inv_row_map = {}
-                            for _, _ir in inv_data.iterrows():
-                                _bp = _base_pallet(str(_ir.get(_inv_pal_col, '')).strip())
-                                if _bp and _bp not in _inv_row_map:
-                                    _inv_row_map[_bp] = _ir
-
-                            for _mm_pal, _inv_q in _orig_inv_mm.items():
-                                _rpt_q = _rpt_pallet_qty_check.get(_mm_pal, 0.0)
-                                _diff  = _inv_q - _rpt_q
-                                if _diff > 0.01 and _mm_pal not in damage_pallets:
-                                    # Balance row add — inventory qty report හි cover නොවූ qty
-                                    _orig_inv_row = _inv_row_map.get(_mm_pal)
-                                    if _orig_inv_row is not None:
-                                        _mm_row = build_row(_orig_inv_row, override_pallet=_mm_pal, override_actual_qty=_diff)
-                                        _mm_row['Pick Quantity']       = ''
-                                        _mm_row['Destination Country'] = ''
-                                        _mm_row['Order NO']            = ''
-                                        for rmk in damage_remarks:
-                                            _mm_row[rmk] = dmg_pallet_remark_qty.get((_mm_pal, rmk), '')
-                                        _mm_row['ATS']           = int(_diff)
-                                        _mm_row['Vendor Name']   = str(_orig_inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in _orig_inv_row.index else ''
-                                        if not _mm_row['Vendor Name']:
-                                            _mm_row['Vendor Name'] = partial_vendor_map_fmt.get(_mm_pal, '')
-                                        _mm_row['Vendor Country'] = vendor_country_map.get(str(_mm_row['Vendor Name']).lower(), '')
-                                        _mm_row['Invoice Number'] = str(_orig_inv_row.get('Invoice Number', '')).strip() if 'Invoice Number' in _orig_inv_row.index else ''
-                                        if not _mm_row['Invoice Number'] or _mm_row['Invoice Number'] in ('nan', 'None'):
-                                            _mm_row['Invoice Number'] = pallet_invoice_map_fmt.get(_mm_pal, '')
-                                        _mm_row['Grn Number'] = str(_orig_inv_row.get('Grn Number', '')).strip() if 'Grn Number' in _orig_inv_row.index else ''
-                                        if not _mm_row['Grn Number'] or _mm_row['Grn Number'] in ('nan', 'None'):
-                                            _mm_row['Grn Number'] = pallet_grn_map_fmt.get(_mm_pal, '')
-                                        fmt_rows.append(_mm_row)
-                        except Exception as _mm_fix_err:
-                            st.warning(f"⚠️ Mismatch auto-fix error: {_mm_fix_err}")
-
                         # ── UPDATED: Vendor Name, Vendor Country in final_cols ──
 
                         _extra_cols = ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
@@ -1948,23 +1901,37 @@ if login_section():
                                 ('Pick Quantity', int(total_pick_qty)), ('ATS Quantity', int(total_ats_qty)),
                                 ('Damage Quantity', int(total_dmg_qty)), ('Total Accounted', int(accounted)),
                                 ('Unaccounted', int(inv_total_qty - accounted)), ('', ''),
-                                ('Total Report Lines', total_lines), ('Partial Lines', partial_lines),
+                                ('Total Report Lines', total_lines), ('Partial Lines', partial_lines), ('', ''),
+                                ('Qty Mismatch Pallets', len(mismatch_pallets)),
                             ]
                             ws_summ_sheet.set_column(0, 0, 28); ws_summ_sheet.set_column(1, 1, 18)
                             for ri, (label, value) in enumerate(summary_rows_xl):
                                 ws_summ_sheet.write(ri, 0, label, bold)
-                                if isinstance(value, int): ws_summ_sheet.write(ri, 1, value, val_fmt)
+                                if label == 'Qty Mismatch Pallets':
+                                    use_fmt = err_fmt if (isinstance(value, int) and value > 0) else ok_fmt
+                                    ws_summ_sheet.write(ri, 1, value, use_fmt)
+                                elif isinstance(value, int): ws_summ_sheet.write(ri, 1, value, val_fmt)
                                 elif 'YES' in str(value): ws_summ_sheet.write(ri, 1, value, ok_fmt)
                                 elif 'NO'  in str(value): ws_summ_sheet.write(ri, 1, value, err_fmt)
                                 else: ws_summ_sheet.write(ri, 1, value)
+                            # ── Qty_Mismatch sheet (always add; empty message if no mismatches) ──
+                            mm_sheet = wb.add_worksheet('Qty_Mismatch')
+                            mm_hdr_fmt  = wb.add_format({'bold': True, 'bg_color': '#e74c3c', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                            mm_ok_fmt   = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
+                            mm_row_fmt  = wb.add_format({'border': 1, 'font_size': 10})
+                            mm_neg_fmt  = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e74c3c', 'bold': True})
                             if mismatch_pallets:
-                                mm_sheet = wb.add_worksheet('Qty_Mismatch')
-                                mm_df2   = pd.DataFrame(mismatch_pallets)
-                                mm_hdr   = wb.add_format({'bold': True, 'bg_color': '#e74c3c', 'font_color': '#fff'})
+                                mm_df2 = pd.DataFrame(mismatch_pallets)
                                 for ci, col in enumerate(mm_df2.columns):
-                                    mm_sheet.write(0, ci, col, mm_hdr); mm_sheet.set_column(ci, ci, 22)
+                                    mm_sheet.write(0, ci, col, mm_hdr_fmt)
+                                    mm_sheet.set_column(ci, ci, 26)
                                 for ri2, row2 in mm_df2.iterrows():
-                                    for ci2, val2 in enumerate(row2): mm_sheet.write(ri2+1, ci2, val2)
+                                    for ci2, val2 in enumerate(row2):
+                                        use_fmt = mm_neg_fmt if (mm_df2.columns[ci2] == 'Difference' and float(val2 or 0) != 0) else mm_row_fmt
+                                        mm_sheet.write(ri2 + 1, ci2, val2, use_fmt)
+                            else:
+                                mm_sheet.write(0, 0, '✅ No Qty Mismatches Found', mm_ok_fmt)
+                                mm_sheet.set_column(0, 0, 35)
                             hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
                             pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
                             dmg_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
