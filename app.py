@@ -1765,7 +1765,9 @@ if login_section():
                                 fmt_rows.append(row)
 
                         # ── UPDATED: Vendor Name, Vendor Country in final_cols ──
-                        final_cols = REPORT_HEADERS + ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
+
+                        _extra_cols = ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
+                        final_cols = REPORT_HEADERS + [c for c in _extra_cols if c not in REPORT_HEADERS]
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
