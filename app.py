@@ -1627,6 +1627,12 @@ if login_section():
                                 elif h == 'Client So 2':
                                     cs_col = inv_col_map_r.get('client so', 'Client So')
                                     row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
+                                elif h in ('Invoice Number', 'Grn Number'):
+                                    # ── Do NOT pull from inventory here — will be filled via
+                                    #    invoice_number_row / grn_number_row (which already
+                                    #    fall back to master_partial_data by pallet).
+                                    #    Keeping blank ensures the fill logic below always fires.
+                                    row[h] = ''
                                 elif h in inv_row.index:
                                     row[h] = inv_row[h]
                                 else:
@@ -1811,6 +1817,11 @@ if login_section():
                         _extra_cols = ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
                         final_cols = REPORT_HEADERS + [c for c in _extra_cols if c not in REPORT_HEADERS]
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
+
+                        # ── Remove rows where Pallet is blank / nan ──
+                        fmt_df = fmt_df[
+                            fmt_df['Pallet'].astype(str).str.strip().replace({'nan': '', 'None': ''}) != ''
+                        ].reset_index(drop=True)
 
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
                         rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
