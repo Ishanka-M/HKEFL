@@ -1520,15 +1520,25 @@ if login_section():
                         # ── UPDATED: Load vendor_maintain for country lookup ──
                         vendor_country_map = get_vendor_country_map()
 
-                        # ── UPDATED: Load partial data vendor map ──
-                        partial_vendor_map_fmt = {}
+                        # ── Load partial data: vendor, invoice, grn maps (keyed by pallet + gen_pallet_id) ──
+                        partial_vendor_map_fmt  = {}
+                        partial_invoice_map_fmt = {}
+                        partial_grn_map_fmt     = {}
                         partial_df_raw = _rpt_sheets["master_partial_data"]
-                        if not partial_df_raw.empty and 'Pallet' in partial_df_raw.columns and 'Vendor Name' in partial_df_raw.columns:
+                        if not partial_df_raw.empty:
                             for _, r in partial_df_raw.iterrows():
-                                pk = str(r.get('Pallet', '')).strip()
-                                vn = str(r.get('Vendor Name', '')).strip()
-                                if pk and vn:
-                                    partial_vendor_map_fmt[pk] = vn
+                                def _nz(v):
+                                    s = str(v).strip()
+                                    return s if s not in ('', 'nan', 'None', 'NULL') else ''
+                                pk  = _nz(r.get('Pallet', ''))
+                                gpk = _nz(r.get('Gen Pallet ID', ''))
+                                vn  = _nz(r.get('Vendor Name', ''))
+                                inv = _nz(r.get('Invoice Number', ''))
+                                grn = _nz(r.get('Grn Number', ''))
+                                for key in [k for k in [pk, gpk] if k]:
+                                    if vn:  partial_vendor_map_fmt[key]  = vn
+                                    if inv: partial_invoice_map_fmt[key] = inv
+                                    if grn: partial_grn_map_fmt[key]     = grn
 
                         pick_qty_map = {}; pick_country_map = {}; pick_loadid_map = {}
                         if not mpd_df.empty:
@@ -1699,6 +1709,40 @@ if login_section():
                         _deduped_extra = [c for c in _extra_cols if c not in _seen_cols and not _seen_cols.add(c)]
                         final_cols = REPORT_HEADERS + _deduped_extra
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
+
+                        # ── 1. Blank Pallet rows delete ──────────────────────────────────────
+                        fmt_df = fmt_df[
+                            fmt_df['Pallet'].astype(str).str.strip().replace({'nan': '', 'None': '', 'NULL': ''}) != ''
+                        ].reset_index(drop=True)
+
+                        # ── 2. Vendor Name / Invoice Number / Grn Number — blank/nan ──────────
+                        #       master_partial_data හි Pallet හෝ Gen Pallet ID match වෙනවද බලා fill
+                        def _nz_check(v):
+                            return str(v).strip() if str(v).strip() not in ('', 'nan', 'None', 'NULL') else ''
+
+                        for _fi, _fr in fmt_df.iterrows():
+                            _pal_key = _nz_check(_fr.get('Pallet', ''))
+
+                            # Vendor Name fill
+                            if not _nz_check(_fr.get('Vendor Name', '')):
+                                _vn = partial_vendor_map_fmt.get(_pal_key, '')
+                                if _vn: fmt_df.at[_fi, 'Vendor Name'] = _vn
+
+                            # Invoice Number fill
+                            if not _nz_check(_fr.get('Invoice Number', '')):
+                                _inv = partial_invoice_map_fmt.get(_pal_key, '')
+                                if _inv: fmt_df.at[_fi, 'Invoice Number'] = _inv
+
+                            # Grn Number fill
+                            if not _nz_check(_fr.get('Grn Number', '')):
+                                _grn = partial_grn_map_fmt.get(_pal_key, '')
+                                if _grn: fmt_df.at[_fi, 'Grn Number'] = _grn
+
+                            # Vendor Country re-resolve after Vendor Name update
+                            _vn_final = _nz_check(fmt_df.at[_fi, 'Vendor Name'])
+                            if _vn_final and 'Vendor Country' in fmt_df.columns:
+                                _vc = vendor_country_map.get(_vn_final.lower(), '')
+                                if _vc: fmt_df.at[_fi, 'Vendor Country'] = _vc
 
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
                         rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
