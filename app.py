@@ -1745,6 +1745,18 @@ if login_section():
                             pd.to_numeric(fmt_df['Actual Qty'], errors='coerce').fillna(0) > 0
                         ].reset_index(drop=True)
 
+                        # ── Fully empty rows remove (all key fields blank/zero/nan) ──
+                        _key_cols = ['Pallet', 'Actual Qty', 'Vendor Name', 'Grn Number', 'Invoice Number']
+                        _avail_key = [c for c in _key_cols if c in fmt_df.columns]
+                        if _avail_key:
+                            def _row_is_empty(row):
+                                for c in _avail_key:
+                                    v = str(row[c]).strip()
+                                    if v not in ('', 'nan', 'None', '0', '0.0'):
+                                        return False
+                                return True
+                            fmt_df = fmt_df[~fmt_df.apply(_row_is_empty, axis=1)].reset_index(drop=True)
+
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
                         rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],  errors='coerce').fillna(0).sum()
                         qty_match     = abs(inv_total_qty - rpt_total_qty) < 0.01
