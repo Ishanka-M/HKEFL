@@ -1803,19 +1803,91 @@ if login_section():
                                         bal_row = fill_row_from_partial(bal_row, pallet_key=orig_pallet)
                                         fmt_rows.append(bal_row)
                             else:
-                                row = build_row(inv_row)
-                                row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
-                                row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
-                                for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                ats_qty   = inv_actual_qty - total_picked
-                                row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
-                                row['Vendor Name']    = vendor_name_row
-                                row['Vendor Country'] = vendor_country_row
-                                row['Invoice Number'] = invoice_number_row
-                                row['Grn Number']     = grn_number_row
-                                row = fill_row_from_partial(row, pallet_key=orig_pallet)
-                                fmt_rows.append(row)
+                                # ── master_pick_data නැති නමුත් master_partial_data හි match check ──
+                                # 1) Gen Pallet ID match → partial_qty එකට match කරන්න
+                                # 2) Pallet match → balance_qty (Actual Qty - sum Partial Qty) match කරන්න
+                                _partial_df_check = _rpt_sheets["master_partial_data"]
+                                _matched_by_gen   = False
+                                _matched_by_pal   = False
+
+                                if not _partial_df_check.empty:
+                                    _pc2 = {str(c).strip().lower(): str(c).strip() for c in _partial_df_check.columns}
+                                    _pg_col2  = _pc2.get('gen pallet id',  'Gen Pallet ID')
+                                    _pp_col2  = _pc2.get('pallet',         'Pallet')
+                                    _pq_col2  = _pc2.get('partial qty',    'Partial Qty')
+                                    _pa_col2  = _pc2.get('actual qty',     'Actual Qty')
+                                    _pl_col2  = _pc2.get('load id',        'Load ID')
+                                    _pi_col2  = _pc2.get('invoice number', 'Invoice Number')
+                                    _pgn_col2 = _pc2.get('grn number',     'Grn Number')
+
+                                    # 1) Gen Pallet ID match
+                                    if _pg_col2 in _partial_df_check.columns:
+                                        _gen_match = _partial_df_check[
+                                            _partial_df_check[_pg_col2].astype(str).str.strip() == orig_pallet
+                                        ]
+                                        if not _gen_match.empty:
+                                            _matched_by_gen = True
+                                            for _, _gm_row in _gen_match.iterrows():
+                                                _gm_pq   = pd.to_numeric(_gm_row.get(_pq_col2, 0), errors='coerce') or 0
+                                                _gm_lid  = str(_gm_row.get(_pl_col2, '')).strip()
+                                                _gm_inv  = str(_gm_row.get(_pi_col2, '')).strip()
+                                                _gm_grn  = str(_gm_row.get(_pgn_col2, '')).strip()
+                                                if _gm_inv  in ('nan', 'None'): _gm_inv  = ''
+                                                if _gm_grn  in ('nan', 'None'): _gm_grn  = ''
+                                                if abs(inv_actual_qty - _gm_pq) <= 0.01:
+                                                    row = build_row(inv_row)
+                                                    row['Pick Quantity']       = _gm_pq
+                                                    row['Destination Country'] = pick_country_map.get(orig_pallet, '')
+                                                    row['Order NO']            = _gm_lid
+                                                    for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                                    row['ATS']            = ''
+                                                    row['Vendor Name']    = vendor_name_row
+                                                    row['Vendor Country'] = vendor_country_row
+                                                    row['Invoice Number'] = _gm_inv or invoice_number_row
+                                                    row['Grn Number']     = _gm_grn or grn_number_row
+                                                    row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=orig_pallet)
+                                                    fmt_rows.append(row)
+
+                                    # 2) Pallet match → balance_qty
+                                    if not _matched_by_gen and _pp_col2 in _partial_df_check.columns:
+                                        _pal_match = _partial_df_check[
+                                            _partial_df_check[_pp_col2].astype(str).str.strip() == orig_pallet
+                                        ]
+                                        if not _pal_match.empty:
+                                            _matched_by_pal = True
+                                            _pb_col2 = _pc2.get('balance qty', 'Balance Qty')
+                                            _last_pal_row = _pal_match.iloc[-1]
+                                            _pm_balance = pd.to_numeric(_last_pal_row.get(_pb_col2, None), errors='coerce')
+                                            if pd.isna(_pm_balance):
+                                                _pm_balance = 0.0
+                                            if abs(inv_actual_qty - _pm_balance) <= 0.01:
+                                                row = build_row(inv_row)
+                                                row['Pick Quantity']       = ''
+                                                row['Destination Country'] = ''
+                                                row['Order NO']            = ''
+                                                for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                                row['ATS']            = int(inv_actual_qty) if not is_damaged else ''
+                                                row['Vendor Name']    = vendor_name_row
+                                                row['Vendor Country'] = vendor_country_row
+                                                row['Invoice Number'] = invoice_number_row
+                                                row['Grn Number']     = grn_number_row
+                                                row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                                                fmt_rows.append(row)
+
+                                if not _matched_by_gen and not _matched_by_pal:
+                                    row = build_row(inv_row)
+                                    row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
+                                    row['Destination Country'] = pick_country_map.get(orig_pallet, '')
+                                    row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
+                                    for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                    ats_qty   = inv_actual_qty - total_picked
+                                    row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
+                                    row['Vendor Name']    = vendor_name_row
+                                    row['Vendor Country'] = vendor_country_row
+                                    row['Invoice Number'] = invoice_number_row
+                                    row['Grn Number']     = grn_number_row
+                                    row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                                    fmt_rows.append(row)
 
                         # ── UPDATED: Vendor Name, Vendor Country in final_cols ──
 
@@ -1847,7 +1919,7 @@ if login_section():
                             _inv_pals      = inv_data[_inv_pal_col].astype(str).str.strip().apply(_base_pallet)
                             _inv_qtys      = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
                             orig_total_inv = _inv_qtys.groupby(_inv_pals).sum().to_dict()
-                            for pal in set(orig_total_inv) | set(rpt_pallet_qty):
+                            for pal in set(orig_total_inv):
                                 inv_q = orig_total_inv.get(pal, 0.0)
                                 rpt_q = rpt_pallet_qty.get(pal, 0.0)
                                 if abs(inv_q - rpt_q) > 0.01:
