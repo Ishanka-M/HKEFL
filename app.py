@@ -1520,22 +1520,44 @@ if login_section():
                         # ── UPDATED: Load vendor_maintain for country lookup ──
                         vendor_country_map = get_vendor_country_map()
 
-                        # ── Load partial data: vendor, invoice, grn maps ─────────────────────
-                        # keyed by BOTH pallet AND gen_pallet_id
-                        # gen_pallet_id row → ඒ pallet row හි invoice/grn/vendor inherit කරයි
+                        # ── Load vendor/invoice/grn maps keyed by pallet + gen_pallet_id ──────
+                        # Source priority:
+                        #   1) master_pick_data  (pallet → invoice_number, grn_number, vendor_name)
+                        #   2) master_partial_data (pallet + gen_pallet_id rows)
+                        #   3) gen_pallet_id → orig pallet inherit (Pass 2)
                         partial_vendor_map_fmt  = {}
                         partial_invoice_map_fmt = {}
                         partial_grn_map_fmt     = {}
-                        # gen_pallet_id → orig pallet reverse map
                         _gen_to_orig_fmt = {}
 
+                        def _nz(v):
+                            s = str(v).strip()
+                            return s if s not in ('', 'nan', 'None', 'NULL') else ''
+
+                        # Source 1: master_pick_data — pallet level invoice/grn/vendor
+                        if not mpd_df.empty:
+                            _mpd_pc = {str(c).strip().lower(): str(c).strip() for c in mpd_df.columns}
+                            _mpd_pal_c  = _mpd_pc.get('pallet', 'Pallet')
+                            _mpd_inv_c  = _mpd_pc.get('invoice number', '')
+                            _mpd_grn_c  = _mpd_pc.get('grn number', '')
+                            _mpd_vnd_c  = _mpd_pc.get('vendor name', '')
+                            for _, _mr in mpd_df.iterrows():
+                                _mp = _nz(_mr.get(_mpd_pal_c, ''))
+                                if not _mp: continue
+                                if _mpd_inv_c:
+                                    _iv = _nz(_mr.get(_mpd_inv_c, ''))
+                                    if _iv: partial_invoice_map_fmt[_mp] = _iv
+                                if _mpd_grn_c:
+                                    _gv = _nz(_mr.get(_mpd_grn_c, ''))
+                                    if _gv: partial_grn_map_fmt[_mp] = _gv
+                                if _mpd_vnd_c:
+                                    _vv = _nz(_mr.get(_mpd_vnd_c, ''))
+                                    if _vv: partial_vendor_map_fmt[_mp] = _vv
+
+                        # Source 2: master_partial_data — pallet + gen_pallet_id rows
                         partial_df_raw = _rpt_sheets["master_partial_data"]
                         if not partial_df_raw.empty:
-                            def _nz(v):
-                                s = str(v).strip()
-                                return s if s not in ('', 'nan', 'None', 'NULL') else ''
-
-                            # Pass 1: pallet keyed entries + build gen→orig map
+                            # Pass 1: direct pallet + gen_pallet_id keyed entries
                             for _, r in partial_df_raw.iterrows():
                                 pk  = _nz(r.get('Pallet', ''))
                                 gpk = _nz(r.get('Gen Pallet ID', ''))
@@ -1548,13 +1570,11 @@ if login_section():
                                     if grn: partial_grn_map_fmt[pk]     = grn
                                 if gpk and pk:
                                     _gen_to_orig_fmt[gpk] = pk
-                                    # gen_pallet keyed — same values as pallet row
                                     if vn:  partial_vendor_map_fmt[gpk]  = vn
                                     if inv: partial_invoice_map_fmt[gpk] = inv
                                     if grn: partial_grn_map_fmt[gpk]     = grn
 
-                            # Pass 2: gen_pallet_id rows that have blank invoice/grn →
-                            #         inherit from their orig pallet row
+                            # Pass 2: gen_pallet_id → inherit from orig pallet if still blank
                             for gpk, pk in _gen_to_orig_fmt.items():
                                 if gpk not in partial_invoice_map_fmt and pk in partial_invoice_map_fmt:
                                     partial_invoice_map_fmt[gpk] = partial_invoice_map_fmt[pk]
