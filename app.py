@@ -1567,14 +1567,39 @@ if login_section():
                         # ── UPDATED: Load partial data maps (vendor, invoice, grn) ──
                         inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = get_partial_lookup_maps()
 
+                        # ── master_pick_data: Pick Quantity, Country Name, Generated Load ID per pallet ──
                         pick_qty_map = {}; pick_country_map = {}; pick_loadid_map = {}
+                        # pallet → list of {pick_quantity, country_name, generated_load_id}
+                        mpd_rows_by_pallet = {}
                         if not mpd_df.empty:
-                            p_col = mpd_col.get('pallet', 'Pallet'); aq_col = mpd_col.get('actual qty', 'Actual Qty')
-                            cn_col = mpd_col.get('country name', 'Country Name'); gl_col = mpd_col.get('generated load id', 'Generated Load ID')
-                            _mpd = mpd_df[[p_col, aq_col, cn_col, gl_col]].copy()
+                            p_col  = mpd_col.get('pallet', 'Pallet')
+                            pq_col_mpd = mpd_col.get('pick quantity', 'Pick Quantity')
+                            cn_col = mpd_col.get('country name', 'Country Name')
+                            gl_col = mpd_col.get('generated load id', 'Generated Load ID')
+
+                            # Fallback: if Pick Quantity column missing use Actual Qty
+                            if pq_col_mpd not in mpd_df.columns:
+                                pq_col_mpd = mpd_col.get('actual qty', 'Actual Qty')
+
+                            _mpd_cols = [c for c in [p_col, pq_col_mpd, cn_col, gl_col] if c in mpd_df.columns]
+                            _mpd = mpd_df[_mpd_cols].copy()
                             _mpd['_pkey'] = _mpd[p_col].astype(str).str.strip()
-                            _mpd[aq_col]  = pd.to_numeric(_mpd[aq_col], errors='coerce').fillna(0)
-                            pick_qty_map     = _mpd.groupby('_pkey')[aq_col].sum().to_dict()
+                            _mpd[pq_col_mpd] = pd.to_numeric(_mpd[pq_col_mpd], errors='coerce').fillna(0)
+
+                            # pick_qty_map: sum of Pick Quantity per pallet
+                            pick_qty_map = _mpd.groupby('_pkey')[pq_col_mpd].sum().to_dict()
+
+                            # per-pallet row list for multi-pick lookup
+                            for _, _mr in _mpd.iterrows():
+                                _pk = str(_mr['_pkey']).strip()
+                                if _pk not in mpd_rows_by_pallet:
+                                    mpd_rows_by_pallet[_pk] = []
+                                mpd_rows_by_pallet[_pk].append({
+                                    'pick_quantity':      float(_mr.get(pq_col_mpd, 0)),
+                                    'country_name':       str(_mr.get(cn_col, '')).strip(),
+                                    'generated_load_id':  str(_mr.get(gl_col, '')).strip(),
+                                })
+
                             _last = _mpd.drop_duplicates('_pkey', keep='last').set_index('_pkey')
                             pick_country_map = _last[cn_col].astype(str).to_dict()
                             pick_loadid_map  = _last[gl_col].astype(str).to_dict()
@@ -1732,9 +1757,15 @@ if login_section():
                                 matching_partial = next((p for p in partial_map.get(real_orig, []) if p['gen_pallet'] == orig_pallet), None)
                                 if matching_partial and abs(inv_actual_qty - matching_partial['partial_qty']) <= 0.01:
                                     row = build_row(inv_row)
-                                    row['Pick Quantity'] = matching_partial['partial_qty']
-                                    row['Destination Country'] = pick_country_map.get(real_orig, '')
-                                    row['Order NO'] = matching_partial['load_id']
+                                    # ── Pick Quantity, Destination Country, Order NO from master_pick_data ──
+                                    _mpd_rows_orig = mpd_rows_by_pallet.get(real_orig, [])
+                                    _matched_mpd = next(
+                                        (m for m in _mpd_rows_orig if m['generated_load_id'] == matching_partial['load_id']),
+                                        None
+                                    )
+                                    row['Pick Quantity']       = _matched_mpd['pick_quantity']      if _matched_mpd else matching_partial['partial_qty']
+                                    row['Destination Country'] = _matched_mpd['country_name']        if _matched_mpd else pick_country_map.get(real_orig, '')
+                                    row['Order NO']            = _matched_mpd['generated_load_id']   if _matched_mpd else matching_partial['load_id']
                                     for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                     row['ATS'] = ''
                                     row['Vendor Name']    = vendor_name_row
@@ -1761,9 +1792,15 @@ if login_section():
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     else:
-                                        row['Pick Quantity'] = last_p['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                        row['Order NO'] = last_p['load_id']
+                                        # ── Pick Quantity, Destination Country, Order NO from master_pick_data ──
+                                        _mpd_rows_p = mpd_rows_by_pallet.get(orig_pallet, [])
+                                        _matched_mpd_p = next(
+                                            (m for m in _mpd_rows_p if m['generated_load_id'] == last_p['load_id']),
+                                            None
+                                        )
+                                        row['Pick Quantity']       = _matched_mpd_p['pick_quantity']     if _matched_mpd_p else last_p['partial_qty']
+                                        row['Destination Country'] = _matched_mpd_p['country_name']       if _matched_mpd_p else pick_country_map.get(orig_pallet, '')
+                                        row['Order NO']            = _matched_mpd_p['generated_load_id']  if _matched_mpd_p else last_p['load_id']
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                     row['Vendor Name']    = vendor_name_row
@@ -1777,15 +1814,21 @@ if login_section():
                                     total_partial_qty = sum(p['partial_qty'] for p in partials)
                                     for par_entry in partials:
                                         row = build_row(inv_row, override_pallet=par_entry['gen_pallet'], override_actual_qty=par_entry['partial_qty'])
-                                        row['Pick Quantity'] = par_entry['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                        row['Order NO'] = par_entry['load_id']
+                                        # ── Pick Quantity, Destination Country, Order NO from master_pick_data ──
+                                        gp = par_entry['gen_pallet']
+                                        _mpd_rows_pe = mpd_rows_by_pallet.get(orig_pallet, [])
+                                        _matched_mpd_pe = next(
+                                            (m for m in _mpd_rows_pe if m['generated_load_id'] == par_entry['load_id']),
+                                            None
+                                        )
+                                        row['Pick Quantity']       = _matched_mpd_pe['pick_quantity']    if _matched_mpd_pe else par_entry['partial_qty']
+                                        row['Destination Country'] = _matched_mpd_pe['country_name']      if _matched_mpd_pe else pick_country_map.get(orig_pallet, '')
+                                        row['Order NO']            = _matched_mpd_pe['generated_load_id'] if _matched_mpd_pe else par_entry['load_id']
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                         row['Vendor Name']    = vendor_name_row
                                         row['Vendor Country'] = vendor_country_row
                                         # ── Use invoice/grn directly from this partial entry ──
-                                        gp = par_entry['gen_pallet']
                                         row['Invoice Number'] = par_entry.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, '') or invoice_number_row
                                         row['Grn Number']     = par_entry.get('grn_number', '')     or inv_grn_map_fmt.get(gp, '')    or grn_number_row
                                         row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp, partial_entry=par_entry)
@@ -1804,9 +1847,18 @@ if login_section():
                                         fmt_rows.append(bal_row)
                             else:
                                 row = build_row(inv_row)
-                                row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
-                                row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
+                                # ── Pick Quantity, Destination Country, Order NO from master_pick_data ──
+                                _mpd_rows_else = mpd_rows_by_pallet.get(orig_pallet, [])
+                                if _mpd_rows_else:
+                                    # Single pick: use last row (most recent)
+                                    _mr_last = _mpd_rows_else[-1]
+                                    row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
+                                    row['Destination Country'] = _mr_last['country_name']
+                                    row['Order NO']            = _mr_last['generated_load_id']
+                                else:
+                                    row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
+                                    row['Destination Country'] = pick_country_map.get(orig_pallet, '')
+                                    row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 ats_qty   = inv_actual_qty - total_picked
                                 row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
