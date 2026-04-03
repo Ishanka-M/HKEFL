@@ -1719,10 +1719,15 @@ if login_section():
                                 if gpallet and opallet:
                                     gen_to_orig[gpallet] = opallet
 
-                        # ── Sort each pallet's entries by balance_qty ascending
-                        #    smallest balance_qty = most recent partial pick = last_p ──
+                        # ── Sort each pallet's entries:
+                        #    1) Real picks (load_id not null) first, sorted by balance_qty asc
+                        #    2) NULL/blank load_id records (upload-only balance records) last
+                        def _sort_partial_key(x):
+                            lid = str(x.get('load_id', '')).strip()
+                            is_null_load = 1 if lid in ('', 'nan', 'None', 'NULL') else 0
+                            return (is_null_load, x.get('balance_qty', x['mpd_actual'] - x['partial_qty']))
                         for _pal_key in partial_map:
-                            partial_map[_pal_key].sort(key=lambda x: x.get('balance_qty', x['mpd_actual'] - x['partial_qty']))
+                            partial_map[_pal_key].sort(key=_sort_partial_key)
 
                         damage_pallets = set()
                         if not dmg_df.empty and 'Pallet' in dmg_df.columns:
@@ -1878,10 +1883,17 @@ if login_section():
                                 if _gen_pals_in_inv and len(_gen_pals_in_inv) == len(_gen_pals_for_orig):
                                     continue
 
-                                # list sorted by balance_qty asc → last entry = smallest balance = most recent
-                                last_p       = partials[-1]
+                                # list sorted: real picks first (by balance_qty asc), NULL-load records last
+                                # Use the last real pick entry (smallest balance among actual picks)
+                                real_picks = [p for p in partials if str(p.get('load_id', '')).strip() not in ('', 'nan', 'None', 'NULL')]
+                                null_picks  = [p for p in partials if str(p.get('load_id', '')).strip() in ('', 'nan', 'None', 'NULL')]
+                                last_p = real_picks[-1] if real_picks else partials[-1]
                                 last_balance = last_p.get('balance_qty', last_p['mpd_actual'] - last_p['partial_qty'])
-                                if last_balance <= 0.01:
+                                # If NULL-load (upload-only) records exist, use their balance_qty as ATS
+                                if null_picks and not real_picks:
+                                    tally_qty = null_picks[-1].get('balance_qty', 0)
+                                    tally_type = 'balance'
+                                elif last_balance <= 0.01:
                                     tally_qty = last_p['mpd_actual']; tally_type = 'picked'
                                 else:
                                     tally_qty = last_balance; tally_type = 'balance'
