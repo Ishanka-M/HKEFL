@@ -1597,14 +1597,36 @@ if login_section():
                                 _uvv = _nz(_ur.get(_upf_vnd_c, ''))
                                 if _uvv: partial_vendor_map_fmt[_up] = _uvv    # override
 
-                        # Pass 2: gen_pallet_id → inherit from orig pallet if still blank
+                        # Pass 2: gen_pallet_id → inherit from orig pallet
+                        # Upload file (P4) values on orig pallet ALWAYS override gen_pallet_id
+                        # (because upload file only has original pallet IDs, not gen_pallet_ids)
+                        _upf_pallets_with_data = set()
+                        for _, _ur2 in inv_data.iterrows():
+                            _up2 = _nz(_ur2.get(_upf_pal_c, ''))
+                            if _up2:
+                                has_inv = _upf_inv_c and _nz(_ur2.get(_upf_inv_c, ''))
+                                has_grn = _upf_grn_c and _nz(_ur2.get(_upf_grn_c, ''))
+                                has_vnd = _upf_vnd_c and _nz(_ur2.get(_upf_vnd_c, ''))
+                                if has_inv or has_grn or has_vnd:
+                                    _upf_pallets_with_data.add(_up2)
+
                         for gpk, pk in _gen_to_orig_fmt.items():
-                            if gpk not in partial_invoice_map_fmt and pk in partial_invoice_map_fmt:
-                                partial_invoice_map_fmt[gpk] = partial_invoice_map_fmt[pk]
-                            if gpk not in partial_grn_map_fmt and pk in partial_grn_map_fmt:
-                                partial_grn_map_fmt[gpk] = partial_grn_map_fmt[pk]
-                            if gpk not in partial_vendor_map_fmt and pk in partial_vendor_map_fmt:
-                                partial_vendor_map_fmt[gpk] = partial_vendor_map_fmt[pk]
+                            # If orig pallet came from upload file → always override gen_pallet_id
+                            if pk in _upf_pallets_with_data:
+                                if pk in partial_invoice_map_fmt:
+                                    partial_invoice_map_fmt[gpk] = partial_invoice_map_fmt[pk]
+                                if pk in partial_grn_map_fmt:
+                                    partial_grn_map_fmt[gpk] = partial_grn_map_fmt[pk]
+                                if pk in partial_vendor_map_fmt:
+                                    partial_vendor_map_fmt[gpk] = partial_vendor_map_fmt[pk]
+                            else:
+                                # Fallback: inherit only if gen_pallet_id key is still blank
+                                if gpk not in partial_invoice_map_fmt and pk in partial_invoice_map_fmt:
+                                    partial_invoice_map_fmt[gpk] = partial_invoice_map_fmt[pk]
+                                if gpk not in partial_grn_map_fmt and pk in partial_grn_map_fmt:
+                                    partial_grn_map_fmt[gpk] = partial_grn_map_fmt[pk]
+                                if gpk not in partial_vendor_map_fmt and pk in partial_vendor_map_fmt:
+                                    partial_vendor_map_fmt[gpk] = partial_vendor_map_fmt[pk]
 
                         pick_qty_map = {}; pick_country_map = {}; pick_loadid_map = {}
                         if not mpd_df.empty:
