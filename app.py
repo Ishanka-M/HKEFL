@@ -1693,8 +1693,11 @@ if login_section():
                                 row['Vendor Country'] = vendor_country_row
                                 fmt_rows.append(row)
 
-                        # ── UPDATED: Vendor Name and Vendor Country added to final_cols ──
-                        final_cols = REPORT_HEADERS + ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
+                        # ── Build final_cols, deduplicating to avoid Arrow/Streamlit errors ──
+                        _extra_cols = ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
+                        _seen_cols = set(REPORT_HEADERS)
+                        _deduped_extra = [c for c in _extra_cols if c not in _seen_cols and not _seen_cols.add(c)]
+                        final_cols = REPORT_HEADERS + _deduped_extra
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
