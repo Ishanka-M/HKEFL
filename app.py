@@ -1705,6 +1705,12 @@ if login_section():
 
                             return row
 
+                        # ── Pre-build set of gen_pallets present in inventory file ──
+                        _inv_pallets_in_file = set(
+                            str(r).strip() for r in inv_data[_inv_pal_col].dropna()
+                            if str(r).strip() not in ('', 'nan', 'None')
+                        )
+
                         fmt_rows = []
                         for _, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -1780,6 +1786,13 @@ if login_section():
 
                             partials = partial_map.get(orig_pallet, [])
                             if partials:
+                                # ── If ALL gen_pallets for this orig pallet are already in inventory file
+                                #    as separate rows, skip this orig pallet row entirely (avoid duplicates) ──
+                                _gen_pals_for_orig = [p['gen_pallet'] for p in partials if p['gen_pallet']]
+                                _gen_pals_in_inv   = [gp for gp in _gen_pals_for_orig if gp in _inv_pallets_in_file]
+                                if _gen_pals_in_inv and len(_gen_pals_in_inv) == len(_gen_pals_for_orig):
+                                    continue
+
                                 # list sorted by balance_qty asc → last entry = smallest balance = most recent
                                 last_p       = partials[-1]
                                 last_balance = last_p.get('balance_qty', last_p['mpd_actual'] - last_p['partial_qty'])
@@ -1810,6 +1823,9 @@ if login_section():
                                     mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
                                     total_partial_qty = sum(p['partial_qty'] for p in partials)
                                     for par_entry in partials:
+                                        # ── Skip gen_pallet rows already present as separate rows in inventory file ──
+                                        if par_entry['gen_pallet'] and par_entry['gen_pallet'] in _inv_pallets_in_file:
+                                            continue
                                         row = build_row(inv_row, override_pallet=par_entry['gen_pallet'], override_actual_qty=par_entry['partial_qty'])
                                         row['Pick Quantity'] = par_entry['partial_qty']
                                         row['Destination Country'] = pick_country_map.get(orig_pallet, '')
