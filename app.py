@@ -1575,7 +1575,6 @@ if login_section():
                             pq_col_mpd = mpd_col.get('pick quantity', 'Pick Quantity')
                             cn_col     = mpd_col.get('country name', 'Country Name')
                             gl_col     = mpd_col.get('generated load id', 'Generated Load ID')
-                            # Fallback if Pick Quantity column missing
                             if pq_col_mpd not in mpd_df.columns:
                                 pq_col_mpd = mpd_col.get('actual qty', 'Actual Qty')
                             _mpd_cols = [c for c in [p_col, pq_col_mpd, cn_col, gl_col] if c in mpd_df.columns]
@@ -1761,11 +1760,15 @@ if login_section():
 
                                 matching_partial = next((p for p in partial_map.get(real_orig, []) if p['gen_pallet'] == orig_pallet), None)
                                 if matching_partial:
-                                    pq, dc, ono = _get_mpd_fields(real_orig, load_id_hint=matching_partial['load_id'])
                                     row = build_row(inv_row)
-                                    row['Pick Quantity']       = pq
-                                    row['Destination Country'] = dc
-                                    row['Order NO']            = ono
+                                    if matching_partial['partial_qty'] == 0:
+                                        # ── partial_qty=0: Vendor/Invoice/GRN only, no Pick fields ──
+                                        row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
+                                    else:
+                                        pq, dc, ono = _get_mpd_fields(real_orig, load_id_hint=matching_partial['load_id'])
+                                        row['Pick Quantity']       = pq
+                                        row['Destination Country'] = dc
+                                        row['Order NO']            = ono
                                     for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                     row['ATS'] = ''
                                     row['Vendor Name']    = vendor_name_row
@@ -1787,17 +1790,20 @@ if login_section():
                                     tally_qty = last_balance; tally_type = 'balance'
 
                                 if abs(inv_actual_qty - tally_qty) <= 0.01:
-                                    # Single partial row or balance row
                                     row = build_row(inv_row)
                                     if tally_type == 'balance':
                                         row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     else:
-                                        pq, dc, ono = _get_mpd_fields(orig_pallet, load_id_hint=last_p['load_id'])
-                                        row['Pick Quantity']       = pq
-                                        row['Destination Country'] = dc
-                                        row['Order NO']            = ono
+                                        if last_p['partial_qty'] == 0:
+                                            # ── partial_qty=0: Vendor/Invoice/GRN only ──
+                                            row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
+                                        else:
+                                            pq, dc, ono = _get_mpd_fields(orig_pallet, load_id_hint=last_p['load_id'])
+                                            row['Pick Quantity']       = pq
+                                            row['Destination Country'] = dc
+                                            row['Order NO']            = ono
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                     row['Vendor Name']    = vendor_name_row
@@ -1807,17 +1813,19 @@ if login_section():
                                     row = fill_row_from_partial(row, pallet_key=orig_pallet, partial_entry=last_p)
                                     fmt_rows.append(row)
                                 else:
-                                    # Multiple partial splits — one row per partial, Actual Qty = inv file value (same row for all)
                                     mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
                                     total_partial_qty = sum(p['partial_qty'] for p in partials)
                                     for par_entry in partials:
-                                        gp  = par_entry['gen_pallet']
-                                        pq, dc, ono = _get_mpd_fields(orig_pallet, load_id_hint=par_entry['load_id'])
-                                        # Pallet column = gen_pallet ID; Actual Qty = inventory file value
+                                        gp = par_entry['gen_pallet']
                                         row = build_row(inv_row, override_pallet=gp)
-                                        row['Pick Quantity']       = pq
-                                        row['Destination Country'] = dc
-                                        row['Order NO']            = ono
+                                        if par_entry['partial_qty'] == 0:
+                                            # ── partial_qty=0: Vendor/Invoice/GRN only ──
+                                            row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
+                                        else:
+                                            pq, dc, ono = _get_mpd_fields(orig_pallet, load_id_hint=par_entry['load_id'])
+                                            row['Pick Quantity']       = pq
+                                            row['Destination Country'] = dc
+                                            row['Order NO']            = ono
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                         row['Vendor Name']    = vendor_name_row
