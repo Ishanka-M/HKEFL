@@ -922,6 +922,91 @@ if login_section():
         inv_file = col1.file_uploader("1. Upload Inventory Report", type=['csv', 'xlsx'])
         req_file = col2.file_uploader("2. Upload Customer Requirement", type=['csv', 'xlsx'])
 
+        # ── Upload Report Section ──────────────────────────────────────────────
+        st.divider()
+        st.subheader("📤 Upload Processed Report to Update Partial Data")
+        st.info("""
+        **Upload කරන Report එක process කිරීමේ logic:**
+        - `master_partial_data` හි **Pallet** → Upload report හි **Pallet** සමග match → **Balance Qty** update (upload report හි Actual Qty)
+        - `master_partial_data` හි **Gen Pallet ID** → Upload report හි **Pallet** සමග match → **Partial Qty** update (upload report හි Actual Qty)
+        """)
+        upload_report_file = st.file_uploader(
+            "Upload Inventory Report (Actual Qty update)", type=['csv', 'xlsx'], key="upload_report_uploader"
+        )
+
+        if upload_report_file:
+            if st.button("🔄 Process Upload Report & Update Partial Data", type="primary", use_container_width=True):
+                with st.spinner("Processing Upload Report..."):
+                    try:
+                        up_df = (
+                            pd.read_csv(upload_report_file, keep_default_na=False, na_values=[''])
+                            if upload_report_file.name.endswith('.csv')
+                            else pd.read_excel(upload_report_file, keep_default_na=False, na_values=[''])
+                        )
+                        up_df.columns = [str(c).strip() for c in up_df.columns]
+                        up_col_map = {c.lower(): c for c in up_df.columns}
+
+                        up_pallet_col = up_col_map.get('pallet')
+                        up_actual_col = up_col_map.get('actual qty')
+
+                        if not up_pallet_col or not up_actual_col:
+                            st.error("❌ Upload file හි 'Pallet' සහ 'Actual Qty' columns තිබිය යුතුය.")
+                        else:
+                            up_df[up_actual_col] = pd.to_numeric(up_df[up_actual_col], errors='coerce').fillna(0)
+                            # Build lookup: pallet → actual qty (from upload report)
+                            up_lookup = {
+                                str(row[up_pallet_col]).strip(): float(row[up_actual_col])
+                                for _, row in up_df.iterrows()
+                                if str(row.get(up_pallet_col, '')).strip() not in ('', 'nan', 'None')
+                            }
+
+                            partial_df = DBManager.read_table("master_partial_data", force=True)
+
+                            if partial_df.empty:
+                                st.warning("⚠️ Master_Partial_Data හි data නොමැත.")
+                            else:
+                                updated_balance = 0
+                                updated_partial = 0
+
+                                for idx, row in partial_df.iterrows():
+                                    pallet_val    = str(row.get('Pallet', '')).strip()
+                                    gen_pallet_val = str(row.get('Gen Pallet ID', '')).strip()
+
+                                    # Rule 1: Pallet match → update Balance Qty
+                                    if pallet_val and pallet_val in up_lookup:
+                                        partial_df.at[idx, 'Balance Qty'] = up_lookup[pallet_val]
+                                        updated_balance += 1
+
+                                    # Rule 2: Gen Pallet ID match → update Partial Qty
+                                    if gen_pallet_val and gen_pallet_val in up_lookup:
+                                        partial_df.at[idx, 'Partial Qty'] = up_lookup[gen_pallet_val]
+                                        updated_partial += 1
+
+                                if updated_balance > 0 or updated_partial > 0:
+                                    DBManager._overwrite_table("master_partial_data", partial_df)
+                                    st.success(
+                                        f"✅ Update සාර්ථකයි! "
+                                        f"Balance Qty updated: **{updated_balance}** rows | "
+                                        f"Partial Qty updated: **{updated_partial}** rows"
+                                    )
+                                    show_confetti()
+                                else:
+                                    st.warning("⚠️ Master_Partial_Data හි matching Pallets හෝ Gen Pallet IDs නොමැත.")
+
+                                # Show updated preview
+                                st.subheader("📋 Updated Master_Partial_Data Preview")
+                                match_pallets = set(up_lookup.keys())
+                                preview_mask = (
+                                    partial_df['Pallet'].astype(str).str.strip().isin(match_pallets) |
+                                    partial_df['Gen Pallet ID'].astype(str).str.strip().isin(match_pallets)
+                                )
+                                st.dataframe(partial_df[preview_mask].astype(str), use_container_width=True)
+
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
+
+        st.divider()
+
         if inv_file and req_file:
             if st.button("Generate Picks & Process", use_container_width=True, type="primary"):
                 with st.spinner("🔄 Processing Data & Saving to Supabase..."):
@@ -2473,5 +2558,65 @@ if login_section():
                         st.error(f"Error: {e}")
                 else:
                     st.error("Please type CONFIRM to proceed.")
+
+        # ── Reset Section ─────────────────────────────────────────────────────
+        st.divider()
+        st.subheader("🔄 System Reset")
+        st.error(
+            "⚠️ **DANGER ZONE** — System Reset කිරීමෙන් සියලු data (users හැරෙන්න) "
+            "permanently delete වේ. මෙය undo කළ නොහැක!"
+        )
+        with st.expander("🔴 Full System Reset (ALL DATA)", expanded=False):
+            st.warning(
+                "පහත tables **සම්පූර්ණයෙන්ම** clear වේ:\n"
+                "- master_pick_data\n- master_partial_data\n- summary_data\n"
+                "- load_history\n- damage_items\n- vendor_maintain\n\n"
+                "**Users table නොවෙනස්ව** (users delete නොවේ)."
+            )
+            reset_confirm_1 = st.text_input(
+                "Reset confirm කිරීමට **RESET ALL** type කරන්න:",
+                key="reset_confirm_input"
+            )
+            reset_confirm_2 = st.checkbox(
+                "🔴 මම confirm කරමි — සියලු data permanently delete වේ.",
+                key="reset_confirm_checkbox"
+            )
+
+            if st.button("🔴 Execute Full System Reset", type="primary", key="reset_btn"):
+                if reset_confirm_1 == "RESET ALL" and reset_confirm_2:
+                    reset_tables = [
+                        "master_pick_data", "master_partial_data", "summary_data",
+                        "load_history", "damage_items", "vendor_maintain"
+                    ]
+                    try:
+                        sb = get_supabase_client()
+                        failed = []
+                        for t in reset_tables:
+                            try:
+                                sb.table(t).delete().neq('id', -1).execute()
+                                DBManager.invalidate(t)
+                            except Exception as te:
+                                failed.append(f"{t}: {te}")
+
+                        if failed:
+                            st.error(f"❌ Some tables failed to clear:\n" + "\n".join(failed))
+                        else:
+                            st.success(
+                                "✅ **Full System Reset සාර්ථකයි!** "
+                                "සියලු operational data clear කරන ලදී. Users නොවෙනස්ව ඇත."
+                            )
+                            # Clear session state to force fresh load
+                            keys_to_keep = ['logged_in', 'role', 'username', 'welcomed']
+                            for k in list(st.session_state.keys()):
+                                if k not in keys_to_keep:
+                                    del st.session_state[k]
+                            show_confetti()
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Reset error: {e}")
+                elif reset_confirm_1 != "RESET ALL":
+                    st.error("❌ 'RESET ALL' නිවැරදිව type කරන්න.")
+                elif not reset_confirm_2:
+                    st.error("❌ Confirmation checkbox check කරන්න.")
 
 footer_branding()
