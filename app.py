@@ -124,13 +124,13 @@ class APIManager:
     - ws.update() replaces clear()+append_rows() (2 calls → 1)
     """
     _cache: dict = {}
-    _cache_ttl: int = 60       # 60s cache — reduces repeat reads significantly
+    _cache_ttl: int = 30
     _last_request: float = 0.0
-    _min_interval: float = 0.2   # 5 req/sec max — safe under 300/min quota
+    _min_interval: float = 0.35
     _lock = __import__('threading').Lock()
     _wb_cache = None
     _wb_ts: float = 0.0
-    _wb_ttl: int = 600         # 10min workbook cache
+    _wb_ttl: int = 300
 
     @classmethod
     def _throttle(cls):
@@ -150,7 +150,7 @@ class APIManager:
             try:
                 cls._throttle()
                 client = get_gsheet_client()
-                wb = client.open_by_url(st.secrets["general"]["spreadsheet_url"])
+                wb = client.open(st.secrets["general"]["spreadsheet_name"])
                 cls._wb_cache = wb
                 cls._wb_ts = time.time()
                 return wb
@@ -166,7 +166,7 @@ class APIManager:
                     elif status == 429:
                         st.error("❌ API quota exceeded. ටිකක් wait කරලා retry කරන්න.")
                     elif status == 404:
-                        st.error("❌ Spreadsheet not found (404). spreadsheet_url check කරන්න.")
+                        st.error("❌ Spreadsheet not found (404). spreadsheet_name 'VICFB' correct දැයි confirm කරන්න.")
                     else:
                         st.error(f"❌ Google Sheets API Error ({status}).")
                     raise
@@ -413,7 +413,7 @@ def reconcile_inventory(inv_df, sh):
     inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
 
     try:
-        pick_history = APIManager.read_sheet(sh, "Master_Pick_Data")  # uses cache
+        pick_history = get_safe_dataframe(sh, "Master_Pick_Data")
         if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
             pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
             # ✅ FIX: Convert Pallet to str to avoid int64 vs str merge error
@@ -510,11 +510,11 @@ def process_picking(inv_df, req_df, batch_id, sh=None, inv_original=None):
                 return str(val).strip()
         temp_inv[supplier_col] = temp_inv[supplier_col].apply(normalize_supplier)
 
-    # Load existing Gen Pallet IDs from Master_Partial_Data (uses cache if available)
+    # Load existing Gen Pallet IDs from Master_Partial_Data to avoid duplicates
     existing_gen_pallet_ids = set()
     if sh is not None:
         try:
-            existing_partial = APIManager.read_sheet(sh, "Master_Partial_Data")
+            existing_partial = get_safe_dataframe(sh, "Master_Partial_Data")
             if not existing_partial.empty and 'Gen Pallet ID' in existing_partial.columns:
                 existing_gen_pallet_ids = set(existing_partial['Gen Pallet ID'].astype(str).tolist())
         except:
@@ -780,11 +780,11 @@ if login_section():
 
     menu = []
     if current_role == 'ADMIN':
-        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items", "⚙️ Admin Settings"]
+        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "🎯 Sample Order Picking", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items", "⚙️ Admin Settings"]
     elif current_role == 'SYSUSER':
-        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items"]
+        menu = ["📊 Dashboard & Tracking", "🚀 Picking Operations", "🎯 Sample Order Picking", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items"]
     else:  # user
-        menu = ["📊 Dashboard & Tracking", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items"]
+        menu = ["📊 Dashboard & Tracking", "🎯 Sample Order Picking", "📋 Inventory Details Report", "🔄 Revert/Delete Picks", "🩹 Damage Items"]
 
     choice = st.sidebar.radio("Navigation Menu", menu)
     try:
@@ -805,7 +805,7 @@ if login_section():
             if st.button("Generate Picks & Process", use_container_width=True, type="primary"):
                 with st.spinner("🔄 Processing Data & Saving to Google Sheets..."):
 
-                    inv = pd.read_csv(inv_file, keep_default_na=False, na_values=['']) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file, keep_default_na=False, na_values=[''])
+                    inv = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                     req = pd.read_csv(req_file) if req_file.name.endswith('.csv') else pd.read_excel(req_file)
 
                     # --- Validate files are not swapped ---
@@ -923,7 +923,7 @@ if login_section():
                     cannot_pick_rows = []
                     try:
                         # Get original inventory (before reconcile) for comparison
-                        inv_orig = pd.read_csv(inv_file, keep_default_na=False, na_values=['']) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file, keep_default_na=False, na_values=[''])
+                        inv_orig = pd.read_csv(inv_file) if inv_file.name.endswith('.csv') else pd.read_excel(inv_file)
                         inv_orig.columns = [str(c).strip() for c in inv_orig.columns]
                         inv_orig_col = {str(c).strip().lower(): str(c).strip() for c in inv_orig.columns}
                         orig_pallet_col = inv_orig_col.get('pallet', 'Pallet')
@@ -1031,101 +1031,9 @@ if login_section():
 
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        wb = writer.book
-
-                        if not pick_df.empty:
-                            # ── Pick_Report: preserve original inventory data ──────────
-                            # Rebuild from original inventory rows (exact format preserved)
-                            # Only WMS-added columns use processed values
-                            WMS_ONLY_COLS = ['Batch ID', 'SO Number', 'Generated Load ID',
-                                             'Country Name', 'Pick Quantity', 'Remark',
-                                             'Actual Qty', 'Order Type', 'Order Number',
-                                             'Store Order Number', 'Customer Po Number', 'Load Id']
-
-                            # inv_original has all 60 columns with original dtypes
-                            inv_orig_norm = inv_original.copy()
-                            inv_orig_norm.columns = [str(c).strip() for c in inv_orig_norm.columns]
-                            inv_orig_norm_map = {str(c).strip().lower(): str(c).strip() for c in inv_orig_norm.columns}
-                            inv_orig_pallet_col = inv_orig_norm_map.get('pallet', 'Pallet')
-                            # Pre-build pallet lookup dict: pallet → first matching row
-                            inv_orig_lookup = {}
-                            for _, orig_r in inv_orig_norm.iterrows():
-                                p_key = str(orig_r.get(inv_orig_pallet_col, '')).strip()
-                                if p_key and p_key not in inv_orig_lookup:
-                                    inv_orig_lookup[p_key] = orig_r
-
-                            pick_rows_excel = []
-                            for _, pr in pick_df.iterrows():
-                                prow_pallet = str(pr.get('Pallet', '')).strip()
-                                orig_row = inv_orig_lookup.get(prow_pallet)
-                                row_out = {}
-                                for col in MASTER_PICK_HEADERS:
-                                    if col in WMS_ONLY_COLS:
-                                        row_out[col] = pr.get(col, '')
-                                    else:
-                                        inv_col = inv_orig_norm_map.get(col.strip().lower())
-                                        if inv_col and orig_row is not None and inv_col in orig_row.index:
-                                            row_out[col] = orig_row[inv_col]
-                                        else:
-                                            row_out[col] = pr.get(col, '')
-                                pick_rows_excel.append(row_out)
-
-                            pick_df_excel = pd.DataFrame(pick_rows_excel, columns=MASTER_PICK_HEADERS)
-                            pick_df_excel.to_excel(writer, sheet_name='Pick_Report', index=False)
-
-                            # Format header + column widths + fix scientific notation
-                            hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
-                                                       'font_color': '#FFFFFF', 'border': 1})
-                            # Format for large integers (Supplier, Invoice Number1, etc.) — no scientific notation
-                            int_fmt   = wb.add_format({'num_format': '0'})
-                            float_fmt = wb.add_format({'num_format': '0.######'})
-
-                            # Columns that are large integers → force '0' format
-                            BIG_INT_COLS = {
-                                'Supplier', 'Invoice Number1', 'Stored Attribute Id',
-                                'Gate Pass Id', 'Client So Line', 'Asn Line Number', 'S Qty'
-                            }
-                            # Columns that are floats
-                            FLOAT_COLS = {
-                                'Received Gross Weight', 'Current Gross Weight',
-                                'Received Net Weight', 'Current Net Weight', 'Cbm', 'Container Type'
-                            }
-
-                            ws_pick_xl = writer.sheets['Pick_Report']
-                            for ci, col_name in enumerate(MASTER_PICK_HEADERS):
-                                ws_pick_xl.write(0, ci, col_name, hdr_fmt)
-                                ws_pick_xl.set_column(ci, ci, 18)
-                                # Re-write data cells with correct number format
-                                if col_name in BIG_INT_COLS:
-                                    for ri in range(1, len(pick_df_excel) + 1):
-                                        val = pick_df_excel.iloc[ri-1][col_name]
-                                        if pd.notna(val) and str(val) not in ('', 'nan', 'None'):
-                                            try:
-                                                ws_pick_xl.write_number(ri, ci, int(float(str(val))), int_fmt)
-                                            except:
-                                                ws_pick_xl.write(ri, ci, str(val))
-                                elif col_name in FLOAT_COLS:
-                                    for ri in range(1, len(pick_df_excel) + 1):
-                                        val = pick_df_excel.iloc[ri-1][col_name]
-                                        if pd.notna(val) and str(val) not in ('', 'nan', 'None'):
-                                            try:
-                                                ws_pick_xl.write_number(ri, ci, float(str(val)), float_fmt)
-                                            except:
-                                                ws_pick_xl.write(ri, ci, str(val))
-                            ws_pick_xl.freeze_panes(1, 0)
-
-                        if not part_df.empty:
-                            part_df.to_excel(writer, sheet_name='Partial_Report', index=False)
-                            hdr_fmt2 = wb.add_format({'bold': True, 'bg_color': '#1A1A1A',
-                                                      'font_color': '#FFFFFF', 'border': 1})
-                            ws_part_xl = writer.sheets['Partial_Report']
-                            for ci, col_name in enumerate(part_df.columns):
-                                ws_part_xl.write(0, ci, col_name, hdr_fmt2)
-                                ws_part_xl.set_column(ci, ci, 18)
-                            ws_part_xl.freeze_panes(1, 0)
-
-                        if not summ_df.empty:
-                            summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
+                        if not pick_df.empty: pick_df.to_excel(writer, sheet_name='Pick_Report', index=False)
+                        if not part_df.empty: part_df.to_excel(writer, sheet_name='Partial_Report', index=False)
+                        if not summ_df.empty: summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
 
                     st.session_state['processed_excel'] = output.getvalue()
                     st.session_state['summary_df'] = summ_df
@@ -1290,21 +1198,31 @@ if login_section():
 
                     STATUS_OPTIONS = ["Pending", "PL Pending", "Processing", "Completed", "Cancelled"]
 
-                    # Pre-build pick counts per Load ID — vectorized groupby (fast)
+                    # Pre-build pick counts per Load ID (fix column name flexibility)
                     pick_counts_by_lid = {}
                     pick_qty_by_lid = {}
                     if not pick_df.empty:
-                        load_id_col_pick = next((c for c in pick_df.columns if str(c).strip().lower() in ('load id','loadid','load_id')), None)
-                        actual_col_pick  = next((c for c in pick_df.columns if str(c).strip().lower() == 'actual qty'), None)
+                        # Find Load Id column — try exact, then case-insensitive
+                        load_id_col_pick = None
+                        for c in pick_df.columns:
+                            if str(c).strip().lower() in ('load id', 'loadid', 'load_id'):
+                                load_id_col_pick = c
+                                break
+                        # Find Actual Qty column
+                        actual_col_pick = None
+                        for c in pick_df.columns:
+                            if str(c).strip().lower() == 'actual qty':
+                                actual_col_pick = c
+                                break
 
                         if load_id_col_pick:
-                            _lid_series = pick_df[load_id_col_pick].astype(str).str.strip()
-                            pick_counts_by_lid = _lid_series.value_counts().to_dict()
-                            if actual_col_pick:
-                                _qty_grp = pick_df.groupby(_lid_series)[actual_col_pick].apply(
-                                    lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
-                                )
-                                pick_qty_by_lid = _qty_grp.to_dict()
+                            for lid_p in pick_df[load_id_col_pick].dropna().unique():
+                                rows_p = pick_df[pick_df[load_id_col_pick].astype(str).str.strip() == str(lid_p).strip()]
+                                pick_counts_by_lid[str(lid_p).strip()] = len(rows_p)
+                                if actual_col_pick:
+                                    pick_qty_by_lid[str(lid_p).strip()] = pd.to_numeric(rows_p[actual_col_pick], errors='coerce').sum()
+                                else:
+                                    pick_qty_by_lid[str(lid_p).strip()] = 0
 
                     def render_load_list(id_list, category_color, category_label):
                         """Render loads as a table-style list."""
@@ -1579,7 +1497,7 @@ if login_section():
                 st.caption("Inventory file allocation status report (Picked / Available / Damage)")
                 if st.button("🔍 Generate Basic Report", type="primary", use_container_width=True, key="gen_basic"):
                     with st.spinner("Generating..."):
-                        inv_data = pd.read_csv(inv_report_file, keep_default_na=False, na_values=['']) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file, keep_default_na=False, na_values=[''])
+                        inv_data = pd.read_csv(inv_report_file) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file)
                         report_df = generate_inventory_details_report(inv_data, sh)
                         if not report_df.empty:
                             st.success(f"✅ Total rows: {len(report_df)}")
@@ -1611,7 +1529,7 @@ if login_section():
                 """)
                 if st.button("📊 Generate Formatted Pick Report", type="primary", use_container_width=True, key="gen_fmt"):
                     with st.spinner("Generating Formatted Report..."):
-                        inv_data = pd.read_csv(inv_report_file, keep_default_na=False, na_values=['']) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file, keep_default_na=False, na_values=[''])
+                        inv_data = pd.read_csv(inv_report_file) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file)
                         # Normalize column names: strip whitespace
                         inv_data.columns = [str(c).strip() for c in inv_data.columns]
 
@@ -1636,10 +1554,6 @@ if login_section():
                         # Rebuild map after rename
                         inv_col_map_r = {str(c).strip().lower(): str(c).strip() for c in inv_data.columns}
 
-                        # Safe column name lookups — used throughout this section
-                        _inv_aq_col  = inv_col_map_r.get('actual qty', 'Actual Qty')
-                        _inv_pal_col = inv_col_map_r.get('pallet', 'Pallet')
-
                         # Notepad headers order
                         REPORT_HEADERS = [
                             'Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
@@ -1648,9 +1562,8 @@ if login_section():
                             'Inventory Type', 'Actual Qty'
                         ]
 
-                        # Batch read all needed sheets at once (cached)
-                        _rpt_sheets = APIManager.batch_read(sh, ["Master_Pick_Data", "Damage_Items", "Master_Partial_Data"])
-                        mpd_df      = _rpt_sheets["Master_Pick_Data"]
+                        # Load Master_Pick_Data
+                        mpd_df = get_safe_dataframe(sh, "Master_Pick_Data")
                         mpd_col = {str(c).strip().lower(): str(c).strip() for c in (mpd_df.columns if not mpd_df.empty else [])}
 
                         # Build pick qty per pallet
@@ -1671,8 +1584,8 @@ if login_section():
                                 pick_country_map[pkey] = str(pr.get(cn_col,''))
                                 pick_loadid_map[pkey]  = str(pr.get(gl_col,''))
 
-                        # Load Damage_Items — build remark columns (already fetched above)
-                        dmg_df = _rpt_sheets["Damage_Items"]
+                        # Load Damage_Items — build remark columns
+                        dmg_df = get_safe_dataframe(sh, "Damage_Items")
                         # Distinct remarks → one column each
                         damage_remarks = []
                         dmg_pallet_remark_qty = {}  # (pallet, remark) → actual qty
@@ -1686,40 +1599,24 @@ if login_section():
                                 key = (pkey, rmk)
                                 dmg_pallet_remark_qty[key] = dmg_pallet_remark_qty.get(key, 0) + dqty
 
-                        # Load Master_Partial_Data (already fetched above)
-                        partial_df = _rpt_sheets["Master_Partial_Data"]
-                        partial_map = {}     # orig_pallet → list of {gen_pallet, partial_qty, load_id, mpd_actual_qty}
-                        gen_to_orig = {}     # gen_pallet_id → orig_pallet  (for inventory rows that are Gen Pallet IDs)
-
+                        # Load Master_Partial_Data for pallet replace
+                        partial_df = get_safe_dataframe(sh, "Master_Partial_Data")
+                        partial_map = {}  # orig_pallet → (gen_pallet_id, partial_qty) list
                         if not partial_df.empty:
                             pc = {str(c).strip().lower(): str(c).strip() for c in partial_df.columns}
-                            pp_col  = pc.get('pallet',        'Pallet')
-                            pq_col  = pc.get('partial qty',   'Partial Qty')
-                            pg_col  = pc.get('gen pallet id', 'Gen Pallet ID')
-                            pl_col  = pc.get('load id',       'Load ID')
-                            pa_col  = pc.get('actual qty',    'Actual Qty')  # original qty in partial data
-
+                            pp_col  = pc.get('pallet','Pallet')
+                            pq_col  = pc.get('partial qty','Partial Qty')
+                            pg_col  = pc.get('gen pallet id','Gen Pallet ID')
+                            pl_col  = pc.get('load id','Load ID')
                             for _, par in partial_df.iterrows():
-                                opallet  = str(par.get(pp_col, '')).strip()
-                                gpallet  = str(par.get(pg_col, '')).strip()
-                                pqty     = pd.to_numeric(par.get(pq_col, 0), errors='coerce')
-                                pqty     = 0.0 if pd.isna(pqty) else float(pqty)
-                                loadid_p = str(par.get(pl_col, '')).strip()
-                                aqty     = pd.to_numeric(par.get(pa_col, 0), errors='coerce')
-                                aqty     = 0.0 if pd.isna(aqty) else float(aqty)
-
+                                opallet  = str(par.get(pp_col,'')).strip()
+                                gpallet  = str(par.get(pg_col,'')).strip()
+                                pqty     = pd.to_numeric(par.get(pq_col,0), errors='coerce') or 0
+                                loadid_p = str(par.get(pl_col,'')).strip()
                                 if opallet:
                                     if opallet not in partial_map:
                                         partial_map[opallet] = []
-                                    partial_map[opallet].append({
-                                        'gen_pallet':  gpallet,
-                                        'partial_qty': pqty,
-                                        'load_id':     loadid_p,
-                                        'mpd_actual':  aqty,   # Actual Qty recorded at pick time
-                                    })
-                                # Build reverse map: gen_pallet_id → orig_pallet
-                                if gpallet and opallet:
-                                    gen_to_orig[gpallet] = opallet
+                                    partial_map[opallet].append({'gen_pallet': gpallet, 'partial_qty': pqty, 'load_id': loadid_p})
 
                         # Build sets of pallets in Damage_Items for ATS check
                         damage_pallets = set()
@@ -1732,10 +1629,10 @@ if login_section():
                             for h in REPORT_HEADERS:
                                 if h == 'Pallet':
                                     row[h] = override_pallet if override_pallet is not None else (
-                                        inv_row[_inv_pal_col] if _inv_pal_col in inv_row.index else '')
+                                        inv_row['Pallet'] if 'Pallet' in inv_row.index else '')
                                 elif h == 'Actual Qty':
                                     row[h] = override_actual_qty if override_actual_qty is not None else (
-                                        inv_row[_inv_aq_col] if _inv_aq_col in inv_row.index else '')
+                                        inv_row['Actual Qty'] if 'Actual Qty' in inv_row.index else '')
                                 elif h == 'Client So 2':
                                     cs_col = inv_col_map_r.get('client so', 'Client So')
                                     row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
@@ -1749,104 +1646,47 @@ if login_section():
                         # Build formatted report rows
                         fmt_rows = []
                         for _, inv_row in inv_data.iterrows():
-                            orig_pallet = str(inv_row.get(_inv_pal_col, '')).strip()
+                            orig_pallet = str(inv_row.get('Pallet', '')).strip()
 
-                            inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
+                            inv_actual_qty = pd.to_numeric(inv_row.get('Actual Qty', 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0
 
                             is_damaged   = orig_pallet in damage_pallets
                             total_picked = pick_qty_map.get(orig_pallet, 0)
 
-                            # ── Case 1: Inventory row Pallet IS a Gen Pallet ID ──────────
-                            # Tally: inv_actual_qty must match LAST Partial Qty in Master_Partial_Data
-                            if orig_pallet in gen_to_orig:
-                                real_orig = gen_to_orig[orig_pallet]
-                                # Find the matching partial entry for this Gen Pallet ID
-                                matching_partial = next(
-                                    (p for p in partial_map.get(real_orig, [])
-                                     if p['gen_pallet'] == orig_pallet),
-                                    None
-                                )
-                                if matching_partial:
-                                    # Tally against Partial Qty of this specific Gen Pallet ID
-                                    if abs(inv_actual_qty - matching_partial['partial_qty']) <= 0.01:
-                                        row = build_row(inv_row)
-                                        row['Pick Quantity']       = matching_partial['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(real_orig, '')
-                                        row['Order NO']            = matching_partial['load_id']
-                                        for rmk in damage_remarks:
-                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = ''
-                                        fmt_rows.append(row)
-                                    # No match → skip
-                                continue
-
-                            # ── Case 2: Inventory row Pallet is an original pallet ───────
+                            # Get partial entries for this pallet from Master_Partial_Data
                             partials = partial_map.get(orig_pallet, [])
 
                             if partials:
-                                # Use LAST partial entry for tally
-                                last_p        = partials[-1]
-                                last_balance  = last_p['mpd_actual'] - last_p['partial_qty']
+                                # --- Line separation for partial pallets ---
+                                total_partial_qty = sum(p['partial_qty'] for p in partials)
 
-                                if last_balance <= 0.01:
-                                    # Balance Qty = 0 → tally against last Actual Qty
-                                    tally_qty  = last_p['mpd_actual']
-                                    tally_type = 'picked'  # fully picked pallet
-                                else:
-                                    # Balance Qty > 0 → tally against last Balance Qty
-                                    tally_qty  = last_balance
-                                    tally_type = 'balance'
-
-                                if abs(inv_actual_qty - tally_qty) <= 0.01:
-                                    # Tally matches
-                                    row = build_row(inv_row)
-                                    if tally_type == 'balance':
-                                        # Show as ATS/balance line
-                                        row['Pick Quantity']       = ''
-                                        row['Destination Country'] = ''
-                                        row['Order NO']            = ''
-                                        for rmk in damage_remarks:
-                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
-                                    else:
-                                        # Balance=0: fully consumed — show as picked line
-                                        row['Pick Quantity']       = last_p['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                        row['Order NO']            = last_p['load_id']
-                                        for rmk in damage_remarks:
-                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = ''
+                                # Line 1..N: one line per partial entry → Gen Pallet ID + Partial Qty
+                                for par_entry in partials:
+                                    row = build_row(inv_row,
+                                                    override_pallet=par_entry['gen_pallet'],
+                                                    override_actual_qty=par_entry['partial_qty'])
+                                    row['Pick Quantity']       = par_entry['partial_qty']
+                                    row['Destination Country'] = pick_country_map.get(orig_pallet, '')
+                                    row['Order NO']            = par_entry['load_id']
+                                    for rmk in damage_remarks:
+                                        row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                    row['ATS'] = ''
                                     fmt_rows.append(row)
-                                else:
-                                    # Tally doesn't match → show full partial breakdown from scratch
-                                    mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
-                                    total_partial_qty = sum(p['partial_qty'] for p in partials)
 
-                                    for par_entry in partials:
-                                        row = build_row(inv_row,
-                                                        override_pallet=par_entry['gen_pallet'],
-                                                        override_actual_qty=par_entry['partial_qty'])
-                                        row['Pick Quantity']       = par_entry['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                        row['Order NO']            = par_entry['load_id']
-                                        for rmk in damage_remarks:
-                                            row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = ''
-                                        fmt_rows.append(row)
-
-                                    balance_qty = max(0.0, mpd_actual - total_partial_qty)
-                                    if balance_qty > 0 and not is_damaged:
-                                        bal_row = build_row(inv_row,
-                                                            override_pallet=orig_pallet,
-                                                            override_actual_qty=balance_qty)
-                                        bal_row['Pick Quantity']       = ''
-                                        bal_row['Destination Country'] = ''
-                                        bal_row['Order NO']            = ''
-                                        for rmk in damage_remarks:
-                                            bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        bal_row['ATS'] = int(balance_qty)
-                                        fmt_rows.append(bal_row)
+                                # Balance line: Original Pallet + (Actual Qty - total partial qty) → ATS
+                                balance_qty = inv_actual_qty - total_partial_qty
+                                if balance_qty > 0 and not is_damaged:
+                                    bal_row = build_row(inv_row,
+                                                        override_pallet=orig_pallet,
+                                                        override_actual_qty=balance_qty)
+                                    bal_row['Pick Quantity']       = ''
+                                    bal_row['Destination Country'] = ''
+                                    bal_row['Order NO']            = ''
+                                    for rmk in damage_remarks:
+                                        bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                    bal_row['ATS'] = int(balance_qty)
+                                    fmt_rows.append(bal_row)
 
                             else:
                                 # --- No partial: single line ---
@@ -1856,6 +1696,8 @@ if login_section():
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks:
                                     row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+
+                                # ATS = Actual Qty - Total Picked (only if not damage and > 0)
                                 ats_qty   = inv_actual_qty - total_picked
                                 row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
                                 fmt_rows.append(row)
@@ -1869,13 +1711,13 @@ if login_section():
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
                         # ── Actual Qty Validation ──────────────────────────────────────
-                        inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
+                        inv_total_qty = pd.to_numeric(inv_data['Actual Qty'], errors='coerce').fillna(0).sum()
                         rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
                         qty_match     = abs(inv_total_qty - rpt_total_qty) < 0.01
 
                         # inv_pallet_qty: original inventory qty per pallet
                         inv_pallet_qty = (
-                            inv_data.groupby(_inv_pal_col)[_inv_aq_col]
+                            inv_data.groupby('Pallet')['Actual Qty']
                             .apply(lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum())
                             .to_dict()
                         )
@@ -1907,10 +1749,11 @@ if login_section():
                         mismatch_pallets = []
                         try:
                             # orig_total_inv: total inventory qty per base pallet
+                            # (orig row + all Gen Pallet ID variant rows summed together)
                             orig_total_inv = {}
                             for _, inv_r in inv_data.iterrows():
-                                p = str(inv_r.get(_inv_pal_col, '')).strip()
-                                q = pd.to_numeric(inv_r.get(_inv_aq_col, 0), errors='coerce')
+                                p = str(inv_r.get('Pallet', '')).strip()
+                                q = pd.to_numeric(inv_r.get('Actual Qty', 0), errors='coerce')
                                 q = 0.0 if pd.isna(q) else float(q)
                                 base = _base_pallet(p)
                                 orig_total_inv[base] = orig_total_inv.get(base, 0.0) + q
@@ -2128,7 +1971,7 @@ if login_section():
             del_load_id = st.text_input("🆔 Enter Load ID to Delete:")
 
             if del_load_id:
-                master_pick_df = APIManager.read_sheet(sh, "Master_Pick_Data")
+                master_pick_df = get_safe_dataframe(sh, "Master_Pick_Data")
                 if not master_pick_df.empty and 'Load Id' in master_pick_df.columns:
                     preview = master_pick_df[master_pick_df['Load Id'].astype(str).str.strip() == del_load_id.strip()]
                     if not preview.empty:
@@ -2232,11 +2075,9 @@ if login_section():
             st.info("Pallet ID එකක් දීමෙන් ඒ Pallet හා සම්බන්ධ **සියලු data** — Master_Pick_Data, Master_Partial_Data, Damage_Items — වලින් delete කළ හැක. Load_History නොවෙනස්ව පවතී.")
 
             # Load all pallets from Master_Pick_Data + Master_Partial_Data + Damage_Items
-            # Batch read 3 sheets (cached, fast)
-            _del_batch = APIManager.batch_read(sh, ["Master_Pick_Data", "Master_Partial_Data", "Damage_Items"])
-            _mpd_pal   = _del_batch["Master_Pick_Data"]
-            _mpart_pal = _del_batch["Master_Partial_Data"]
-            _dmg_pal   = _del_batch["Damage_Items"]
+            _mpd_pal   = get_safe_dataframe(sh, "Master_Pick_Data")
+            _mpart_pal = get_safe_dataframe(sh, "Master_Partial_Data")
+            _dmg_pal   = get_safe_dataframe(sh, "Damage_Items")
 
             all_pallets_set = set()
             for _df, _col in [(_mpd_pal, 'Pallet'), (_mpart_pal, 'Pallet'), (_dmg_pal, 'Pallet')]:
@@ -2423,7 +2264,7 @@ if login_section():
             st.warning("මෙමඟින් පද්ධතියේ පරණ දත්ත සහ Headers සම්පූර්ණයෙන්ම මකා දමයි. (Clear Database)")
 
             sheet_to_clear = st.selectbox("Select Data to Clear:", [
-                "Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History", "Damage_Items", "ALL_DATA"
+                "Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History", "Damage_Items", "Sample_Pick_Data", "ALL_DATA"
             ])
 
             confirm = st.text_input("Type 'CONFIRM' to proceed:")
@@ -2431,7 +2272,7 @@ if login_section():
                 if confirm == 'CONFIRM':
                     try:
                         sheets_to_process = [
-                            "Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History", "Damage_Items"
+                            "Master_Pick_Data", "Master_Partial_Data", "Summary_Data", "Load_History", "Damage_Items", "Sample_Pick_Data"
                         ] if sheet_to_clear == "ALL_DATA" else [sheet_to_clear]
 
                         for s_name in sheets_to_process:
@@ -2447,5 +2288,348 @@ if login_section():
                         st.error(f"Error clearing data: {e}")
                 else:
                     st.error("කරුණාකර CONFIRM ලෙස Type කරන්න.")
+
+    # ==========================================
+    # SAMPLE ORDER PICKING TAB
+    # ==========================================
+    elif choice == "🎯 Sample Order Picking":
+        st.title("🎯 Sample Order Picking")
+        st.markdown("Customer Requirement (Size/Style/Supplier/Color) එකට ගැලපෙන Pallets inventory එකෙන් select කර Google Sheets **Sample_Pick_Data** tab එකට save කරන්න.")
+
+        SAMPLE_SHEET_HEADERS = [
+            "Order Number", "Store Order Number", "Load Id",
+            "Order Date", "Order Type",
+            "Size", "Style", "Supplier", "Color",
+            "Pallet", "Location Id", "Inv Actual Qty", "Req Actual Qty",
+            "Tolerance", "NR", "Req Line Index",
+            "Wh Id", "Client Code", "Item Number", "Description",
+            "Lot Number", "Status", "Grn Number", "Fifo Date"
+        ]
+
+        def sample_find_pallets(inv_df, req_row, already_picked):
+            """
+            Capped DP (Subset-Sum) — finds minimum achievable total >= required_qty.
+            Location-group priority built into candidate ordering.
+            Cap = required + max_single_pallet keeps the DP table small (~0.3s for 51 pallets).
+            Falls back to greedy+swap if DP exceeds 2s time budget.
+            Status: 'OK' | 'SHORTAGE' (stock < required) | 'NO_STOCK' (no matching pallets)
+            """
+            import time as _time
+
+            size     = str(req_row.get("Size",     "")).strip()
+            style    = str(req_row.get("Style",    "")).strip()
+            supplier = str(req_row.get("Supplier", "")).strip()
+            color    = str(req_row.get("Color",    "")).strip()
+            required = float(req_row.get("Actual Qty", 0))
+
+            inv_c      = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
+            pallet_col = inv_c.get("pallet",     "Pallet")
+            qty_col    = inv_c.get("actual qty", "Actual Qty")
+            loc_col    = inv_c.get("location id","Location Id")
+            status_col = inv_c.get("status",     "Status")
+
+            mask = (
+                (inv_df[inv_c.get("size",     "Size")].astype(str).str.strip()     == size)     &
+                (inv_df[inv_c.get("style",    "Style")].astype(str).str.strip()    == style)    &
+                (inv_df[inv_c.get("supplier", "Supplier")].astype(str).str.strip() == supplier) &
+                (inv_df[inv_c.get("color",    "Color")].astype(str).str.strip()    == color)    &
+                (inv_df[status_col].astype(str).str.strip() == "Available") &
+                (~inv_df[pallet_col].astype(str).isin(already_picked))
+            )
+            cands = inv_df[mask].copy()
+            if cands.empty:
+                return [], 0.0, "NO_STOCK"
+
+            total_avail = float(cands[qty_col].sum())
+            if total_avail < required - 1e-6:
+                return [row for _, row in cands.iterrows()], total_avail, "SHORTAGE"
+
+            # Sort: large location groups first (location consolidation), then qty desc
+            loc_cnt      = cands[loc_col].value_counts()
+            cands["_lc"] = cands[loc_col].map(loc_cnt)
+            cands = cands.sort_values(["_lc", qty_col], ascending=[False, False]).reset_index(drop=True)
+
+            SCALE    = 100
+            req_int  = round(required * SCALE)
+            qty_ints = [round(float(q) * SCALE) for q in cands[qty_col]]
+            max_q    = max(qty_ints)
+
+            # Progressive capped DP: try cap = req + 1x/2x/3x/5x max_pallet
+            for multiplier in [1, 2, 3, 5]:
+                cap_int = min(req_int + multiplier * max_q, sum(qty_ints))
+                t0 = _time.time()
+                parent = [-1] * (cap_int + 1)
+                parent[0] = -2
+                running_sum = 0
+                for i, q in enumerate(qty_ints):
+                    running_sum += q
+                    for s in range(min(cap_int, running_sum), q - 1, -1):
+                        if parent[s] == -1 and parent[s - q] != -1:
+                            parent[s] = i
+
+                best = next((s for s in range(req_int, cap_int + 1) if parent[s] != -1), None)
+                if best is not None:
+                    sel_idx = []
+                    s = best
+                    while s > 0:
+                        i = parent[s]
+                        sel_idx.append(i)
+                        s -= qty_ints[i]
+                    return [cands.iloc[i] for i in sel_idx], best / SCALE, "OK"
+
+                if _time.time() - t0 > 2.0:
+                    break  # Too slow — fall back to greedy
+
+            # Fallback greedy + swap last pallet
+            selected, total = [], 0.0
+            for _, row in cands.iterrows():
+                if total >= required:
+                    break
+                selected.append(row)
+                total += float(row[qty_col])
+            if len(selected) > 1:
+                last_qty     = float(selected[-1][qty_col])
+                total_before = total - last_qty
+                min_needed   = required - total_before
+                sel_p        = set(str(r[pallet_col]) for r in selected)
+                reps = cands[
+                    (~cands[pallet_col].astype(str).isin(sel_p)) &
+                    (cands[qty_col] >= min_needed - 1e-6)
+                ].sort_values(qty_col, ascending=True)
+                if not reps.empty:
+                    best_r = reps.iloc[0]
+                    new_t  = total_before + float(best_r[qty_col])
+                    if new_t < total:
+                        selected[-1] = best_r
+                        total = new_t
+            return selected, total, "OK"
+
+
+        col_s1, col_s2 = st.columns(2)
+        s_cus_file = col_s1.file_uploader("1. Upload Customer Requirement (Cus_req)", type=["csv","xlsx"], key="sop_cus")
+        s_inv_file = col_s2.file_uploader("2. Upload Inventory Report", type=["csv","xlsx"], key="sop_inv")
+
+        if s_cus_file and s_inv_file:
+            s_cus_df = pd.read_csv(s_cus_file) if s_cus_file.name.endswith(".csv") else pd.read_excel(s_cus_file)
+            s_inv_df = pd.read_csv(s_inv_file) if s_inv_file.name.endswith(".csv") else pd.read_excel(s_inv_file)
+            s_cus_df.columns = [str(c).strip() for c in s_cus_df.columns]
+            s_inv_df.columns = [str(c).strip() for c in s_inv_df.columns]
+
+            req_cols_needed = ["Size","Style","Supplier","Color","Actual Qty"]
+            missing_c = [c for c in req_cols_needed if c not in s_cus_df.columns]
+            if missing_c:
+                st.error(f"Customer Requirement file columns missing: **{missing_c}**")
+                st.stop()
+
+            st.subheader("Customer Requirements")
+            st.dataframe(s_cus_df, use_container_width=True)
+
+            try:
+                dmg_sop = get_damage_pallets(sh)
+                if not dmg_sop.empty:
+                    dmg_set = set(dmg_sop["Pallet"].astype(str).str.strip())
+                    inv_c_map2 = {str(c).strip().lower(): str(c).strip() for c in s_inv_df.columns}
+                    inv_pallet_col = inv_c_map2.get("pallet","Pallet")
+                    s_inv_df = s_inv_df[~s_inv_df[inv_pallet_col].astype(str).str.strip().isin(dmg_set)].reset_index(drop=True)
+            except Exception as e:
+                st.warning(f"Damage exclude error: {e}")
+
+            if st.button("Match Pallets & Process", type="primary", use_container_width=True, key="sop_run"):
+                with st.spinner("Processing Sample Order Picks..."):
+                    already_picked_sop = set()
+                    try:
+                        mpd_exist = get_safe_dataframe(sh, "Master_Pick_Data")
+                        if not mpd_exist.empty and "Pallet" in mpd_exist.columns:
+                            already_picked_sop.update(mpd_exist["Pallet"].astype(str).str.strip().tolist())
+                    except Exception:
+                        pass
+                    try:
+                        spd_exist = get_safe_dataframe(sh, "Sample_Pick_Data")
+                        if not spd_exist.empty and "Pallet" in spd_exist.columns:
+                            already_picked_sop.update(spd_exist["Pallet"].astype(str).str.strip().tolist())
+                    except Exception:
+                        pass
+
+                    inv_c_map = {str(c).strip().lower(): str(c).strip() for c in s_inv_df.columns}
+                    pick_rows_sop, not_found_sop = [], []
+                    prog = st.progress(0)
+                    stat = st.empty()
+
+                    for idx, req_row in s_cus_df.iterrows():
+                        stat.info(f"Processing line {idx+1} / {len(s_cus_df)} ...")
+                        prog.progress((idx+1) / len(s_cus_df))
+                        selected, total_sop, status_sop = sample_find_pallets(s_inv_df, req_row, already_picked_sop)
+                        if status_sop in ("OK", "SHORTAGE"):
+                            nr = str(req_row.get("NR", "")).strip()
+                            for row in selected:
+                                pallet_id = str(row[inv_c_map.get("pallet","Pallet")]).strip()
+                                already_picked_sop.add(pallet_id)
+                                pick_rows_sop.append({
+                                    "Order Number":       nr,
+                                    "Store Order Number": nr,
+                                    "Load Id":            nr,
+                                    "Order Date":         datetime.now().strftime("%Y-%m-%d"),
+                                    "Order Type":         "Sample Orders",
+                                    "Size":               req_row.get("Size",""),
+                                    "Style":              req_row.get("Style",""),
+                                    "Supplier":           req_row.get("Supplier",""),
+                                    "Color":              req_row.get("Color",""),
+                                    "Pallet":             pallet_id,
+                                    "Location Id":        str(row.get(inv_c_map.get("location id","Location Id"), "")),
+                                    "Inv Actual Qty":     row.get(inv_c_map.get("actual qty","Actual Qty"), ""),
+                                    "Req Actual Qty":     req_row.get("Actual Qty",""),
+                                    "Tolerance":          f"Overage: +{round(total_sop - float(req_row.get('Actual Qty',0)), 3)}" if status_sop == "OK" else "SHORTAGE",
+                                    "NR":                 nr,
+                                    "Req Line Index":     idx + 1,
+                                    "Wh Id":              str(row.get(inv_c_map.get("wh id","Wh Id"), "")),
+                                    "Client Code":        str(row.get(inv_c_map.get("client code","Client Code"), "")),
+                                    "Item Number":        str(row.get(inv_c_map.get("item number","Item Number"), "")),
+                                    "Description":        str(row.get(inv_c_map.get("description","Description"), "")),
+                                    "Lot Number":         str(row.get(inv_c_map.get("lot number","Lot Number"), "")),
+                                    "Status":             str(row.get(inv_c_map.get("status","Status"), "")),
+                                    "Grn Number":         str(row.get(inv_c_map.get("grn number","Grn Number"), "")),
+                                    "Fifo Date":          str(row.get(inv_c_map.get("fifo date","Fifo Date"), "")),
+                                })
+                        else:
+                            not_found_sop.append({
+                                "Req Line":    idx + 1,
+                                "Size":        req_row.get("Size",""),
+                                "Style":       req_row.get("Style",""),
+                                "Supplier":    req_row.get("Supplier",""),
+                                "Color":       req_row.get("Color",""),
+                                "Required Qty": req_row.get("Actual Qty",""),
+                            })
+                    prog.progress(1.0)
+                    stat.empty()
+                    st.session_state["sop_results"]   = pick_rows_sop
+                    st.session_state["sop_not_found"] = not_found_sop
+
+            if "sop_results" in st.session_state:
+                results_sop = st.session_state["sop_results"]
+                nf_sop      = st.session_state.get("sop_not_found", [])
+                if results_sop:
+                    res_df = pd.DataFrame(results_sop)
+                    st.success(f"✅ {len(res_df)} Pallet records matched!")
+                    mc1, mc2, mc3 = st.columns(3)
+                    mc1.metric("Matched Pallets",   len(res_df))
+                    mc2.metric("Covered Req Lines", res_df["Req Line Index"].nunique())
+                    mc3.metric("No Stock Lines",    len(nf_sop))
+                    st.subheader("Matched Pallets")
+                    st.dataframe(res_df, use_container_width=True)
+                    out_sop = io.BytesIO()
+                    with pd.ExcelWriter(out_sop, engine="xlsxwriter") as writer:
+                        res_df.to_excel(writer, sheet_name="Sample_Picks", index=False)
+                        if nf_sop:
+                            pd.DataFrame(nf_sop).to_excel(writer, sheet_name="Not_Found", index=False)
+                        wb_sop = writer.book
+                        ws_sop_xl = writer.sheets["Sample_Picks"]
+                        hf = wb_sop.add_format({"bold":True,"bg_color":"1A1A1A","font_color":"FFFFFF","border":1})
+                        for ci, cn in enumerate(res_df.columns):
+                            ws_sop_xl.write(0, ci, cn, hf)
+                            ws_sop_xl.set_column(ci, ci, 18)
+                        ws_sop_xl.freeze_panes(1, 0)
+                    st.download_button(
+                        "Download Sample Pick Report",
+                        data=out_sop.getvalue(),
+                        file_name=f"Sample_Pick_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.ms-excel",
+                        use_container_width=True
+                    )
+                if nf_sop:
+                    st.warning(f"⚠️ {len(nf_sop)} requirement line(s) සඳහා Stock නොමැත (NO_STOCK):")
+                    st.dataframe(pd.DataFrame(nf_sop), use_container_width=True)
+                if results_sop:
+                    # ── Per-NR Summary ────────────────────────────────────
+                    st.divider()
+                    st.subheader("📊 NR Line Summary")
+                    summary_rows = []
+                    for _, req_row in s_cus_df.iterrows():
+                        nr_val = str(req_row.get("NR","")).strip()
+                        req_qty = float(req_row.get("Actual Qty", 0))
+                        matched = [r for r in results_sop if r.get("NR","") == nr_val and r.get("Req Line Index","") == int(req_row.name)+1]
+                        picked_qty = sum(float(r.get("Inv Actual Qty", 0)) for r in matched)
+                        tol_used = matched[0].get("Tolerance","") if matched else "Not Found"
+                        summary_rows.append({
+                            "NR":           nr_val,
+                            "Req Line":     int(req_row.name)+1,
+                            "Size":         req_row.get("Size",""),
+                            "Style":        req_row.get("Style",""),
+                            "Required Qty": req_qty,
+                            "Picked Qty":   round(picked_qty, 3),
+                            "Pallets":      len(matched),
+                            "Tolerance":    tol_used,
+                            "Status":       "✅ OK" if matched else "❌ Not Found",
+                        })
+                    summ_df_sop = pd.DataFrame(summary_rows)
+                    st.dataframe(summ_df_sop, use_container_width=True, hide_index=True)
+
+                    # ── Save to Google Sheets ──────────────────────────────
+                    st.divider()
+                    st.subheader("💾 Google Sheets Sample_Pick_Data Tab Save")
+                    verify_sop = st.checkbox("✅ Matched Pallets නිවැරදිදැයි confirm කළෙමි.", key="sop_verify")
+                    if verify_sop:
+                        if st.button("📤 Google Sheets Save", type="primary", key="sop_save"):
+                            with st.spinner("Saving to Google Sheets..."):
+                                try:
+                                    ws_sop_gs = get_or_create_sheet(sh, "Sample_Pick_Data", SAMPLE_SHEET_HEADERS)
+                                    existing_vals = ws_sop_gs.get_all_values()
+                                    if not existing_vals or existing_vals[0] != SAMPLE_SHEET_HEADERS:
+                                        ws_sop_gs.clear()
+                                        ws_sop_gs.append_row(SAMPLE_SHEET_HEADERS)
+                                    rows_to_save = [[str(r.get(h, "")) for h in SAMPLE_SHEET_HEADERS] for r in results_sop]
+                                    ws_sop_gs.append_rows(rows_to_save, value_input_option="RAW")
+                                    APIManager.invalidate("Sample_Pick_Data")
+                                    st.success(f"✅ {len(rows_to_save)} rows Sample_Pick_Data tab save!")
+                                    show_confetti()
+                                except Exception as e:
+                                    st.error(f"Google Sheets Error: {e}")
+
+        # ── View / Delete saved Sample picks ─────────────────────────────
+        st.divider()
+        st.subheader("📋 Saved Sample Picks (Sample_Pick_Data)")
+        col_sv1, col_sv2 = st.columns([3,1])
+        if col_sv2.button("🔄 Refresh", key="sop_refresh"):
+            APIManager.invalidate("Sample_Pick_Data")
+        saved_sop = get_safe_dataframe(sh, "Sample_Pick_Data")
+        if saved_sop.empty:
+            st.info("Sample_Pick_Data හි records නොමැත.")
+        else:
+            ms1, ms2, ms3 = st.columns(3)
+            ms1.metric("Total Saved Picks", len(saved_sop))
+            ms2.metric("Unique Pallets",    saved_sop["Pallet"].nunique() if "Pallet" in saved_sop.columns else 0)
+            ms3.metric("Unique NR Lines",   saved_sop["NR"].nunique() if "NR" in saved_sop.columns else 0)
+            st.dataframe(saved_sop.astype(str), use_container_width=True)
+
+            # Download saved
+            out_saved = io.BytesIO()
+            with pd.ExcelWriter(out_saved, engine="xlsxwriter") as writer:
+                saved_sop.to_excel(writer, sheet_name="Sample_Pick_Data", index=False)
+            st.download_button(
+                "⬇️ Download Saved Sample Picks",
+                data=out_saved.getvalue(),
+                file_name=f"Sample_Pick_Data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.ms-excel"
+            )
+
+            # Delete by NR
+            st.divider()
+            st.subheader("🗑️ Delete Sample Picks by NR")
+            if "NR" in saved_sop.columns:
+                del_nr = st.selectbox("Delete කිරීමට NR select කරන්න:", ["-- Select --"] + sorted(saved_sop["NR"].dropna().unique().tolist()), key="sop_del_nr")
+                if del_nr != "-- Select --":
+                    preview_del = saved_sop[saved_sop["NR"].astype(str) == str(del_nr)]
+                    st.warning(f"NR **{del_nr}** සඳහා {len(preview_del)} records delete වේ.")
+                    st.dataframe(preview_del.astype(str), use_container_width=True)
+                    if st.button(f"🗑️ Delete NR {del_nr} Records", type="primary", key="sop_del_btn"):
+                        with st.spinner("Deleting..."):
+                            try:
+                                filtered_saved = saved_sop[saved_sop["NR"].astype(str) != str(del_nr)]
+                                APIManager.overwrite_sheet(sh, "Sample_Pick_Data", SAMPLE_SHEET_HEADERS, filtered_saved)
+                                st.success(f"✅ NR **{del_nr}** records {len(preview_del)} ක් delete කෙරුණා!")
+                                show_confetti()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Delete error: {e}")
+
 
 footer_branding()
