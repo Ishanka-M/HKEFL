@@ -1520,25 +1520,48 @@ if login_section():
                         # ── UPDATED: Load vendor_maintain for country lookup ──
                         vendor_country_map = get_vendor_country_map()
 
-                        # ── Load partial data: vendor, invoice, grn maps (keyed by pallet + gen_pallet_id) ──
+                        # ── Load partial data: vendor, invoice, grn maps ─────────────────────
+                        # keyed by BOTH pallet AND gen_pallet_id
+                        # gen_pallet_id row → ඒ pallet row හි invoice/grn/vendor inherit කරයි
                         partial_vendor_map_fmt  = {}
                         partial_invoice_map_fmt = {}
                         partial_grn_map_fmt     = {}
+                        # gen_pallet_id → orig pallet reverse map
+                        _gen_to_orig_fmt = {}
+
                         partial_df_raw = _rpt_sheets["master_partial_data"]
                         if not partial_df_raw.empty:
+                            def _nz(v):
+                                s = str(v).strip()
+                                return s if s not in ('', 'nan', 'None', 'NULL') else ''
+
+                            # Pass 1: pallet keyed entries + build gen→orig map
                             for _, r in partial_df_raw.iterrows():
-                                def _nz(v):
-                                    s = str(v).strip()
-                                    return s if s not in ('', 'nan', 'None', 'NULL') else ''
                                 pk  = _nz(r.get('Pallet', ''))
                                 gpk = _nz(r.get('Gen Pallet ID', ''))
                                 vn  = _nz(r.get('Vendor Name', ''))
                                 inv = _nz(r.get('Invoice Number', ''))
                                 grn = _nz(r.get('Grn Number', ''))
-                                for key in [k for k in [pk, gpk] if k]:
-                                    if vn:  partial_vendor_map_fmt[key]  = vn
-                                    if inv: partial_invoice_map_fmt[key] = inv
-                                    if grn: partial_grn_map_fmt[key]     = grn
+                                if pk:
+                                    if vn:  partial_vendor_map_fmt[pk]  = vn
+                                    if inv: partial_invoice_map_fmt[pk] = inv
+                                    if grn: partial_grn_map_fmt[pk]     = grn
+                                if gpk and pk:
+                                    _gen_to_orig_fmt[gpk] = pk
+                                    # gen_pallet keyed — same values as pallet row
+                                    if vn:  partial_vendor_map_fmt[gpk]  = vn
+                                    if inv: partial_invoice_map_fmt[gpk] = inv
+                                    if grn: partial_grn_map_fmt[gpk]     = grn
+
+                            # Pass 2: gen_pallet_id rows that have blank invoice/grn →
+                            #         inherit from their orig pallet row
+                            for gpk, pk in _gen_to_orig_fmt.items():
+                                if gpk not in partial_invoice_map_fmt and pk in partial_invoice_map_fmt:
+                                    partial_invoice_map_fmt[gpk] = partial_invoice_map_fmt[pk]
+                                if gpk not in partial_grn_map_fmt and pk in partial_grn_map_fmt:
+                                    partial_grn_map_fmt[gpk] = partial_grn_map_fmt[pk]
+                                if gpk not in partial_vendor_map_fmt and pk in partial_vendor_map_fmt:
+                                    partial_vendor_map_fmt[gpk] = partial_vendor_map_fmt[pk]
 
                         pick_qty_map = {}; pick_country_map = {}; pick_loadid_map = {}
                         if not mpd_df.empty:
@@ -1717,45 +1740,44 @@ if login_section():
 
                         # ── 2. ALWAYS enforce Vendor Name / Invoice Number / Grn Number ────────
                         #    සෑම row එකටම — blank든 not든 — master_partial_data lookup enforce
-                        #    Priority: Pallet match → Gen Pallet ID match (base pallet extract)
+                        #    Lookup order:
+                        #      1) Pallet direct match
+                        #      2) Pallet = gen_pallet_id → orig pallet via _gen_to_orig_fmt
                         def _nz_check(v):
                             return str(v).strip() if str(v).strip() not in ('', 'nan', 'None', 'NULL') else ''
-
-                        import re as _re_gp
-                        _gen_pat_fill = _re_gp.compile(r'^(.+)-P(\d+)$')
 
                         for _fi, _fr in fmt_df.iterrows():
                             _cur_pal = _nz_check(_fr.get('Pallet', ''))
                             if not _cur_pal:
                                 continue
 
-                            # Gen Pallet ID pattern → base pallet (e.g. PL001-P0001 → PL001)
-                            _m = _gen_pat_fill.match(_cur_pal)
-                            _base_pal = _m.group(1) if _m else ''
+                            # orig pallet via gen_to_orig map (any gen_pallet_id format)
+                            _orig_pal = _gen_to_orig_fmt.get(_cur_pal, '')
 
-                            # Lookup: Pallet first → Gen Pallet ID (base) fallback
                             def _lookup(mp):
+                                # 1) direct key match (pallet or gen_pallet_id)
                                 val = mp.get(_cur_pal, '')
-                                if not val and _base_pal:
-                                    val = mp.get(_base_pal, '')
+                                # 2) via orig pallet (gen_pallet_id → pallet)
+                                if not val and _orig_pal:
+                                    val = mp.get(_orig_pal, '')
                                 return val
 
-                            # ── Vendor Name: ALWAYS overwrite from DB if found ───────────────────
+                            # ── Vendor Name ──────────────────────────────────────────────────────
                             _vn_db = _lookup(partial_vendor_map_fmt)
                             if _vn_db:
                                 fmt_df.at[_fi, 'Vendor Name'] = _vn_db
 
-                            # ── Invoice Number: ALWAYS overwrite from DB if found ─────────────────
+                            # ── Invoice Number ────────────────────────────────────────────────────
                             _inv_db = _lookup(partial_invoice_map_fmt)
                             if _inv_db:
                                 fmt_df.at[_fi, 'Invoice Number'] = _inv_db
 
-                            # ── Grn Number: ALWAYS overwrite from DB if found ──────────────────────
+                            # ── Grn Number ────────────────────────────────────────────────────────
                             _grn_db = _lookup(partial_grn_map_fmt)
                             if _grn_db:
                                 fmt_df.at[_fi, 'Grn Number'] = _grn_db
 
-                            # ── Vendor Country: re-resolve from vendor_maintain after update ───────
+                            # ── Vendor Country: re-resolve after Vendor Name update ───────────────
                             _vn_final = _nz_check(fmt_df.at[_fi, 'Vendor Name'])
                             if _vn_final and 'Vendor Country' in fmt_df.columns:
                                 _vc = vendor_country_map.get(_vn_final.lower(), '')
