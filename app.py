@@ -1821,7 +1821,8 @@ if login_section():
                                     _pgn_col2 = _pc2.get('grn number',     'Grn Number')
 
                                     # 1) Gen Pallet ID match
-                                    if _pg_col2 in _partial_df_check.columns:
+                                    # gen_to_orig branch already handled මේ pallet නම් skip
+                                    if _pg_col2 in _partial_df_check.columns and orig_pallet not in gen_to_orig:
                                         _gen_match = _partial_df_check[
                                             _partial_df_check[_pg_col2].astype(str).str.strip() == orig_pallet
                                         ]
