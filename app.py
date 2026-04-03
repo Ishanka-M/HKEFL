@@ -1708,6 +1708,13 @@ if login_section():
                         fmt_rows = []
                         for _, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
+                            # ── Fix: blank pallet row → try Invoice Number as pallet key ──
+                            if not orig_pallet or orig_pallet in ('nan', 'None'):
+                                _inv_inv_col = inv_col_map_r.get('invoice number', '')
+                                if _inv_inv_col and _inv_inv_col in inv_row.index:
+                                    orig_pallet = str(inv_row.get(_inv_inv_col, '')).strip()
+                            if not orig_pallet or orig_pallet in ('nan', 'None'):
+                                continue
                             inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0
                             is_damaged   = orig_pallet in damage_pallets
@@ -1740,8 +1747,9 @@ if login_section():
                                     grn_number_row = inv_grn_map_fmt.get(orig_pallet, '') or pallet_grn_map_fmt.get(real_orig, '')
 
                                 matching_partial = next((p for p in partial_map.get(real_orig, []) if p['gen_pallet'] == orig_pallet), None)
-                                if matching_partial and abs(inv_actual_qty - matching_partial['partial_qty']) <= 0.01:
-                                    row = build_row(inv_row)
+                                if matching_partial:
+                                    # Fix: always use partial_qty as actual qty for gen_pallet rows
+                                    row = build_row(inv_row, override_actual_qty=matching_partial['partial_qty'])
                                     row['Pick Quantity'] = matching_partial['partial_qty']
                                     row['Destination Country'] = pick_country_map.get(real_orig, '')
                                     row['Order NO'] = matching_partial['load_id']
@@ -1752,6 +1760,21 @@ if login_section():
                                     row['Invoice Number'] = invoice_number_row
                                     row['Grn Number']     = grn_number_row
                                     row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet, partial_entry=matching_partial)
+                                    fmt_rows.append(row)
+                                else:
+                                    # No matching gen_pallet entry — fallback: use last_p balance of real_orig as ATS row
+                                    real_partials = partial_map.get(real_orig, [])
+                                    last_rp = real_partials[-1] if real_partials else None
+                                    last_bal = last_rp.get('balance_qty', last_rp['mpd_actual'] - last_rp['partial_qty']) if last_rp else inv_actual_qty
+                                    row = build_row(inv_row, override_actual_qty=last_bal)
+                                    row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
+                                    for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                    row['ATS'] = int(last_bal) if (not is_damaged and last_bal > 0) else ''
+                                    row['Vendor Name']    = vendor_name_row
+                                    row['Vendor Country'] = vendor_country_row
+                                    row['Invoice Number'] = invoice_number_row
+                                    row['Grn Number']     = grn_number_row
+                                    row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet)
                                     fmt_rows.append(row)
                                 continue
 
