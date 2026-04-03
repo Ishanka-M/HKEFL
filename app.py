@@ -1771,6 +1771,11 @@ if login_section():
                             fmt_df['Pallet'].astype(str).str.strip().replace({'nan': '', 'None': ''}) != ''
                         ].reset_index(drop=True)
 
+                        # ── Actual Qty = 0 හෝ blank rows remove ──
+                        fmt_df = fmt_df[
+                            pd.to_numeric(fmt_df['Actual Qty'], errors='coerce').fillna(0) > 0
+                        ].reset_index(drop=True)
+
                         inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
                         rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'],   errors='coerce').fillna(0).sum()
                         qty_match     = abs(inv_total_qty - rpt_total_qty) < 0.01
