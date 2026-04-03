@@ -1832,22 +1832,75 @@ if login_section():
                         # ══════════════════════════════════════════════════════════════
                         pallet_balance_errors = []
                         try:
-                            # Upload inventory ගෙන් pallet → actual qty map build කරනවා
-                            _inv_pal_series = inv_data[_inv_pal_col].astype(str).str.strip()
-                            _inv_aq_series  = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                            # ── Upload inventory ගෙන් pallet → actual qty map ──
+                            _inv_pal_series       = inv_data[_inv_pal_col].astype(str).str.strip()
+                            _inv_aq_series        = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
                             upload_inv_pallet_qty = _inv_aq_series.groupby(_inv_pal_series).sum().to_dict()
 
-                            # fmt_df ගෙන් per-pallet values ගන්නවා
+                            # ── master_partial_data ගෙන් lookup structures build ──
+                            # partial_map already built above: {orig_pallet: [{gen_pallet, partial_qty, balance_qty, ...}]}
+                            # balance_qty partial_map හි නෑ — partial_df ගෙන් සෘජුව ගන්නවා
+
+                            # Build: orig_pallet → sum(balance_qty)  &  orig_pallet → sum(partial_qty)
+                            # Build: gen_pallet_id → partial_qty
+                            _partial_balance_map  = {}   # orig_pallet  → total balance_qty in partial table
+                            _partial_qty_map      = {}   # orig_pallet  → total partial_qty in partial table
+                            _gen_pallet_qty_map   = {}   # gen_pallet_id → partial_qty
+                            _gen_pallet_meta      = {}   # gen_pallet_id → {orig_pallet, load_id, ...}
+
+                            if not partial_df.empty:
+                                _pc2   = {str(c).strip().lower(): str(c).strip() for c in partial_df.columns}
+                                _pb_col = _pc2.get('balance qty',   'Balance Qty')
+                                _pp2    = _pc2.get('pallet',        'Pallet')
+                                _pq2    = _pc2.get('partial qty',   'Partial Qty')
+                                _pg2    = _pc2.get('gen pallet id', 'Gen Pallet ID')
+                                _pl2    = _pc2.get('load id',       'Load ID')
+                                _pv2    = _pc2.get('vendor name',   'Vendor Name')
+                                _pin2   = _pc2.get('invoice number','Invoice Number')
+                                _pgn2   = _pc2.get('grn number',    'Grn Number')
+
+                                _pwork = partial_df.copy()
+                                for _c in [_pb_col, _pq2]:
+                                    if _c in _pwork.columns:
+                                        _pwork[_c] = pd.to_numeric(_pwork[_c], errors='coerce').fillna(0)
+
+                                for _, _ppr in _pwork.iterrows():
+                                    _op  = str(_ppr.get(_pp2,  '')).strip()
+                                    _gp  = str(_ppr.get(_pg2,  '')).strip()
+                                    _pq  = float(_ppr.get(_pq2, 0))
+                                    _bq  = float(_ppr.get(_pb_col, 0)) if _pb_col in _ppr.index else 0
+                                    _lid = str(_ppr.get(_pl2,  '')).strip()
+                                    _vn  = str(_ppr.get(_pv2,  '')).strip() if _pv2 in _ppr.index else ''
+                                    _in  = str(_ppr.get(_pin2, '')).strip() if _pin2 in _ppr.index else ''
+                                    _gn  = str(_ppr.get(_pgn2, '')).strip() if _pgn2 in _ppr.index else ''
+
+                                    if _op:
+                                        _partial_balance_map[_op] = _partial_balance_map.get(_op, 0) + _bq
+                                        _partial_qty_map[_op]     = _partial_qty_map.get(_op, 0) + _pq
+
+                                    if _gp and _gp not in ('', 'nan', 'None'):
+                                        _gen_pallet_qty_map[_gp] = _pq
+                                        _gen_pallet_meta[_gp] = {
+                                            'orig_pallet':    _op,
+                                            'load_id':        _lid,
+                                            'vendor_name':    _vn,
+                                            'invoice_number': _in,
+                                            'grn_number':     _gn,
+                                            'partial_qty':    _pq,
+                                            'balance_qty':    _bq,
+                                        }
+
+                            # ── fmt_df ගෙන් per-pallet Pick/ATS/Damage ──
                             _fmt_work = fmt_df.copy()
                             _fmt_work['_pallet_raw'] = _fmt_work['Pallet'].astype(str).str.strip()
                             _fmt_work['_pick_n']     = pd.to_numeric(_fmt_work['Pick Quantity'], errors='coerce').fillna(0)
                             _fmt_work['_ats_n']      = pd.to_numeric(_fmt_work['ATS'],           errors='coerce').fillna(0)
-                            _fmt_work['_dmg_n']      = sum(
-                                pd.to_numeric(_fmt_work[r], errors='coerce').fillna(0) for r in damage_remarks
-                            ) if damage_remarks else 0
-                            _fmt_work['_actual_n']   = pd.to_numeric(_fmt_work['Actual Qty'],    errors='coerce').fillna(0)
+                            _fmt_work['_dmg_n']      = (
+                                sum(pd.to_numeric(_fmt_work[r], errors='coerce').fillna(0) for r in damage_remarks)
+                                if damage_remarks else 0
+                            )
+                            _fmt_work['_actual_n']   = pd.to_numeric(_fmt_work['Actual Qty'], errors='coerce').fillna(0)
 
-                            # Per-pallet aggregate
                             _pallet_grp = _fmt_work.groupby('_pallet_raw').agg(
                                 pick_sum   = ('_pick_n',   'sum'),
                                 ats_sum    = ('_ats_n',    'sum'),
@@ -1855,39 +1908,97 @@ if login_section():
                                 actual_sum = ('_actual_n', 'sum'),
                             ).reset_index()
 
+                            # All pallets to check = upload inventory pallets + gen_pallet_ids in upload
+                            _all_upload_pallets = set(upload_inv_pallet_qty.keys())
+
                             for _, _pr in _pallet_grp.iterrows():
-                                pal       = _pr['_pallet_raw']
-                                pick_s    = float(_pr['pick_sum'])
-                                ats_s     = float(_pr['ats_sum'])
-                                dmg_s     = float(_pr['dmg_sum'])
-                                actual_s  = float(_pr['actual_sum'])
+                                pal         = _pr['_pallet_raw']
+                                pick_s      = float(_pr['pick_sum'])
+                                ats_s       = float(_pr['ats_sum'])
+                                dmg_s       = float(_pr['dmg_sum'])
+                                actual_s    = float(_pr['actual_sum'])
                                 accounted_s = pick_s + ats_s + dmg_s
 
-                                # Upload inventory actual qty (pallet level)
+                                # Upload inventory actual qty
                                 upload_actual = float(upload_inv_pallet_qty.get(pal, actual_s))
 
-                                if abs(upload_actual - accounted_s) > 0.01:
-                                    # Pallet details from fmt_df first row
-                                    _prow = _fmt_work[_fmt_work['_pallet_raw'] == pal].iloc[0] if len(_fmt_work[_fmt_work['_pallet_raw'] == pal]) > 0 else None
+                                # ── Partial data cross-checks ──
+                                # Check A: orig pallet → balance_qty match
+                                partial_balance   = _partial_balance_map.get(pal)   # None if not in partial
+                                partial_pick_sum  = _partial_qty_map.get(pal)       # total partial_qty picked
+
+                                # Check B: pallet is a gen_pallet_id → match partial_qty
+                                gen_meta          = _gen_pallet_meta.get(pal)       # pal is gen_pallet_id itself
+
+                                # Determine partial match status
+                                partial_balance_match  = None
+                                partial_balance_note   = ''
+                                if partial_balance is not None:
+                                    # upload actual qty should equal balance_qty (remaining stock)
+                                    if abs(upload_actual - partial_balance) < 0.01:
+                                        partial_balance_match = True
+                                        partial_balance_note  = f'✅ Upload({int(upload_actual)}) = Balance Qty({int(partial_balance)})'
+                                    else:
+                                        partial_balance_match = False
+                                        partial_balance_note  = f'❌ Upload({int(upload_actual)}) ≠ Balance Qty({int(partial_balance)}) | diff={int(upload_actual - partial_balance)}'
+
+                                gen_pallet_match  = None
+                                gen_pallet_note   = ''
+                                if gen_meta is not None:
+                                    # pallet in upload is a gen_pallet_id → upload actual qty should equal partial_qty picked
+                                    _gp_partial_qty = float(gen_meta['partial_qty'])
+                                    if abs(upload_actual - _gp_partial_qty) < 0.01:
+                                        gen_pallet_match = True
+                                        gen_pallet_note  = f'✅ Upload({int(upload_actual)}) = Partial Qty({int(_gp_partial_qty)})'
+                                    else:
+                                        gen_pallet_match = False
+                                        gen_pallet_note  = f'❌ Upload({int(upload_actual)}) ≠ Partial Qty({int(_gp_partial_qty)}) | diff={int(upload_actual - _gp_partial_qty)}'
+
+                                # Overall balance check
+                                main_balance_ok = abs(upload_actual - accounted_s) < 0.01
+                                # Also flag if partial checks fail (even if main balance passes)
+                                partial_check_fail = (
+                                    (partial_balance_match is False) or
+                                    (gen_pallet_match is False)
+                                )
+
+                                if not main_balance_ok or partial_check_fail:
+                                    _prow = _fmt_work[_fmt_work['_pallet_raw'] == pal]
+                                    _prow = _prow.iloc[0] if not _prow.empty else None
+
+                                    # Gen Pallet IDs linked to this original pallet
+                                    _linked_gen_pallets = [
+                                        f"{e['gen_pallet']} (Partial Qty={int(e['partial_qty'])})"
+                                        for e in partial_map.get(pal, [])
+                                        if e.get('gen_pallet') and e['gen_pallet'] not in ('', 'nan', 'None')
+                                    ]
+
                                     pallet_balance_errors.append({
-                                        'Pallet':                    pal,
-                                        'Upload Inv Actual Qty':     int(upload_actual),
-                                        'Pick Quantity':             int(pick_s),
-                                        'ATS':                       int(ats_s),
-                                        'Damage Qty':                int(dmg_s),
-                                        'Pick+ATS+Damage (Total)':   int(accounted_s),
-                                        'Difference':                int(upload_actual - accounted_s),
-                                        'Vendor Name':               str(_prow.get('Vendor Name', '')) if _prow is not None else '',
-                                        'Invoice Number':            str(_prow.get('Invoice Number', '')) if _prow is not None else '',
-                                        'Grn Number':                str(_prow.get('Grn Number', '')) if _prow is not None else '',
-                                        'Lot Number':                str(_prow.get('Lot Number', '')) if _prow is not None else '',
-                                        'Supplier':                  str(_prow.get('Supplier', '')) if _prow is not None else '',
-                                        'Location Id':               str(_prow.get('Location Id', '')) if _prow is not None else '',
-                                        'Style':                     str(_prow.get('Style', '')) if _prow is not None else '',
-                                        'Color':                     str(_prow.get('Color', '')) if _prow is not None else '',
-                                        'Size':                      str(_prow.get('Size', '')) if _prow is not None else '',
-                                        'Destination Country':       str(_prow.get('Destination Country', '')) if _prow is not None else '',
-                                        'Order NO':                  str(_prow.get('Order NO', '')) if _prow is not None else '',
+                                        'Pallet':                      pal,
+                                        'Upload Inv Actual Qty':       int(upload_actual),
+                                        'Pick Quantity':               int(pick_s),
+                                        'ATS':                         int(ats_s),
+                                        'Damage Qty':                  int(dmg_s),
+                                        'Pick+ATS+Damage (Total)':     int(accounted_s),
+                                        'Main Balance Diff':           int(upload_actual - accounted_s),
+                                        'Partial Balance Qty (DB)':    int(partial_balance) if partial_balance is not None else '',
+                                        'Partial Balance Check':       partial_balance_note if partial_balance is not None else 'N/A (not in partial table)',
+                                        'Is Gen Pallet ID':            'YES' if gen_meta else 'NO',
+                                        'Orig Pallet (if gen)':        gen_meta['orig_pallet'] if gen_meta else '',
+                                        'Expected Partial Qty (gen)':  int(gen_meta['partial_qty']) if gen_meta else '',
+                                        'Gen Pallet Check':            gen_pallet_note if gen_meta else 'N/A',
+                                        'Linked Gen Pallet IDs':       ' | '.join(_linked_gen_pallets) if _linked_gen_pallets else '',
+                                        'Vendor Name':                 str(_prow.get('Vendor Name', ''))    if _prow is not None else '',
+                                        'Invoice Number':              str(_prow.get('Invoice Number', '')) if _prow is not None else '',
+                                        'Grn Number':                  str(_prow.get('Grn Number', ''))     if _prow is not None else '',
+                                        'Lot Number':                  str(_prow.get('Lot Number', ''))     if _prow is not None else '',
+                                        'Supplier':                    str(_prow.get('Supplier', ''))       if _prow is not None else '',
+                                        'Location Id':                 str(_prow.get('Location Id', ''))    if _prow is not None else '',
+                                        'Style':                       str(_prow.get('Style', ''))          if _prow is not None else '',
+                                        'Color':                       str(_prow.get('Color', ''))          if _prow is not None else '',
+                                        'Size':                        str(_prow.get('Size', ''))           if _prow is not None else '',
+                                        'Destination Country':         str(_prow.get('Destination Country', '')) if _prow is not None else '',
+                                        'Order NO':                    str(_prow.get('Order NO', ''))       if _prow is not None else '',
                                     })
                         except Exception as _pbal_err:
                             st.warning(f"⚠️ Pallet balance check error: {_pbal_err}")
@@ -1895,40 +2006,103 @@ if login_section():
                         # ── Display Pallet Balance Errors ──
                         if pallet_balance_errors:
                             _pbe_count = len(pallet_balance_errors)
-                            st.error(f"🚨 **{_pbe_count} Pallet(s) Balance නොගැලපෙන ලෙස හඳුනාගන්නා ලදී** — Pick + ATS + Damage ≠ Upload Inventory Actual Qty")
-                            with st.expander(f"🔍 Balance Error Pallets Details ({_pbe_count} pallets) — Click to Expand", expanded=True):
-                                _pbe_df = pd.DataFrame(pallet_balance_errors)
+                            _main_fail    = [r for r in pallet_balance_errors if abs(int(r.get('Main Balance Diff', 0))) > 0]
+                            _partial_fail = [r for r in pallet_balance_errors if
+                                             '❌' in str(r.get('Partial Balance Check', '')) or
+                                             '❌' in str(r.get('Gen Pallet Check', ''))]
+                            st.error(f"🚨 **{_pbe_count} Pallet(s) Balance Issue හඳුනාගන්නා ලදී**")
 
-                                # Color-coded display
-                                def _highlight_balance_err(row):
-                                    styles = [''] * len(row)
-                                    diff_idx = list(row.index).index('Difference') if 'Difference' in row.index else -1
-                                    if diff_idx >= 0:
-                                        diff_val = float(row['Difference'])
-                                        if diff_val > 0:
-                                            styles[diff_idx] = 'background-color: #fff3cd; color: #856404; font-weight: bold'
-                                        elif diff_val < 0:
-                                            styles[diff_idx] = 'background-color: #f8d7da; color: #842029; font-weight: bold'
-                                    return styles
+                            _err_tab1, _err_tab2 = st.tabs([
+                                f"⚖️ Main Balance Errors ({len(_main_fail)})",
+                                f"🔗 Partial Data Checks ({len(_partial_fail)})",
+                            ])
 
-                                try:
-                                    st.dataframe(
-                                        _pbe_df.style.apply(_highlight_balance_err, axis=1),
-                                        use_container_width=True
+                            with _err_tab1:
+                                if _main_fail:
+                                    st.caption("Pick + ATS + Damage ≠ Upload Inventory Actual Qty")
+                                    _main_cols = ['Pallet', 'Upload Inv Actual Qty', 'Pick Quantity', 'ATS',
+                                                  'Damage Qty', 'Pick+ATS+Damage (Total)', 'Main Balance Diff',
+                                                  'Vendor Name', 'Invoice Number', 'Grn Number', 'Lot Number',
+                                                  'Supplier', 'Location Id', 'Style', 'Color', 'Size',
+                                                  'Destination Country', 'Order NO']
+                                    _main_df = pd.DataFrame(_main_fail)[[c for c in _main_cols if c in pd.DataFrame(_main_fail).columns]]
+
+                                    def _hl_main(row):
+                                        styles = [''] * len(row)
+                                        if 'Main Balance Diff' in row.index:
+                                            _dv = float(row['Main Balance Diff'] or 0)
+                                            idx = list(row.index).index('Main Balance Diff')
+                                            if _dv > 0:
+                                                styles[idx] = 'background-color: #fff3cd; color: #856404; font-weight: bold'
+                                            elif _dv < 0:
+                                                styles[idx] = 'background-color: #f8d7da; color: #842029; font-weight: bold'
+                                        return styles
+                                    try:
+                                        st.dataframe(_main_df.style.apply(_hl_main, axis=1), use_container_width=True)
+                                    except Exception:
+                                        st.dataframe(_main_df.astype(str), use_container_width=True)
+
+                                    _over  = [r for r in _main_fail if int(r.get('Main Balance Diff', 0)) > 0]
+                                    _under = [r for r in _main_fail if int(r.get('Main Balance Diff', 0)) < 0]
+                                    mc1, mc2, mc3 = st.columns(3)
+                                    mc1.metric("❌ Main Balance Errors", len(_main_fail))
+                                    mc2.metric("📈 Upload > Accounted",  len(_over),  help="Inventory Actual > Pick+ATS+Damage")
+                                    mc3.metric("📉 Upload < Accounted",  len(_under), help="Inventory Actual < Pick+ATS+Damage")
+                                else:
+                                    st.success("✅ Main Balance OK — Pick+ATS+Damage = Upload Inv Actual Qty (all pallets)")
+
+                            with _err_tab2:
+                                if _partial_fail:
+                                    st.caption(
+                                        "**Check A:** Original Pallet → Upload Actual Qty vs `master_partial_data.Balance Qty`  \n"
+                                        "**Check B:** Gen Pallet ID in upload → Upload Actual Qty vs `master_partial_data.Partial Qty`"
                                     )
-                                except Exception:
-                                    st.dataframe(_pbe_df.astype(str), use_container_width=True)
+                                    _partial_cols = [
+                                        'Pallet', 'Upload Inv Actual Qty',
+                                        'Partial Balance Qty (DB)', 'Partial Balance Check',
+                                        'Is Gen Pallet ID', 'Orig Pallet (if gen)',
+                                        'Expected Partial Qty (gen)', 'Gen Pallet Check',
+                                        'Linked Gen Pallet IDs',
+                                        'Vendor Name', 'Invoice Number', 'Grn Number',
+                                        'Lot Number', 'Style', 'Color', 'Size',
+                                    ]
+                                    _pf_df = pd.DataFrame(_partial_fail)[[c for c in _partial_cols if c in pd.DataFrame(_partial_fail).columns]]
 
-                                # Summary metrics
-                                _total_diff = sum(abs(r['Difference']) for r in pallet_balance_errors)
-                                _over  = [r for r in pallet_balance_errors if r['Difference'] > 0]
-                                _under = [r for r in pallet_balance_errors if r['Difference'] < 0]
-                                mc1, mc2, mc3 = st.columns(3)
-                                mc1.metric("❌ Balance Error Pallets", _pbe_count)
-                                mc2.metric("📈 Over-accounted Pallets", len(_over),  help="Pick+ATS+Damage < Inventory Actual")
-                                mc3.metric("📉 Under-accounted Pallets", len(_under), help="Pick+ATS+Damage > Inventory Actual")
+                                    def _hl_partial(row):
+                                        styles = [''] * len(row)
+                                        for _chk_col in ['Partial Balance Check', 'Gen Pallet Check']:
+                                            if _chk_col in row.index:
+                                                idx = list(row.index).index(_chk_col)
+                                                _v  = str(row[_chk_col])
+                                                if '❌' in _v:
+                                                    styles[idx] = 'background-color: #f8d7da; color: #842029; font-weight: bold'
+                                                elif '✅' in _v:
+                                                    styles[idx] = 'background-color: #d4edda; color: #155724; font-weight: bold'
+                                        return styles
+                                    try:
+                                        st.dataframe(_pf_df.style.apply(_hl_partial, axis=1), use_container_width=True)
+                                    except Exception:
+                                        st.dataframe(_pf_df.astype(str), use_container_width=True)
+
+                                    _a_fail = [r for r in _partial_fail if '❌' in str(r.get('Partial Balance Check', ''))]
+                                    _b_fail = [r for r in _partial_fail if '❌' in str(r.get('Gen Pallet Check', ''))]
+                                    pc1, pc2 = st.columns(2)
+                                    pc1.metric("⚠️ Balance Qty Mismatch (Check A)", len(_a_fail),
+                                               help="Upload Actual Qty ≠ master_partial_data Balance Qty")
+                                    pc2.metric("⚠️ Gen Pallet Qty Mismatch (Check B)", len(_b_fail),
+                                               help="Upload Actual Qty ≠ master_partial_data Partial Qty (via Gen Pallet ID)")
+                                else:
+                                    st.success("✅ Partial Data Checks OK — Balance Qty සහ Gen Pallet Qty සෑම pallet ටම ගැලපෙයි")
+
+                            # Overall summary metrics
+                            st.divider()
+                            _total_err_cols = st.columns(4)
+                            _total_err_cols[0].metric("❌ Total Error Pallets",         _pbe_count)
+                            _total_err_cols[1].metric("⚖️ Main Balance Errors",         len(_main_fail))
+                            _total_err_cols[2].metric("🔗 Partial Balance Check Fails", len([r for r in pallet_balance_errors if '❌' in str(r.get('Partial Balance Check',''))]))
+                            _total_err_cols[3].metric("🔗 Gen Pallet Check Fails",      len([r for r in pallet_balance_errors if '❌' in str(r.get('Gen Pallet Check',''))]))
                         else:
-                            st.success("✅ **සියලු Pallets Balance ගැලපෙයි** — Pick + ATS + Damage = Upload Inventory Actual Qty (All Pallets)")
+                            st.success("✅ **සියලු Pallets Balance ගැලපෙයි** — Pick + ATS + Damage = Upload Inventory Actual Qty | Partial Balance Qty & Gen Pallet Qty සෑම pallet ටම ✅")
 
                         st.dataframe(fmt_df.astype(str), use_container_width=True)
 
@@ -1982,27 +2156,35 @@ if login_section():
                             else:
                                 mm_sheet.write(0, 0, '✅ No Qty Mismatches Found', mm_ok_fmt)
                                 mm_sheet.set_column(0, 0, 35)
-                            # ── Balance_Errors sheet — Pick+ATS+Damage ≠ Upload Inv Actual Qty ──
+                            # ── Balance_Errors sheet — Pick+ATS+Damage ≠ Upload Inv Actual Qty + Partial Checks ──
                             be_sheet   = wb.add_worksheet('Balance_Errors')
-                            be_hdr_fmt = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#fff', 'border': 1, 'font_size': 10})
-                            be_ok_fmt  = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
-                            be_row_fmt = wb.add_format({'border': 1, 'font_size': 10})
-                            be_neg_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True})
-                            be_pos_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e67e22', 'bold': True})
+                            be_hdr_fmt  = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                            be_ok_fmt   = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
+                            be_row_fmt  = wb.add_format({'border': 1, 'font_size': 10})
+                            be_neg_fmt  = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True})
+                            be_pos_fmt  = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e67e22', 'bold': True})
+                            be_fail_fmt = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#f8d7da', 'font_color': '#842029', 'bold': True})
+                            be_pass_fmt = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#d4edda', 'font_color': '#155724'})
                             if pallet_balance_errors:
                                 _be_df = pd.DataFrame(pallet_balance_errors)
+                                _CHECK_COLS = {'Partial Balance Check', 'Gen Pallet Check'}
+                                _DIFF_COLS  = {'Main Balance Diff'}
                                 for ci, col in enumerate(_be_df.columns):
+                                    col_w = 42 if col in _CHECK_COLS else (32 if col == 'Linked Gen Pallet IDs' else 24)
                                     be_sheet.write(0, ci, col, be_hdr_fmt)
-                                    be_sheet.set_column(ci, ci, 28)
+                                    be_sheet.set_column(ci, ci, col_w)
                                 for ri2, row2 in _be_df.iterrows():
                                     for ci2, val2 in enumerate(row2):
                                         _col_name = _be_df.columns[ci2]
-                                        if _col_name == 'Difference':
+                                        if _col_name in _DIFF_COLS:
                                             try:
                                                 _dv = float(val2 or 0)
                                                 use_fmt = be_neg_fmt if _dv < 0 else (be_pos_fmt if _dv > 0 else be_row_fmt)
                                             except Exception:
                                                 use_fmt = be_row_fmt
+                                        elif _col_name in _CHECK_COLS:
+                                            _sv = str(val2 or '')
+                                            use_fmt = be_fail_fmt if '❌' in _sv else (be_pass_fmt if '✅' in _sv else be_row_fmt)
                                         else:
                                             use_fmt = be_row_fmt
                                         try:
@@ -2011,8 +2193,8 @@ if login_section():
                                             be_sheet.write(ri2 + 1, ci2, str(val2), use_fmt)
                                 be_sheet.freeze_panes(1, 0)
                             else:
-                                be_sheet.write(0, 0, '✅ All Pallets Balanced — Pick+ATS+Damage = Upload Inventory Actual Qty', be_ok_fmt)
-                                be_sheet.set_column(0, 0, 65)
+                                be_sheet.write(0, 0, '✅ All Pallets Balanced — Pick+ATS+Damage = Upload Inventory Actual Qty | Partial Checks OK', be_ok_fmt)
+                                be_sheet.set_column(0, 0, 75)
                             hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
                             pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
                             dmg_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
