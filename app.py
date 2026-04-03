@@ -1600,21 +1600,25 @@ if login_section():
                             pg_col  = pc.get('gen pallet id', 'Gen Pallet ID')
                             pl_col  = pc.get('load id', 'Load ID')
                             pa_col  = pc.get('actual qty', 'Actual Qty')
+                            pb_col  = pc.get('balance qty', 'Balance Qty')
                             # ── Include Invoice Number + Grn Number from partial data ──
                             pi_col  = pc.get('invoice number', 'Invoice Number')
                             pg2_col = pc.get('grn number', 'Grn Number')
 
-                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col]
+                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pb_col, pi_col, pg2_col]
                                          if c in partial_df.columns]
                             _pdf = partial_df[_sel_cols].copy()
                             _pdf[pq_col] = pd.to_numeric(_pdf[pq_col], errors='coerce').fillna(0)
                             _pdf[pa_col] = pd.to_numeric(_pdf[pa_col], errors='coerce').fillna(0)
+                            if pb_col in _pdf.columns:
+                                _pdf[pb_col] = pd.to_numeric(_pdf[pb_col], errors='coerce').fillna(0)
                             for _, _pr in _pdf.iterrows():
                                 opallet  = str(_pr.get(pp_col,  '')).strip()
                                 gpallet  = str(_pr.get(pg_col,  '')).strip()
                                 pqty     = float(_pr.get(pq_col, 0))
                                 loadid_p = str(_pr.get(pl_col,  '')).strip()
                                 aqty     = float(_pr.get(pa_col, 0))
+                                bqty     = float(_pr.get(pb_col, 0)) if pb_col in _pr.index else 0.0
                                 inv_num  = str(_pr.get(pi_col,  '')).strip()
                                 grn_num  = str(_pr.get(pg2_col, '')).strip()
                                 if inv_num in ('nan', 'None'): inv_num = ''
@@ -1624,10 +1628,16 @@ if login_section():
                                     partial_map[opallet].append({
                                         'gen_pallet': gpallet, 'partial_qty': pqty,
                                         'load_id': loadid_p, 'mpd_actual': aqty,
+                                        'balance_qty': bqty,
                                         'invoice_number': inv_num, 'grn_number': grn_num,
                                     })
                                 if gpallet and opallet:
                                     gen_to_orig[gpallet] = opallet
+
+                        # ── Sort each pallet's entries by balance_qty ascending
+                        #    smallest balance_qty = most recent partial pick = last_p ──
+                        for _pal_key in partial_map:
+                            partial_map[_pal_key].sort(key=lambda x: x.get('balance_qty', x['mpd_actual'] - x['partial_qty']))
 
                         damage_pallets = set()
                         if not dmg_df.empty and 'Pallet' in dmg_df.columns:
@@ -1747,8 +1757,9 @@ if login_section():
 
                             partials = partial_map.get(orig_pallet, [])
                             if partials:
+                                # list sorted by balance_qty asc → last entry = smallest balance = most recent
                                 last_p       = partials[-1]
-                                last_balance = last_p['mpd_actual'] - last_p['partial_qty']
+                                last_balance = last_p.get('balance_qty', last_p['mpd_actual'] - last_p['partial_qty'])
                                 if last_balance <= 0.01:
                                     tally_qty = last_p['mpd_actual']; tally_type = 'picked'
                                 else:
