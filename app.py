@@ -1825,6 +1825,111 @@ if login_section():
                             st.markdown("#### 🔍 Pallet Qty Mismatch Details")
                             st.dataframe(pd.DataFrame(mismatch_pallets), use_container_width=True)
 
+                        # ══════════════════════════════════════════════════════════════
+                        # ── NEW: Pallet-Level Qty Reconciliation Check ──────────────
+                        # Rule: Pick Quantity + ATS + Damage Quantity = Upload Inventory Actual Qty
+                        # Mismatch වෙන pallets details සහිතව show කරනවා
+                        # ══════════════════════════════════════════════════════════════
+                        pallet_balance_errors = []
+                        try:
+                            # Upload inventory ගෙන් pallet → actual qty map build කරනවා
+                            _inv_pal_series = inv_data[_inv_pal_col].astype(str).str.strip()
+                            _inv_aq_series  = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                            upload_inv_pallet_qty = _inv_aq_series.groupby(_inv_pal_series).sum().to_dict()
+
+                            # fmt_df ගෙන් per-pallet values ගන්නවා
+                            _fmt_work = fmt_df.copy()
+                            _fmt_work['_pallet_raw'] = _fmt_work['Pallet'].astype(str).str.strip()
+                            _fmt_work['_pick_n']     = pd.to_numeric(_fmt_work['Pick Quantity'], errors='coerce').fillna(0)
+                            _fmt_work['_ats_n']      = pd.to_numeric(_fmt_work['ATS'],           errors='coerce').fillna(0)
+                            _fmt_work['_dmg_n']      = sum(
+                                pd.to_numeric(_fmt_work[r], errors='coerce').fillna(0) for r in damage_remarks
+                            ) if damage_remarks else 0
+                            _fmt_work['_actual_n']   = pd.to_numeric(_fmt_work['Actual Qty'],    errors='coerce').fillna(0)
+
+                            # Per-pallet aggregate
+                            _pallet_grp = _fmt_work.groupby('_pallet_raw').agg(
+                                pick_sum   = ('_pick_n',   'sum'),
+                                ats_sum    = ('_ats_n',    'sum'),
+                                dmg_sum    = ('_dmg_n',    'sum'),
+                                actual_sum = ('_actual_n', 'sum'),
+                            ).reset_index()
+
+                            for _, _pr in _pallet_grp.iterrows():
+                                pal       = _pr['_pallet_raw']
+                                pick_s    = float(_pr['pick_sum'])
+                                ats_s     = float(_pr['ats_sum'])
+                                dmg_s     = float(_pr['dmg_sum'])
+                                actual_s  = float(_pr['actual_sum'])
+                                accounted_s = pick_s + ats_s + dmg_s
+
+                                # Upload inventory actual qty (pallet level)
+                                upload_actual = float(upload_inv_pallet_qty.get(pal, actual_s))
+
+                                if abs(upload_actual - accounted_s) > 0.01:
+                                    # Pallet details from fmt_df first row
+                                    _prow = _fmt_work[_fmt_work['_pallet_raw'] == pal].iloc[0] if len(_fmt_work[_fmt_work['_pallet_raw'] == pal]) > 0 else None
+                                    pallet_balance_errors.append({
+                                        'Pallet':                    pal,
+                                        'Upload Inv Actual Qty':     int(upload_actual),
+                                        'Pick Quantity':             int(pick_s),
+                                        'ATS':                       int(ats_s),
+                                        'Damage Qty':                int(dmg_s),
+                                        'Pick+ATS+Damage (Total)':   int(accounted_s),
+                                        'Difference':                int(upload_actual - accounted_s),
+                                        'Vendor Name':               str(_prow.get('Vendor Name', '')) if _prow is not None else '',
+                                        'Invoice Number':            str(_prow.get('Invoice Number', '')) if _prow is not None else '',
+                                        'Grn Number':                str(_prow.get('Grn Number', '')) if _prow is not None else '',
+                                        'Lot Number':                str(_prow.get('Lot Number', '')) if _prow is not None else '',
+                                        'Supplier':                  str(_prow.get('Supplier', '')) if _prow is not None else '',
+                                        'Location Id':               str(_prow.get('Location Id', '')) if _prow is not None else '',
+                                        'Style':                     str(_prow.get('Style', '')) if _prow is not None else '',
+                                        'Color':                     str(_prow.get('Color', '')) if _prow is not None else '',
+                                        'Size':                      str(_prow.get('Size', '')) if _prow is not None else '',
+                                        'Destination Country':       str(_prow.get('Destination Country', '')) if _prow is not None else '',
+                                        'Order NO':                  str(_prow.get('Order NO', '')) if _prow is not None else '',
+                                    })
+                        except Exception as _pbal_err:
+                            st.warning(f"⚠️ Pallet balance check error: {_pbal_err}")
+
+                        # ── Display Pallet Balance Errors ──
+                        if pallet_balance_errors:
+                            _pbe_count = len(pallet_balance_errors)
+                            st.error(f"🚨 **{_pbe_count} Pallet(s) Balance නොගැලපෙන ලෙස හඳුනාගන්නා ලදී** — Pick + ATS + Damage ≠ Upload Inventory Actual Qty")
+                            with st.expander(f"🔍 Balance Error Pallets Details ({_pbe_count} pallets) — Click to Expand", expanded=True):
+                                _pbe_df = pd.DataFrame(pallet_balance_errors)
+
+                                # Color-coded display
+                                def _highlight_balance_err(row):
+                                    styles = [''] * len(row)
+                                    diff_idx = list(row.index).index('Difference') if 'Difference' in row.index else -1
+                                    if diff_idx >= 0:
+                                        diff_val = float(row['Difference'])
+                                        if diff_val > 0:
+                                            styles[diff_idx] = 'background-color: #fff3cd; color: #856404; font-weight: bold'
+                                        elif diff_val < 0:
+                                            styles[diff_idx] = 'background-color: #f8d7da; color: #842029; font-weight: bold'
+                                    return styles
+
+                                try:
+                                    st.dataframe(
+                                        _pbe_df.style.apply(_highlight_balance_err, axis=1),
+                                        use_container_width=True
+                                    )
+                                except Exception:
+                                    st.dataframe(_pbe_df.astype(str), use_container_width=True)
+
+                                # Summary metrics
+                                _total_diff = sum(abs(r['Difference']) for r in pallet_balance_errors)
+                                _over  = [r for r in pallet_balance_errors if r['Difference'] > 0]
+                                _under = [r for r in pallet_balance_errors if r['Difference'] < 0]
+                                mc1, mc2, mc3 = st.columns(3)
+                                mc1.metric("❌ Balance Error Pallets", _pbe_count)
+                                mc2.metric("📈 Over-accounted Pallets", len(_over),  help="Pick+ATS+Damage < Inventory Actual")
+                                mc3.metric("📉 Under-accounted Pallets", len(_under), help="Pick+ATS+Damage > Inventory Actual")
+                        else:
+                            st.success("✅ **සියලු Pallets Balance ගැලපෙයි** — Pick + ATS + Damage = Upload Inventory Actual Qty (All Pallets)")
+
                         st.dataframe(fmt_df.astype(str), use_container_width=True)
 
                         out_fmt = io.BytesIO()
@@ -1837,6 +1942,7 @@ if login_section():
                             val_fmt = wb.add_format({'font_size': 11, 'num_format': '#,##0'})
                             ok_fmt  = wb.add_format({'bold': True, 'font_color': '#27ae60', 'font_size': 11})
                             err_fmt = wb.add_format({'bold': True, 'font_color': '#e74c3c', 'font_size': 11})
+                            _bal_err_count = len(pallet_balance_errors)
                             summary_rows_xl = [
                                 ('Inventory Total Actual Qty', int(inv_total_qty)),
                                 ('Report Total Actual Qty',    int(rpt_total_qty)),
@@ -1845,12 +1951,13 @@ if login_section():
                                 ('Damage Quantity', int(total_dmg_qty)), ('Total Accounted', int(accounted)),
                                 ('Unaccounted', int(inv_total_qty - accounted)), ('', ''),
                                 ('Total Report Lines', total_lines), ('Partial Lines', partial_lines), ('', ''),
-                                ('Qty Mismatch Pallets', len(mismatch_pallets)),
+                                ('Qty Mismatch Pallets', len(mismatch_pallets)), ('', ''),
+                                ('Balance Error Pallets (Pick+ATS+Dmg≠Inv)', _bal_err_count),
                             ]
-                            ws_summ_sheet.set_column(0, 0, 28); ws_summ_sheet.set_column(1, 1, 18)
+                            ws_summ_sheet.set_column(0, 0, 38); ws_summ_sheet.set_column(1, 1, 18)
                             for ri, (label, value) in enumerate(summary_rows_xl):
                                 ws_summ_sheet.write(ri, 0, label, bold)
-                                if label == 'Qty Mismatch Pallets':
+                                if label in ('Qty Mismatch Pallets', 'Balance Error Pallets (Pick+ATS+Dmg≠Inv)'):
                                     use_fmt = err_fmt if (isinstance(value, int) and value > 0) else ok_fmt
                                     ws_summ_sheet.write(ri, 1, value, use_fmt)
                                 elif isinstance(value, int): ws_summ_sheet.write(ri, 1, value, val_fmt)
@@ -1875,6 +1982,37 @@ if login_section():
                             else:
                                 mm_sheet.write(0, 0, '✅ No Qty Mismatches Found', mm_ok_fmt)
                                 mm_sheet.set_column(0, 0, 35)
+                            # ── Balance_Errors sheet — Pick+ATS+Damage ≠ Upload Inv Actual Qty ──
+                            be_sheet   = wb.add_worksheet('Balance_Errors')
+                            be_hdr_fmt = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                            be_ok_fmt  = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
+                            be_row_fmt = wb.add_format({'border': 1, 'font_size': 10})
+                            be_neg_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True})
+                            be_pos_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e67e22', 'bold': True})
+                            if pallet_balance_errors:
+                                _be_df = pd.DataFrame(pallet_balance_errors)
+                                for ci, col in enumerate(_be_df.columns):
+                                    be_sheet.write(0, ci, col, be_hdr_fmt)
+                                    be_sheet.set_column(ci, ci, 28)
+                                for ri2, row2 in _be_df.iterrows():
+                                    for ci2, val2 in enumerate(row2):
+                                        _col_name = _be_df.columns[ci2]
+                                        if _col_name == 'Difference':
+                                            try:
+                                                _dv = float(val2 or 0)
+                                                use_fmt = be_neg_fmt if _dv < 0 else (be_pos_fmt if _dv > 0 else be_row_fmt)
+                                            except Exception:
+                                                use_fmt = be_row_fmt
+                                        else:
+                                            use_fmt = be_row_fmt
+                                        try:
+                                            be_sheet.write_number(ri2 + 1, ci2, float(val2), use_fmt) if isinstance(val2, (int, float)) else be_sheet.write(ri2 + 1, ci2, str(val2), use_fmt)
+                                        except Exception:
+                                            be_sheet.write(ri2 + 1, ci2, str(val2), use_fmt)
+                                be_sheet.freeze_panes(1, 0)
+                            else:
+                                be_sheet.write(0, 0, '✅ All Pallets Balanced — Pick+ATS+Damage = Upload Inventory Actual Qty', be_ok_fmt)
+                                be_sheet.set_column(0, 0, 65)
                             hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
                             pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
                             dmg_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
