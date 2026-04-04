@@ -420,6 +420,15 @@ def reconcile_inventory(inv_df, sh):
 
     inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
     inv_df = inv_df[inv_df[actual_col] > 0].reset_index(drop=True)
+
+    # Exclude Sample Orders from picking
+    try:
+        order_type_col = next((c for c in inv_df.columns if c.strip().lower() == 'order type'), None)
+        if order_type_col:
+            inv_df = inv_df[~inv_df[order_type_col].astype(str).str.strip().str.lower().isin(['sample orders', 'sample order'])].reset_index(drop=True)
+    except Exception as e:
+        st.warning(f"Sample Orders Filter Error: {e}")
+
     return inv_df
 
 
@@ -1210,6 +1219,68 @@ if login_section():
                         if not part_df.empty: part_df.to_excel(writer, sheet_name='Partial_Report', index=False)
                         if not summ_df.empty: summ_df.to_excel(writer, sheet_name='Variance_Summary', index=False)
 
+                    # Generate Formatted Pick Report using original inventory
+                    try:
+                        fmt_df_pick, vi_pick, dmg_remarks_pick = generate_formatted_pick_report(inv_original, sh)
+                        fmt_out = io.BytesIO()
+                        with pd.ExcelWriter(fmt_out, engine='xlsxwriter') as fmt_writer:
+                            fmt_df_pick.to_excel(fmt_writer, sheet_name='Pick_Report', index=False)
+                            fmt_wb = fmt_writer.book
+                            fmt_ws = fmt_writer.sheets['Pick_Report']
+
+                            final_fmt_cols = list(fmt_df_pick.columns)
+                            hdr_fmt2 = fmt_wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
+                            pick_col_fmt2 = fmt_wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
+                            dmg_col_fmt2 = fmt_wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
+                            coo_col_fmt2 = fmt_wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
+                            ats_col_fmt2 = fmt_wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
+                            normal_fmt2 = fmt_wb.add_format({'border': 1, 'font_size': 10})
+
+                            for ci2, col_name2 in enumerate(final_fmt_cols):
+                                fmt_ws.write(0, ci2, col_name2, hdr_fmt2)
+                                fmt_ws.set_column(ci2, ci2, 15)
+                                for ri2 in range(1, len(fmt_df_pick) + 1):
+                                    val2 = str(fmt_df_pick.iloc[ri2 - 1][col_name2])
+                                    if col_name2 in ['Pick Quantity', 'Destination Country', 'Order NO']:
+                                        fmt_ws.write(ri2, ci2, val2, pick_col_fmt2)
+                                    elif col_name2 in dmg_remarks_pick:
+                                        fmt_ws.write(ri2, ci2, val2, dmg_col_fmt2)
+                                    elif col_name2 == 'COO':
+                                        fmt_ws.write(ri2, ci2, val2, coo_col_fmt2)
+                                    elif col_name2 == 'ATS':
+                                        fmt_ws.write(ri2, ci2, val2, ats_col_fmt2)
+                                    else:
+                                        fmt_ws.write(ri2, ci2, val2, normal_fmt2)
+                            fmt_ws.freeze_panes(1, 0)
+
+                            # Summary sheet for formatted report
+                            fmt_summ_ws = fmt_wb.add_worksheet('Summary')
+                            inv_t = pd.to_numeric(inv_original[next((c for c in inv_original.columns if str(c).strip().lower() == 'actual qty'), 'Actual Qty')], errors='coerce').fillna(0).sum()
+                            pick_t = pd.to_numeric(fmt_df_pick['Pick Quantity'], errors='coerce').fillna(0).sum()
+                            ats_t = pd.to_numeric(fmt_df_pick['ATS'], errors='coerce').fillna(0).sum()
+                            bold2 = fmt_wb.add_format({'bold': True, 'font_size': 11})
+                            val_f2 = fmt_wb.add_format({'font_size': 11, 'num_format': '#,##0'})
+                            fmt_summ_rows = [
+                                ('Inventory Total Actual Qty', int(inv_t)),
+                                ('Total Report Lines', len(fmt_df_pick)),
+                                ('', ''),
+                                ('Pick Quantity', int(pick_t)),
+                                ('ATS Quantity', int(ats_t)),
+                                ('Validation Issues', len(vi_pick)),
+                                ('Batch ID', batch_id),
+                            ]
+                            fmt_summ_ws.set_column(0, 0, 28)
+                            fmt_summ_ws.set_column(1, 1, 20)
+                            for ri3, (lbl, val3) in enumerate(fmt_summ_rows):
+                                fmt_summ_ws.write(ri3, 0, lbl, bold2)
+                                fmt_summ_ws.write(ri3, 1, val3, val_f2 if isinstance(val3, int) else fmt_wb.add_format({'font_size': 11}))
+
+                        st.session_state['formatted_pick_excel'] = fmt_out.getvalue()
+                        st.session_state['formatted_pick_batch'] = batch_id
+                    except Exception as e:
+                        st.session_state['formatted_pick_excel'] = None
+                        st.warning(f"⚠️ Formatted Pick Report generate කිරීමේ දෝෂයක්: {e}")
+
                     st.session_state['processed_excel'] = output.getvalue()
                     st.session_state['summary_df'] = summ_df
                     st.session_state['batch_id'] = batch_id
@@ -1233,6 +1304,15 @@ if login_section():
                     mime="application/vnd.ms-excel",
                     use_container_width=True
                 )
+                if st.session_state.get('formatted_pick_excel'):
+                    st.download_button(
+                        "📊 Download Formatted Pick Report",
+                        data=st.session_state['formatted_pick_excel'],
+                        file_name=f"Pick_Report_{st.session_state.get('formatted_pick_batch', datetime.now().strftime('%Y%m%d_%H%M%S'))}.xlsx",
+                        mime="application/vnd.ms-excel",
+                        use_container_width=True,
+                        type="secondary"
+                    )
                 show_confetti()
 
     # ==========================================
