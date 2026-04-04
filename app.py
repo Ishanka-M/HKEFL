@@ -112,6 +112,15 @@ VENDOR_COL_MAP = {
 }
 VENDOR_COL_MAP_REV = {v: k for k, v in VENDOR_COL_MAP.items()}
 
+# ── NEW: Old History Map ──
+OLD_HISTORY_COL_MAP = {
+    'Pallet': 'pallet', 'Vendor Name': 'vendor_name', 'Invoice Number': 'invoice_number',
+    'Fifo Date': 'fifo_date', 'Grn Number': 'grn_number', 'Client So': 'client_so',
+    'Supplier Hu': 'supplier_hu', 'Supplier': 'supplier', 'Lot Number': 'lot_number',
+    'Style': 'style', 'Color': 'color', 'Size': 'size', 'Client So 2': 'client_so_2'
+}
+OLD_HISTORY_COL_MAP_REV = {v: k for k, v in OLD_HISTORY_COL_MAP.items()}
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -174,22 +183,28 @@ class DBManager:
     _cache_ttl: int = 30
 
     _COL_MAP = {
-        "master_pick_data":    PICK_COL_MAP,
-        "master_partial_data": PARTIAL_COL_MAP,
-        "load_history":        HISTORY_COL_MAP,
-        "summary_data":        SUMMARY_COL_MAP,
-        "damage_items":        DAMAGE_COL_MAP,
-        "users":               USERS_COL_MAP,
-        "vendor_maintain":     VENDOR_COL_MAP,
+        "master_pick_data":            PICK_COL_MAP,
+        "master_partial_data":         PARTIAL_COL_MAP,
+        "load_history":                HISTORY_COL_MAP,
+        "summary_data":                SUMMARY_COL_MAP,
+        "damage_items":                DAMAGE_COL_MAP,
+        "users":                       USERS_COL_MAP,
+        "vendor_maintain":             VENDOR_COL_MAP,
+        "deleted_master_pick_data":    PICK_COL_MAP,
+        "deleted_master_partial_data": PARTIAL_COL_MAP,
+        "old_history":                 OLD_HISTORY_COL_MAP,
     }
     _COL_MAP_REV = {
-        "master_pick_data":    PICK_COL_MAP_REV,
-        "master_partial_data": PARTIAL_COL_MAP_REV,
-        "load_history":        HISTORY_COL_MAP_REV,
-        "summary_data":        SUMMARY_COL_MAP_REV,
-        "damage_items":        DAMAGE_COL_MAP_REV,
-        "users":               USERS_COL_MAP_REV,
-        "vendor_maintain":     VENDOR_COL_MAP_REV,
+        "master_pick_data":            PICK_COL_MAP_REV,
+        "master_partial_data":         PARTIAL_COL_MAP_REV,
+        "load_history":                HISTORY_COL_MAP_REV,
+        "summary_data":                SUMMARY_COL_MAP_REV,
+        "damage_items":                DAMAGE_COL_MAP_REV,
+        "users":                       USERS_COL_MAP_REV,
+        "vendor_maintain":             VENDOR_COL_MAP_REV,
+        "deleted_master_pick_data":    PICK_COL_MAP_REV,
+        "deleted_master_partial_data": PARTIAL_COL_MAP_REV,
+        "old_history":                 OLD_HISTORY_COL_MAP_REV,
     }
 
     @classmethod
@@ -208,7 +223,7 @@ class DBManager:
         if not records:
             return pd.DataFrame()
         df = pd.DataFrame(records)
-        df.drop(columns=[c for c in ['id', 'created_at'] if c in df.columns], inplace=True, errors='ignore')
+        df.drop(columns=[c for c in ['id', 'created_at', 'deleted_at'] if c in df.columns], inplace=True, errors='ignore')
         col_rev = cls._COL_MAP_REV.get(table_key, {})
         df.rename(columns=col_rev, inplace=True)
         return df
@@ -249,7 +264,8 @@ class DBManager:
             cls._cache[key] = (time.time(), df)
             return df.copy()
         except Exception as e:
-            st.warning(f"DB read error ({table_name}): {e}")
+            if key not in ['deleted_master_pick_data', 'deleted_master_partial_data', 'old_history']:
+                st.warning(f"DB read error ({table_name}): {e}")
             if key in cls._cache:
                 return cls._cache[key][1].copy()
             return pd.DataFrame()
@@ -329,6 +345,13 @@ class DBManager:
                     parts.append(val)
                 return "_".join(parts)
             df_keys = df.apply(_make_key, axis=1)
+            
+            # Archive before overwrite
+            deleted_rows = df[df_keys.isin(set(keys))]
+            if not deleted_rows.empty and key in ["master_pick_data", "master_partial_data"]:
+                archive_table = "deleted_" + key
+                cls.insert_rows(archive_table, deleted_rows.to_dict('records'))
+
             filtered = df[~df_keys.isin(set(keys))].reset_index(drop=True)
             deleted = initial - len(filtered)
             if deleted > 0:
@@ -609,7 +632,12 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
     try:
         existing_partial = DBManager.read_table("master_partial_data")
         if not existing_partial.empty and 'Gen Pallet ID' in existing_partial.columns:
-            existing_gen_pallet_ids = set(existing_partial['Gen Pallet ID'].astype(str).tolist())
+            existing_gen_pallet_ids.update(existing_partial['Gen Pallet ID'].astype(str).tolist())
+            
+        # ── UPDATED: Check deleted_master_partial_data for unique ID creation ──
+        deleted_partial = DBManager.read_table("deleted_master_partial_data")
+        if not deleted_partial.empty and 'Gen Pallet ID' in deleted_partial.columns:
+            existing_gen_pallet_ids.update(deleted_partial['Gen Pallet ID'].astype(str).tolist())
     except:
         pass
 
@@ -1391,12 +1419,25 @@ if login_section():
                                 try:
                                     ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
                                     if ok and new_st == "Cancelled":
-                                        mpd = DBManager.read_table("master_pick_data")
+                                        mpd = DBManager.read_table("master_pick_data", force=True)
                                         lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
                                         if not mpd.empty and lid_col:
+                                            # Archive before overwrite
+                                            deleted_rows = mpd[mpd[lid_col].astype(str).str.strip() == str(lid).strip()]
+                                            if not deleted_rows.empty:
+                                                DBManager.insert_rows("deleted_master_pick_data", deleted_rows.to_dict('records'))
                                             filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
                                             DBManager._overwrite_table("master_pick_data", filtered_mpd)
-                                        st.success(f"✅ {lid} → Cancelled | Master_Pick_Data records deleted.")
+                                            
+                                        mpart = DBManager.read_table("master_partial_data", force=True)
+                                        if not mpart.empty and 'Load ID' in mpart.columns:
+                                            deleted_part_rows = mpart[mpart['Load ID'].astype(str).str.strip() == str(lid).strip()]
+                                            if not deleted_part_rows.empty:
+                                                DBManager.insert_rows("deleted_master_partial_data", deleted_part_rows.to_dict('records'))
+                                            filtered_mpart = mpart[mpart['Load ID'].astype(str).str.strip() != str(lid).strip()]
+                                            DBManager._overwrite_table("master_partial_data", filtered_mpart)
+                                            
+                                        st.success(f"✅ {lid} → Cancelled | Master_Pick_Data & Partial records deleted & archived.")
                                     elif ok:
                                         st.success(f"✅ {lid} → {new_st}")
                                     st.rerun()
@@ -1579,6 +1620,16 @@ if login_section():
                             except Exception as _e:
                                 st.warning(f"CSV read error: {_e}")
                                 return pd.DataFrame()
+                                
+                        # ── NEW: Load old_history for fallback map ──
+                        try:
+                            old_hist_df = DBManager.read_table("old_history")
+                            old_hist_map = {}
+                            if not old_hist_df.empty and 'Pallet' in old_hist_df.columns:
+                                old_hist_df['_pkey'] = old_hist_df['Pallet'].astype(str).str.strip()
+                                old_hist_map = old_hist_df.set_index('_pkey').to_dict('index')
+                        except:
+                            old_hist_map = {}
 
                         # ── Load data: CSV first, fallback to Supabase ───────────────────────
                         if csv_pick_file:
@@ -2031,18 +2082,21 @@ if login_section():
                         st.dataframe(fmt_df.astype(str), use_container_width=True)
 
                         # ══════════════════════════════════════════════════════
-                        # Change 5: Blank fill — ALL rows (non-partial rows too)
-                        # Vendor Name / Invoice Number / Grn Number
+                        # Blank fill & Old History Fallback
                         # ══════════════════════════════════════════════════════
+                        old_history_fields = ['Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
+                                              'Client So', 'Supplier Hu', 'Supplier', 'Lot Number',
+                                              'Style', 'Color', 'Size', 'Client So 2']
+                                              
                         for idx, r_row in fmt_df.iterrows():
                             pkey = str(r_row.get('Pallet', '')).strip()
                             base = _base_pallet(pkey)
                             part_entries = partial_map.get(base, []) or partial_map.get(pkey, [])
 
+                            # Original partial/vendor fill logic
                             vn = str(fmt_df.at[idx, 'Vendor Name']).strip()
                             if not vn or vn in ('nan', 'None', ''):
-                                fb_vn = (partial_vendor_map_fmt.get(pkey, '') or
-                                         partial_vendor_map_fmt.get(base, ''))
+                                fb_vn = (partial_vendor_map_fmt.get(pkey, '') or partial_vendor_map_fmt.get(base, ''))
                                 if not fb_vn:
                                     for pe in part_entries:
                                         gp = pe.get('gen_pallet', '')
@@ -2054,32 +2108,44 @@ if login_section():
 
                             inv_n = str(fmt_df.at[idx, 'Invoice Number']).strip()
                             if not inv_n or inv_n in ('nan', 'None', ''):
-                                fb_inv = (pallet_invoice_map_fmt.get(pkey, '') or
-                                          pallet_invoice_map_fmt.get(base, ''))
+                                fb_inv = (pallet_invoice_map_fmt.get(pkey, '') or pallet_invoice_map_fmt.get(base, ''))
                                 if not fb_inv:
                                     for pe in part_entries:
                                         gp = pe.get('gen_pallet', '')
-                                        fb_inv = (pe.get('invoice_number', '') or
-                                                  inv_invoice_map_fmt.get(gp, ''))
+                                        fb_inv = (pe.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, ''))
                                         if fb_inv: break
                                 if fb_inv:
                                     fmt_df.at[idx, 'Invoice Number'] = fb_inv
 
                             grn_n = str(fmt_df.at[idx, 'Grn Number']).strip()
                             if not grn_n or grn_n in ('nan', 'None', ''):
-                                fb_grn = (pallet_grn_map_fmt.get(pkey, '') or
-                                          pallet_grn_map_fmt.get(base, ''))
+                                fb_grn = (pallet_grn_map_fmt.get(pkey, '') or pallet_grn_map_fmt.get(base, ''))
                                 if not fb_grn:
                                     for pe in part_entries:
                                         gp = pe.get('gen_pallet', '')
-                                        fb_grn = (pe.get('grn_number', '') or
-                                                  inv_grn_map_fmt.get(gp, ''))
+                                        fb_grn = (pe.get('grn_number', '') or inv_grn_map_fmt.get(gp, ''))
                                         if fb_grn: break
                                 if fb_grn:
                                     fmt_df.at[idx, 'Grn Number'] = fb_grn
 
+                            # ── NEW: Old History Fallback Loop ──
+                            for col in old_history_fields:
+                                if col in fmt_df.columns:
+                                    val = str(fmt_df.at[idx, col]).strip()
+                                    if not val or val in ('nan', 'None', ''):
+                                        oh_row = old_hist_map.get(pkey) or old_hist_map.get(base)
+                                        if oh_row:
+                                            oh_val = str(oh_row.get(col, '')).strip()
+                                            if oh_val and oh_val not in ('nan', 'None', ''):
+                                                fmt_df.at[idx, col] = oh_val
+
                         # ══════════════════════════════════════════════════════
-                        # Change 4: Reconciliation — Actual Qty vs Pick+Dmg+ATS
+                        # Duplicate Check Logic 
+                        # ══════════════════════════════════════════════════════
+                        fmt_df = fmt_df.drop_duplicates(subset=['Pallet', 'Pick Quantity', 'Destination Country', 'Order NO'], keep='first').reset_index(drop=True)
+
+                        # ══════════════════════════════════════════════════════
+                        # Reconciliation — Actual Qty vs Pick+Dmg+ATS
                         # ══════════════════════════════════════════════════════
                         recon_rows = []
                         for idx, r_row in fmt_df.iterrows():
@@ -2114,7 +2180,7 @@ if login_section():
                             st.dataframe(recon_df.astype(str), use_container_width=True)
 
                         # ══════════════════════════════════════════════════════
-                        # Change 3: Total Row build
+                        # Total Row build
                         # ══════════════════════════════════════════════════════
                         total_row = {}
                         for _col in final_cols:
@@ -2230,7 +2296,7 @@ if login_section():
         ])
 
         with del_tab1:
-            st.info("Load ID, Pallet සහ Actual Qty අඩංගු Excel/CSV file upload කිරීමෙන් Master_Pick_Data හි matching records delete කළ හැක.")
+            st.info("Load ID, Pallet සහ Actual Qty අඩංගු Excel/CSV file upload කිරීමෙන් Master_Pick_Data සහ Partial Data වලින් matching records delete කළ හැක.")
             del_file = st.file_uploader("Upload Data to Delete", type=['csv', 'xlsx'], key="del_file_uploader")
             if del_file:
                 if st.button("🗑️ Delete Matching Records", type="primary"):
@@ -2258,11 +2324,31 @@ if login_section():
                                 pd.to_numeric(del_df['ACTUAL QTY'], errors='coerce').fillna(0).astype(str)
                             )
                             keys_to_delete = del_df['MATCH_KEY'].tolist()
+                            
+                            deleted_mpd = master_pick_df[temp_master['MATCH_KEY'].isin(keys_to_delete)]
+                            if not deleted_mpd.empty:
+                                DBManager.insert_rows("deleted_master_pick_data", deleted_mpd.to_dict('records'))
+                            
                             filtered_master = master_pick_df[~temp_master['MATCH_KEY'].isin(keys_to_delete)]
                             deleted_count   = initial_len - len(filtered_master)
+                            
+                            # Partial Data Deletion (by Load ID and Pallet)
+                            mpart = DBManager.read_table("master_partial_data")
+                            if not mpart.empty and 'Load ID' in mpart.columns and 'Pallet' in mpart.columns:
+                                mpart_temp = mpart.copy()
+                                mpart_temp['KEY'] = mpart_temp['Load ID'].astype(str).str.strip() + "_" + mpart_temp['Pallet'].astype(str).str.strip()
+                                del_df['PART_KEY'] = del_df['LOAD ID'].astype(str).str.strip() + "_" + del_df['PALLET'].astype(str).str.strip()
+                                part_keys_to_del = del_df['PART_KEY'].tolist()
+                                
+                                deleted_part = mpart[mpart_temp['KEY'].isin(part_keys_to_del)]
+                                if not deleted_part.empty:
+                                    DBManager.insert_rows("deleted_master_partial_data", deleted_part.to_dict('records'))
+                                filtered_mpart = mpart[~mpart_temp['KEY'].isin(part_keys_to_del)]
+                                DBManager._overwrite_table("master_partial_data", filtered_mpart)
+                                
                             if deleted_count > 0:
                                 DBManager._overwrite_table("master_pick_data", filtered_master)
-                                st.success(f"✅ {deleted_count} records deleted from Master_Pick_Data!")
+                                st.success(f"✅ {deleted_count} records deleted from Master_Pick_Data and Archived!")
                                 show_confetti()
                             else:
                                 st.warning("⚠️ Matching records not found in Master_Pick_Data.")
@@ -2270,7 +2356,7 @@ if login_section():
                             st.error("Master_Pick_Data හි data නොමැත.")
 
         with del_tab2:
-            st.info("Load ID(s) delete කිරීමෙන් Master_Pick_Data records remove කළ හැක. Load_History නොවෙනස්ව.")
+            st.info("Load ID(s) delete කිරීමෙන් Master_Pick_Data & Partial Data records remove කර Archive කළ හැක.")
             lid_method = st.radio("Delete Method:", ["⌨️ Type Load ID", "📂 Upload Load ID List (Excel/CSV)"], horizontal=True, key="lid_del_method")
             if lid_method == "⌨️ Type Load ID":
                 del_load_id = st.text_input("🆔 Enter Load ID to Delete:")
@@ -2304,15 +2390,30 @@ if login_section():
                         lid_col_del    = next((c for c in (master_pick_df.columns if not master_pick_df.empty else []) if str(c).strip().lower() == 'generated load id'), 'Load Id')
                         deleted_pick   = 0
                         if not master_pick_df.empty and lid_col_del in master_pick_df.columns:
-                            filtered     = master_pick_df[~master_pick_df[lid_col_del].astype(str).str.strip().isin(load_ids_to_delete)]
+                            # Archive MPD
+                            deleted_rows_mpd = master_pick_df[master_pick_df[lid_col_del].astype(str).str.strip().isin(load_ids_to_delete)]
+                            if not deleted_rows_mpd.empty:
+                                DBManager.insert_rows("deleted_master_pick_data", deleted_rows_mpd.to_dict('records'))
+                            
+                            filtered = master_pick_df[~master_pick_df[lid_col_del].astype(str).str.strip().isin(load_ids_to_delete)]
                             deleted_pick = len(master_pick_df) - len(filtered)
                             DBManager._overwrite_table("master_pick_data", filtered)
+                            
+                        # Partial deletion
+                        mpart = DBManager.read_table("master_partial_data", force=True)
+                        if not mpart.empty and 'Load ID' in mpart.columns:
+                            deleted_rows_mpart = mpart[mpart['Load ID'].astype(str).str.strip().isin(load_ids_to_delete)]
+                            if not deleted_rows_mpart.empty:
+                                DBManager.insert_rows("deleted_master_partial_data", deleted_rows_mpart.to_dict('records'))
+                            filtered_mpart = mpart[~mpart['Load ID'].astype(str).str.strip().isin(load_ids_to_delete)]
+                            DBManager._overwrite_table("master_partial_data", filtered_mpart)
+
                         ids_str = ', '.join(load_ids_to_delete[:3]) + ('...' if len(load_ids_to_delete) > 3 else '')
-                        st.success(f"✅ Load ID(s) [{ids_str}] — {deleted_pick} records deleted!")
+                        st.success(f"✅ Load ID(s) [{ids_str}] — {deleted_pick} records deleted & archived!")
                         show_confetti()
 
         with del_tab3:
-            st.info("Batch ID delete කිරීමෙන් ඒ batch හි Master_Pick_Data records remove කළ හැක.")
+            st.info("Batch ID delete කිරීමෙන් ඒ batch හි Master_Pick_Data & Partial Data records remove කර Archive කළ හැක.")
             mpd_for_batch = DBManager.read_table("master_pick_data")
             batch_col_mpd = next((c for c in (mpd_for_batch.columns if not mpd_for_batch.empty else []) if str(c).strip().lower() == 'batch id'), None)
             if not mpd_for_batch.empty and batch_col_mpd:
@@ -2335,10 +2436,25 @@ if login_section():
                             batch_col_lat = next((c for c in (mpd_latest.columns if not mpd_latest.empty else []) if str(c).strip().lower() == 'batch id'), None)
                             deleted_batch = 0
                             if not mpd_latest.empty and batch_col_lat:
+                                # Archive MPD
+                                deleted_rows_mpd = mpd_latest[mpd_latest[batch_col_lat].astype(str).str.strip() == str(del_batch_id).strip()]
+                                if not deleted_rows_mpd.empty:
+                                    DBManager.insert_rows("deleted_master_pick_data", deleted_rows_mpd.to_dict('records'))
+                                
                                 filtered_batch = mpd_latest[mpd_latest[batch_col_lat].astype(str).str.strip() != str(del_batch_id).strip()]
                                 deleted_batch  = len(mpd_latest) - len(filtered_batch)
                                 DBManager._overwrite_table("master_pick_data", filtered_batch)
-                            st.success(f"✅ Batch **{del_batch_id}** — {deleted_batch} records deleted!")
+                                
+                            # Partial Deletion
+                            mpart = DBManager.read_table("master_partial_data", force=True)
+                            if not mpart.empty and 'Batch ID' in mpart.columns:
+                                deleted_rows_mpart = mpart[mpart['Batch ID'].astype(str).str.strip() == str(del_batch_id).strip()]
+                                if not deleted_rows_mpart.empty:
+                                    DBManager.insert_rows("deleted_master_partial_data", deleted_rows_mpart.to_dict('records'))
+                                filtered_mpart = mpart[mpart['Batch ID'].astype(str).str.strip() != str(del_batch_id).strip()]
+                                DBManager._overwrite_table("master_partial_data", filtered_mpart)
+
+                            st.success(f"✅ Batch **{del_batch_id}** — {deleted_batch} records deleted & archived!")
                             show_confetti()
                 else:
                     st.info("No Batch IDs found in Master_Pick_Data.")
@@ -2346,7 +2462,7 @@ if login_section():
                 st.info("Master_Pick_Data හි data නොමැත.")
 
         with del_tab4:
-            st.info("Pallet delete කිරීමෙන් Master_Pick_Data, Master_Partial_Data, Damage_Items වලින් records remove කළ හැක.")
+            st.info("Pallet delete කිරීමෙන් Master_Pick_Data, Master_Partial_Data, Damage_Items වලින් records remove කර Archive කළ හැක.")
             _del_batch = DBManager.batch_read(["master_pick_data", "master_partial_data", "damage_items"])
             _mpd_pal   = _del_batch["master_pick_data"]
             _mpart_pal = _del_batch["master_partial_data"]
@@ -2376,10 +2492,14 @@ if login_section():
                     pc3.metric("Damage_Items",        dmg_count)
 
                     if st.button("🗑️ Delete Pallet from All Tables", type="primary", key="del_pallet_btn"):
-                        with st.spinner("Deleting..."):
+                        with st.spinner("Deleting & Archiving..."):
                             results = []
                             mpd_fresh = DBManager.read_table("master_pick_data", force=True)
                             if not mpd_fresh.empty and 'Pallet' in mpd_fresh.columns:
+                                deleted_rows_mpd = mpd_fresh[mpd_fresh['Pallet'].astype(str).str.strip() == str(del_pallet).strip()]
+                                if not deleted_rows_mpd.empty:
+                                    DBManager.insert_rows("deleted_master_pick_data", deleted_rows_mpd.to_dict('records'))
+                                    
                                 filtered_mpd = mpd_fresh[mpd_fresh['Pallet'].astype(str).str.strip() != str(del_pallet).strip()]
                                 deleted = len(mpd_fresh) - len(filtered_mpd)
                                 DBManager._overwrite_table("master_pick_data", filtered_mpd)
@@ -2390,6 +2510,11 @@ if login_section():
                                 mask = pd.Series([True] * len(mpart_fresh))
                                 if 'Pallet'        in mpart_fresh.columns: mask &= mpart_fresh['Pallet'].astype(str).str.strip()        != str(del_pallet).strip()
                                 if 'Gen Pallet ID' in mpart_fresh.columns: mask &= mpart_fresh['Gen Pallet ID'].astype(str).str.strip() != str(del_pallet).strip()
+                                
+                                deleted_rows_mpart = mpart_fresh[~mask]
+                                if not deleted_rows_mpart.empty:
+                                    DBManager.insert_rows("deleted_master_partial_data", deleted_rows_mpart.to_dict('records'))
+                                    
                                 filtered_mpart = mpart_fresh[mask]
                                 deleted = len(mpart_fresh) - len(filtered_mpart)
                                 DBManager._overwrite_table("master_partial_data", filtered_mpart)
@@ -2402,7 +2527,7 @@ if login_section():
                                 DBManager._overwrite_table("damage_items", filtered_dmg)
                                 results.append(f"Damage_Items: {deleted} records")
 
-                            st.success(f"✅ Pallet **{del_pallet}** deleted — {' | '.join(results)}")
+                            st.success(f"✅ Pallet **{del_pallet}** deleted & archived — {' | '.join(results)}")
                             show_confetti()
             else:
                 st.info("Delete කළ හැකි Pallets නොමැත.")
@@ -2577,6 +2702,18 @@ if login_section():
     # ==========================================================================
     elif choice == "⚙️ Admin Settings":
         st.title("⚙️ System Administration")
+        
+        st.subheader("📜 Upload Old History Data")
+        st.caption("Upload Old History Excel/CSV file to use as a fallback in Formatted Pick Report.")
+        old_hist_file = st.file_uploader("Upload Excel/CSV for Old History", type=['csv', 'xlsx'])
+        if old_hist_file and st.button("Upload Old History", type="primary"):
+            with st.spinner("Uploading..."):
+                oh_df = pd.read_csv(old_hist_file) if old_hist_file.name.endswith('.csv') else pd.read_excel(old_hist_file)
+                DBManager.insert_rows("old_history", oh_df.to_dict('records'))
+                st.success(f"✅ {len(oh_df)} records added to old_history DB!")
+                show_confetti()
+                
+        st.divider()
         col_adm1, col_adm2 = st.columns(2)
 
         with col_adm1:
@@ -2599,7 +2736,7 @@ if login_section():
             st.warning("This will permanently delete all records from the selected table.")
             sheet_to_clear = st.selectbox("Select Data to Clear:", [
                 "master_pick_data", "master_partial_data", "summary_data", "load_history",
-                "damage_items", "vendor_maintain", "ALL_DATA"
+                "damage_items", "vendor_maintain", "deleted_master_pick_data", "deleted_master_partial_data", "old_history", "ALL_DATA"
             ])
             confirm = st.text_input("Type 'CONFIRM' to proceed:")
             if st.button("🗑️ Clear Selected Data", type="primary"):
