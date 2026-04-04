@@ -1529,8 +1529,20 @@ if login_section():
                         else:
                             st.warning("Report generate කිරීම අසාර්ථක විය.")
 
+
             with tab_formatted:
                 st.caption("Notepad headers → Pick Quantity → Damage columns → Destination Country → Order NO → Partial Pallet replace")
+
+                # ── CSV Fallback Upload Section ──────────────────────────────────────────
+                with st.expander("📂 CSV Data Override (Optional — Supabase connect නොවේ නම් CSV upload කරන්න)", expanded=False):
+                    st.caption("Supabase connection ඇත්නම් CSV upload නොකළත් හරි. CSV upload කළහොත් ඒ data priority ලැබේ.")
+                    col_csv1, col_csv2 = st.columns(2)
+                    col_csv3, col_csv4 = st.columns(2)
+                    csv_pick_file    = col_csv1.file_uploader("master_pick_data CSV",    type=['csv'], key="fmt_csv_pick")
+                    csv_partial_file = col_csv2.file_uploader("master_partial_data CSV", type=['csv'], key="fmt_csv_partial")
+                    csv_damage_file  = col_csv3.file_uploader("damage_items CSV",        type=['csv'], key="fmt_csv_damage")
+                    csv_vendor_file  = col_csv4.file_uploader("vendor_maintain CSV",     type=['csv'], key="fmt_csv_vendor")
+
                 if st.button("📊 Generate Formatted Pick Report", type="primary", use_container_width=True, key="gen_fmt"):
                     with st.spinner("Generating Formatted Report..."):
                         inv_report_file.seek(0)
@@ -1557,15 +1569,104 @@ if login_section():
                                           'Lot Number', 'Style', 'Color', 'Size', 'Client So 2',
                                           'Inventory Type', 'Actual Qty']
 
-                        _rpt_sheets = DBManager.batch_read(["master_pick_data", "damage_items", "master_partial_data"])
-                        mpd_df      = _rpt_sheets["master_pick_data"]
-                        mpd_col     = {str(c).strip().lower(): str(c).strip() for c in (mpd_df.columns if not mpd_df.empty else [])}
+                        # ── Helper: load CSV and rename columns using a reverse-map ──────────
+                        def _load_csv_with_rev_map(uploaded_file, rev_col_map):
+                            try:
+                                df = pd.read_csv(uploaded_file)
+                                df.drop(columns=[c for c in ['id', 'created_at'] if c in df.columns], inplace=True, errors='ignore')
+                                df.rename(columns=rev_col_map, inplace=True)
+                                return df
+                            except Exception as _e:
+                                st.warning(f"CSV read error: {_e}")
+                                return pd.DataFrame()
 
-                        # ── Load vendor_maintain for country lookup ──
-                        vendor_country_map = get_vendor_country_map()
+                        # ── Load data: CSV first, fallback to Supabase ───────────────────────
+                        if csv_pick_file:
+                            csv_pick_file.seek(0)
+                            mpd_df = _load_csv_with_rev_map(csv_pick_file, PICK_COL_MAP_REV)
+                            st.info("ℹ️ master_pick_data: CSV data use කරයි")
+                        else:
+                            try:
+                                mpd_df = DBManager.read_table("master_pick_data")
+                            except Exception:
+                                mpd_df = pd.DataFrame()
 
-                        # ── UPDATED: Load partial data maps (vendor, invoice, grn) ──
-                        inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = get_partial_lookup_maps()
+                        if csv_partial_file:
+                            csv_partial_file.seek(0)
+                            _partial_df_fmt = _load_csv_with_rev_map(csv_partial_file, PARTIAL_COL_MAP_REV)
+                            st.info("ℹ️ master_partial_data: CSV data use කරයි")
+                        else:
+                            try:
+                                _partial_df_fmt = DBManager.read_table("master_partial_data")
+                            except Exception:
+                                _partial_df_fmt = pd.DataFrame()
+
+                        if csv_damage_file:
+                            csv_damage_file.seek(0)
+                            _damage_df_fmt = _load_csv_with_rev_map(csv_damage_file, DAMAGE_COL_MAP_REV)
+                            st.info("ℹ️ damage_items: CSV data use කරයි")
+                        else:
+                            try:
+                                _damage_df_fmt = DBManager.read_table("damage_items")
+                            except Exception:
+                                _damage_df_fmt = pd.DataFrame()
+
+                        if csv_vendor_file:
+                            csv_vendor_file.seek(0)
+                            _vendor_df_fmt = _load_csv_with_rev_map(csv_vendor_file, VENDOR_COL_MAP_REV)
+                            st.info("ℹ️ vendor_maintain: CSV data use කරයි")
+                        else:
+                            try:
+                                _vendor_df_fmt = DBManager.read_table("vendor_maintain")
+                            except Exception:
+                                _vendor_df_fmt = pd.DataFrame()
+
+                        mpd_col = {str(c).strip().lower(): str(c).strip() for c in (mpd_df.columns if not mpd_df.empty else [])}
+
+                        # ── vendor_country_map: CSV vendor data ─────────────────────────────
+                        def _get_vendor_country_map_from_df(vdf):
+                            if vdf is None or vdf.empty:
+                                return {}
+                            if 'Vendor Name' in vdf.columns and 'Country' in vdf.columns:
+                                return {
+                                    str(v).strip().lower(): str(c).strip()
+                                    for v, c in zip(vdf['Vendor Name'], vdf['Country'])
+                                    if str(v).strip() and str(c).strip() not in ('', 'nan', 'None')
+                                }
+                            return {}
+
+                        vendor_country_map = _get_vendor_country_map_from_df(_vendor_df_fmt)
+                        if not vendor_country_map:
+                            vendor_country_map = get_vendor_country_map()
+
+                        # ── partial lookup maps: CSV partial data ────────────────────────────
+                        def _get_partial_lookup_maps_from_df(part_df):
+                            invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map = {}, {}, {}, {}, {}
+                            if part_df is None or part_df.empty:
+                                return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
+                            for _, r in part_df.iterrows():
+                                pallet_key = str(r.get('Pallet', '')).strip()
+                                gen_pallet = str(r.get('Gen Pallet ID', '')).strip()
+                                inv_num    = str(r.get('Invoice Number', '')).strip()
+                                grn_num    = str(r.get('Grn Number', '')).strip()
+                                vnd_name   = str(r.get('Vendor Name', '')).strip()
+                                if inv_num in ('nan', 'None'): inv_num = ''
+                                if grn_num in ('nan', 'None'): grn_num = ''
+                                if vnd_name in ('nan', 'None'): vnd_name = ''
+                                if gen_pallet and gen_pallet not in ('', 'nan', 'None'):
+                                    if inv_num: invoice_map[gen_pallet] = inv_num
+                                    if grn_num: grn_map[gen_pallet] = grn_num
+                                    if vnd_name: vendor_map[gen_pallet] = vnd_name
+                                if pallet_key and pallet_key not in ('', 'nan', 'None'):
+                                    if inv_num: pallet_invoice_map[pallet_key] = inv_num
+                                    if grn_num: pallet_grn_map[pallet_key] = grn_num
+                                    if vnd_name: vendor_map[pallet_key] = vnd_name
+                            return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
+
+                        inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = \
+                            _get_partial_lookup_maps_from_df(_partial_df_fmt)
+                        if not any([inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt]):
+                            inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = get_partial_lookup_maps()
 
                         pick_qty_map = {}; pick_country_map = {}; pick_loadid_map = {}
                         if not mpd_df.empty:
@@ -1579,7 +1680,7 @@ if login_section():
                             pick_country_map = _last[cn_col].astype(str).to_dict()
                             pick_loadid_map  = _last[gl_col].astype(str).to_dict()
 
-                        dmg_df = _rpt_sheets["damage_items"]
+                        dmg_df = _damage_df_fmt
                         damage_remarks = []
                         dmg_pallet_remark_qty = {}
                         if not dmg_df.empty and 'Pallet' in dmg_df.columns and 'Remark' in dmg_df.columns:
@@ -1591,7 +1692,7 @@ if login_section():
                             _dmg_grp = _dmg.groupby(['_pkey', '_rmk'])['_dqty'].sum()
                             dmg_pallet_remark_qty = {(p, r): v for (p, r), v in _dmg_grp.items()}
 
-                        partial_df = _rpt_sheets["master_partial_data"]
+                        partial_df = _partial_df_fmt
                         partial_map = {}; gen_to_orig = {}
                         if not partial_df.empty:
                             pc = {str(c).strip().lower(): str(c).strip() for c in partial_df.columns}
@@ -2116,6 +2217,7 @@ if login_section():
                             file_name=f"Pick_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                             mime="application/vnd.ms-excel", use_container_width=True)
                         show_confetti()
+
 
     # ==========================================================================
     # TAB 4: REVERT / DELETE PICKS
