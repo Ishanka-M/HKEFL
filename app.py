@@ -1858,7 +1858,7 @@ if login_section():
                                     row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp_id)
                                     fmt_rows.append(row)
 
-                                # Balance check: inv Actual Qty < sum(partial_qty) → ATS balance row
+                                # Balance check: inv Actual Qty > sum(partial_qty) → ATS balance row
                                 balance_qty = round(float(inv_actual_qty) - total_partial_sum, 4)
                                 if balance_qty > 0.01 and not is_damaged:
                                     bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=balance_qty)
