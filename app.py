@@ -31,7 +31,6 @@ HEADER_LOWER_MAP = {h.strip().lower(): h for h in MASTER_PICK_HEADERS}
 SHEET_HEADERS = {
     "Load_History": ['Batch ID', 'Generated Load ID', 'SO Number', 'Country Name', 'SHIP MODE', 'Date', 'Pick Status'],
     "Summary_Data": ['Batch ID', 'SO Number', 'Load ID', 'UPC', 'Country', 'Ship Mode', 'Requested', 'Picked', 'Variance', 'Status'],
-    # ── UPDATED: Invoice Number + Grn Number added to Master_Partial_Data ──
     "Master_Partial_Data": ['Batch ID', 'SO Number', 'Pallet', 'Supplier', 'Load ID', 'Country Name',
                              'Actual Qty', 'Partial Qty', 'Gen Pallet ID', 'Balance Qty',
                              'Location Id', 'Lot Number', 'Color', 'Size', 'Style', 'Customer Po Number',
@@ -303,6 +302,38 @@ class DBManager:
             return len(res.data) if res.data else 0
         except Exception as e:
             st.error(f"DB delete error ({table_name}): {e}")
+            return 0
+
+    @classmethod
+    def delete_match_keys(cls, table_name: str, keys: list, key_cols: list) -> int:
+        if not keys:
+            return 0
+        key = cls._table_key(table_name)
+        try:
+            df = cls.read_table(table_name, force=True)
+            if df.empty:
+                return 0
+            initial = len(df)
+            def _make_key(row):
+                parts = []
+                for c in key_cols:
+                    val = str(row.get(c, '')).strip()
+                    if c == 'Actual Qty':
+                        try:
+                            f = float(val)
+                            val = str(f)
+                        except:
+                            pass
+                    parts.append(val)
+                return "_".join(parts)
+            df_keys = df.apply(_make_key, axis=1)
+            filtered = df[~df_keys.isin(set(keys))].reset_index(drop=True)
+            deleted = initial - len(filtered)
+            if deleted > 0:
+                cls._overwrite_table(table_name, filtered)
+            return deleted
+        except Exception as e:
+            st.error(f"DB composite delete error: {e}")
             return 0
 
     @classmethod
@@ -1319,7 +1350,32 @@ if login_section():
             with tab_basic:
                 st.caption("Inventory file allocation status report (Picked / Available / Damage)")
                 if st.button("🔍 Generate Basic Report", type="primary", use_container_width=True, key="gen_basic"):
-                    pass # Basic report is intact
+                    with st.spinner("Generating..."):
+                        inv_data   = pd.read_csv(inv_report_file, keep_default_na=False, na_values=['']) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file, keep_default_na=False, na_values=[''])
+                        report_df  = generate_inventory_details_report(inv_data)
+                        if not report_df.empty:
+                            st.success(f"✅ Total rows: {len(report_df)}")
+                            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+                            if 'Allocation Status' in report_df.columns:
+                                col_r1.metric("Total Lines", len(report_df))
+                                col_r2.metric("✅ Picked",   len(report_df[report_df['Allocation Status'] == 'Picked']))
+                                col_r3.metric("🟢 Available", len(report_df[report_df['Allocation Status'] == 'Available']))
+                                col_r4.metric("🔴 Damage",    len(report_df[report_df['Allocation Status'] == 'Damage']))
+                            st.dataframe(report_df.astype(str), use_container_width=True)
+                            out_basic = io.BytesIO()
+                            with pd.ExcelWriter(out_basic, engine='xlsxwriter') as writer:
+                                report_df.to_excel(writer, sheet_name='Inventory_Details', index=False)
+                                wb = writer.book; ws_b = writer.sheets['Inventory_Details']
+                                for fmt, col_val in [('#FFE0E0', 'Damage'), ('#E8F5E9', 'Picked'), ('#E3F2FD', 'Available')]:
+                                    f = wb.add_format({'bg_color': fmt})
+                                    if 'Allocation Status' in report_df.columns:
+                                        for ri, sv in enumerate(report_df['Allocation Status'], 1):
+                                            if sv == col_val: ws_b.set_row(ri, None, f)
+                            st.download_button("⬇️ Download Basic Report", data=out_basic.getvalue(),
+                                file_name=f"Inventory_Basic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                mime="application/vnd.ms-excel", use_container_width=True)
+                        else:
+                            st.warning("Report generate කිරීම අසාර්ථක විය.")
 
             with tab_formatted:
                 st.caption("Notepad headers → Pick Quantity → Damage columns → Destination Country → Order NO → Partial Pallet replace")
@@ -1512,6 +1568,11 @@ if login_section():
 
                         fmt_df = fmt_df[fmt_df['Pallet'].astype(str).str.strip().replace({'nan': '', 'None': ''}) != ''].reset_index(drop=True)
 
+                        # FIX FOR TypeError: Cast all text columns explicitly to object BEFORE filling blanks
+                        for txt_col in ['Vendor Name', 'Vendor Country', 'COO', 'Invoice Number', 'Grn Number']:
+                            if txt_col in fmt_df.columns:
+                                fmt_df[txt_col] = fmt_df[txt_col].astype(object)
+
                         # Blank Fills & Logic 5 (COO & Damage)
                         import re as _re
                         _gen_pat = _re.compile(r'^(.+)-P(\d+)$')
@@ -1605,7 +1666,6 @@ if login_section():
     # ==========================================================================
     # TAB 4, 5, 6, 7 (Unchanged Revert/Delete, Damage, Vendor, Admin)
     # ==========================================================================
-    # (Rest of the code remains exactly the same as previously defined)
     elif choice == "🔄 Revert/Delete Picks":
         st.title("🔄 Revert / Delete Picked Data")
         del_tab1, del_tab2, del_tab3, del_tab4 = st.tabs([
