@@ -1604,26 +1604,29 @@ if login_section():
                             pi_col  = pc.get('invoice number', 'Invoice Number')
                             pg2_col = pc.get('grn number', 'Grn Number')
 
-                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col,
-                                                        pc.get('balance qty', 'Balance Qty')]
-                                         if c in partial_df.columns]
                             pb_col  = pc.get('balance qty', 'Balance Qty')
+                            pcn_col = pc.get('country name', 'Country Name')  # ── country_name column ──
+                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col,
+                                                        pb_col, pcn_col]
+                                         if c in partial_df.columns]
                             _pdf = partial_df[_sel_cols].copy()
                             _pdf[pq_col] = pd.to_numeric(_pdf[pq_col], errors='coerce').fillna(0)
                             _pdf[pa_col] = pd.to_numeric(_pdf[pa_col], errors='coerce').fillna(0)
                             if pb_col in _pdf.columns:
                                 _pdf[pb_col] = pd.to_numeric(_pdf[pb_col], errors='coerce').fillna(0)
                             for _, _pr in _pdf.iterrows():
-                                opallet  = str(_pr.get(pp_col,  '')).strip()
-                                gpallet  = str(_pr.get(pg_col,  '')).strip()
-                                pqty     = float(_pr.get(pq_col, 0))
-                                loadid_p = str(_pr.get(pl_col,  '')).strip()
-                                aqty     = float(_pr.get(pa_col, 0))
-                                bqty     = float(_pr.get(pb_col, 0)) if pb_col in _pr.index else 0.0
-                                inv_num  = str(_pr.get(pi_col,  '')).strip()
-                                grn_num  = str(_pr.get(pg2_col, '')).strip()
+                                opallet    = str(_pr.get(pp_col,  '')).strip()
+                                gpallet    = str(_pr.get(pg_col,  '')).strip()
+                                pqty       = float(_pr.get(pq_col, 0))
+                                loadid_p   = str(_pr.get(pl_col,  '')).strip()
+                                aqty       = float(_pr.get(pa_col, 0))
+                                bqty       = float(_pr.get(pb_col, 0)) if pb_col in _pr.index else 0.0
+                                inv_num    = str(_pr.get(pi_col,  '')).strip()
+                                grn_num    = str(_pr.get(pg2_col, '')).strip()
+                                cntry_name = str(_pr.get(pcn_col, '')).strip() if pcn_col in _pr.index else ''
                                 if inv_num in ('nan', 'None'): inv_num = ''
                                 if grn_num in ('nan', 'None'): grn_num = ''
+                                if cntry_name in ('nan', 'None'): cntry_name = ''
                                 if opallet:
                                     if opallet not in partial_map: partial_map[opallet] = []
                                     partial_map[opallet].append({
@@ -1631,6 +1634,7 @@ if login_section():
                                         'load_id': loadid_p, 'mpd_actual': aqty,
                                         'balance_qty': bqty,
                                         'invoice_number': inv_num, 'grn_number': grn_num,
+                                        'country_name': cntry_name,  # ── country_name added ──
                                     })
                                 if gpallet and opallet:
                                     gen_to_orig[gpallet] = opallet
@@ -1743,9 +1747,12 @@ if login_section():
                                     row = build_row(inv_row)
                                     if qty_matches:
                                         # Inventory Actual Qty == partial_qty → picked row
+                                        # ── Use country_name and load_id from master_partial_data ──
+                                        _dest_country = matching_partial.get('country_name', '') or pick_country_map.get(real_orig, '')
+                                        _order_no     = matching_partial['load_id'] or pick_loadid_map.get(real_orig, '')
                                         row['Pick Quantity']       = matching_partial['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(real_orig, '')
-                                        row['Order NO']            = matching_partial['load_id']
+                                        row['Destination Country'] = _dest_country
+                                        row['Order NO']            = _order_no
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                     else:
@@ -1788,9 +1795,12 @@ if login_section():
                                         row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     else:
                                         # fully picked — last partial_qty is the pick qty
+                                        # ── Use country_name and load_id from master_partial_data ──
+                                        _dest_country = last_p.get('country_name', '') or pick_country_map.get(orig_pallet, '')
+                                        _order_no     = last_p['load_id'] or pick_loadid_map.get(orig_pallet, '')
                                         row['Pick Quantity']       = last_p['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                        row['Order NO']            = last_p['load_id']
+                                        row['Destination Country'] = _dest_country
+                                        row['Order NO']            = _order_no
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                     row['Vendor Name']    = vendor_name_row
@@ -1806,8 +1816,11 @@ if login_section():
                                     for par_entry in partials:
                                         row = build_row(inv_row, override_pallet=par_entry['gen_pallet'], override_actual_qty=par_entry['partial_qty'])
                                         row['Pick Quantity'] = par_entry['partial_qty']
-                                        row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                        row['Order NO'] = par_entry['load_id']
+                                        # ── Use country_name and load_id from master_partial_data per entry ──
+                                        _dest_country = par_entry.get('country_name', '') or pick_country_map.get(orig_pallet, '')
+                                        _order_no     = par_entry['load_id'] or pick_loadid_map.get(orig_pallet, '')
+                                        row['Destination Country'] = _dest_country
+                                        row['Order NO'] = _order_no
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                         row['ATS'] = ''
                                         row['Vendor Name']    = vendor_name_row
