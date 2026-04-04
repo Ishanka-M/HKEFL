@@ -305,38 +305,6 @@ class DBManager:
             return 0
 
     @classmethod
-    def delete_match_keys(cls, table_name: str, keys: list, key_cols: list) -> int:
-        if not keys:
-            return 0
-        key = cls._table_key(table_name)
-        try:
-            df = cls.read_table(table_name, force=True)
-            if df.empty:
-                return 0
-            initial = len(df)
-            def _make_key(row):
-                parts = []
-                for c in key_cols:
-                    val = str(row.get(c, '')).strip()
-                    if c == 'Actual Qty':
-                        try:
-                            f = float(val)
-                            val = str(f)
-                        except:
-                            pass
-                    parts.append(val)
-                return "_".join(parts)
-            df_keys = df.apply(_make_key, axis=1)
-            filtered = df[~df_keys.isin(set(keys))].reset_index(drop=True)
-            deleted = initial - len(filtered)
-            if deleted > 0:
-                cls._overwrite_table(table_name, filtered)
-            return deleted
-        except Exception as e:
-            st.error(f"DB composite delete error: {e}")
-            return 0
-
-    @classmethod
     def _overwrite_table(cls, table_name: str, df: pd.DataFrame):
         key = cls._table_key(table_name)
         try:
@@ -1568,8 +1536,9 @@ if login_section():
 
                         fmt_df = fmt_df[fmt_df['Pallet'].astype(str).str.strip().replace({'nan': '', 'None': ''}) != ''].reset_index(drop=True)
 
-                        # FIX FOR TypeError: Cast all text columns explicitly to object BEFORE filling blanks
-                        for txt_col in ['Vendor Name', 'Vendor Country', 'COO', 'Invoice Number', 'Grn Number']:
+                        # FIX FOR TypeError: Cast all text columns and dynamic damage remark columns explicitly to object BEFORE filling blanks
+                        cols_to_cast = ['Vendor Name', 'Vendor Country', 'COO', 'Invoice Number', 'Grn Number'] + damage_remarks
+                        for txt_col in cols_to_cast:
                             if txt_col in fmt_df.columns:
                                 fmt_df[txt_col] = fmt_df[txt_col].astype(object)
 
