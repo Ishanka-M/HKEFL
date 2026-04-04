@@ -1854,23 +1854,33 @@ if login_section():
                             m = _gen_pat.match(str(p).strip())
                             return m.group(1) if m else str(p).strip()
 
-                        _rpt_pal = fmt_df['Pallet'].astype(str).str.strip().apply(_base_pallet)
+                        # ── Report qty: gen_pallet rows → map back to real_orig for comparison ──
+                        def _resolve_pallet(p):
+                            """gen_to_orig හි ඉන්නවා නම් real_orig return, නැත්නම් as-is."""
+                            ps = str(p).strip()
+                            return gen_to_orig.get(ps, _base_pallet(ps))
+
+                        _rpt_pal = fmt_df['Pallet'].astype(str).str.strip().apply(_resolve_pallet)
                         _rpt_qty = pd.to_numeric(fmt_df['Actual Qty'], errors='coerce').fillna(0)
                         rpt_pallet_qty = _rpt_qty.groupby(_rpt_pal).sum().to_dict()
 
-                        # ── Inventory file එකේ ඇති base pallets set ──
+                        # ── Inventory file එකේ ඇති pallets set (raw, no base_pallet transform) ──
                         inv_pallets_set = set(
-                            inv_data[_inv_pal_col].astype(str).str.strip().apply(_base_pallet)
+                            inv_data[_inv_pal_col].astype(str).str.strip()
                         )
+                        # gen_to_orig values (real_orig pallets) ත් include කරනවා
+                        inv_pallets_canonical = set(gen_to_orig.get(p, p) for p in inv_pallets_set)
 
                         mismatch_pallets = []
                         try:
-                            _inv_pals      = inv_data[_inv_pal_col].astype(str).str.strip().apply(_base_pallet)
+                            # Inventory qty: gen_pallets → real_orig ලෙස group කරනවා
+                            _inv_pals_raw  = inv_data[_inv_pal_col].astype(str).str.strip()
+                            _inv_pals      = _inv_pals_raw.apply(lambda p: gen_to_orig.get(p, _base_pallet(p)))
                             _inv_qtys      = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
                             orig_total_inv = _inv_qtys.groupby(_inv_pals).sum().to_dict()
                             for pal in set(orig_total_inv) | set(rpt_pallet_qty):
-                                # ── FIX: Inventory file එකේ නැති pallets skip ──
-                                if pal not in inv_pallets_set:
+                                # Inventory file (or its real_orig) හි නැති pallets skip
+                                if pal not in inv_pallets_canonical and pal not in orig_total_inv:
                                     continue
                                 inv_q = orig_total_inv.get(pal, 0.0)
                                 rpt_q = rpt_pallet_qty.get(pal, 0.0)
