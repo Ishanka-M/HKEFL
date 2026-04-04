@@ -1604,17 +1604,22 @@ if login_section():
                             pi_col  = pc.get('invoice number', 'Invoice Number')
                             pg2_col = pc.get('grn number', 'Grn Number')
 
-                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col]
+                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col,
+                                                        pc.get('balance qty', 'Balance Qty')]
                                          if c in partial_df.columns]
+                            pb_col  = pc.get('balance qty', 'Balance Qty')
                             _pdf = partial_df[_sel_cols].copy()
                             _pdf[pq_col] = pd.to_numeric(_pdf[pq_col], errors='coerce').fillna(0)
                             _pdf[pa_col] = pd.to_numeric(_pdf[pa_col], errors='coerce').fillna(0)
+                            if pb_col in _pdf.columns:
+                                _pdf[pb_col] = pd.to_numeric(_pdf[pb_col], errors='coerce').fillna(0)
                             for _, _pr in _pdf.iterrows():
                                 opallet  = str(_pr.get(pp_col,  '')).strip()
                                 gpallet  = str(_pr.get(pg_col,  '')).strip()
                                 pqty     = float(_pr.get(pq_col, 0))
                                 loadid_p = str(_pr.get(pl_col,  '')).strip()
                                 aqty     = float(_pr.get(pa_col, 0))
+                                bqty     = float(_pr.get(pb_col, 0)) if pb_col in _pr.index else 0.0
                                 inv_num  = str(_pr.get(pi_col,  '')).strip()
                                 grn_num  = str(_pr.get(pg2_col, '')).strip()
                                 if inv_num in ('nan', 'None'): inv_num = ''
@@ -1624,6 +1629,7 @@ if login_section():
                                     partial_map[opallet].append({
                                         'gen_pallet': gpallet, 'partial_qty': pqty,
                                         'load_id': loadid_p, 'mpd_actual': aqty,
+                                        'balance_qty': bqty,
                                         'invoice_number': inv_num, 'grn_number': grn_num,
                                     })
                                 if gpallet and opallet:
@@ -1759,13 +1765,18 @@ if login_section():
 
                             partials = partial_map.get(orig_pallet, [])
                             if partials:
-                                last_p                = partials[-1]
-                                total_all_partial_qty = sum(p['partial_qty'] for p in partials)
-                                last_balance          = last_p['mpd_actual'] - total_all_partial_qty
+                                last_p       = partials[-1]
+                                # ── Use saved balance_qty from DB (last entry) ──
+                                last_balance = float(last_p.get('balance_qty', 0))
+                                if last_balance <= 0:
+                                    # Fallback: calculate from mpd_actual - all partial qtys
+                                    orig_actual_from_partial = max(p['mpd_actual'] for p in partials)
+                                    total_all_partial_qty    = sum(p['partial_qty'] for p in partials)
+                                    last_balance             = orig_actual_from_partial - total_all_partial_qty
 
                                 # ── Case A: inv Actual Qty == last entry's balance_qty ──
-                                qty_matches_balance = abs(inv_actual_qty - last_balance) <= 0.01
-                                qty_matches_full    = last_balance <= 0.01 and abs(inv_actual_qty - last_p['mpd_actual']) <= 0.01
+                                qty_matches_balance = last_balance > 0.01 and abs(inv_actual_qty - last_balance) <= 0.01
+                                qty_matches_full    = last_balance <= 0.01 and abs(inv_actual_qty - last_p['partial_qty']) <= 0.01
 
                                 if qty_matches_balance or qty_matches_full:
                                     # ── Single row — inv qty matches last balance or full pick ──
