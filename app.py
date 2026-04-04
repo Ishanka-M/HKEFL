@@ -1702,258 +1702,203 @@ if login_section():
                             return row
 
                         # ══════════════════════════════════════════════════════
-                        # LOGIC 1: master_pick_data → pallet + actual_qty match
+                        # PRE-BUILD LOOKUP MAPS for Logic 1, 2, 3
+                        # Inventory Pallet + Actual Qty only — DB side match
                         # ══════════════════════════════════════════════════════
-                        logic1_matched = set()   # pallets matched via logic 1
-                        logic2_matched = set()   # gen_pallet_ids matched via logic 2
-                        logic3_matched = set()   # pallets matched via logic 3
 
-                        # Build lookup: (pallet, actual_qty) → pick record list
-                        pick_exact_map = {}   # key: (pallet_str, qty_int) → list of pick records
+                        # Logic 1 lookup: DB master_pick_data
+                        # key = (inv_pallet, inv_actual_qty) → list of matching pick records
+                        pick_exact_map = {}
                         if not mpd_df.empty and 'Pallet' in mpd_df.columns and 'Actual Qty' in mpd_df.columns:
                             for _, pr in mpd_df.iterrows():
                                 pk = str(pr.get('Pallet', '')).strip()
                                 aq = float(pd.to_numeric(pr.get('Actual Qty', 0), errors='coerce') or 0)
-                                key = (pk, aq)
-                                pick_exact_map.setdefault(key, []).append(pr.to_dict())
+                                pick_exact_map.setdefault((pk, aq), []).append(pr.to_dict())
 
-                        # Build lookup for logic 2: (gen_pallet_id, partial_qty) → partial record
-                        partial_gen_exact_map = {}  # key: (gen_pallet_id, partial_qty)
+                        # Logic 2 lookup: DB master_partial_data — gen_pallet_id + partial_qty
+                        # key = (gen_pallet_id, partial_qty) — inventory Pallet == gen_pallet_id ද check
                         partial_df_raw = _rpt_sheets["master_partial_data"]
+                        partial_gen_exact_map = {}   # (gen_pallet_id, partial_qty) → partial record
+                        partial_pallet_to_gen = {}   # orig_pallet → list of gen records (for logic 3)
                         if not partial_df_raw.empty:
                             _pc = {str(c).strip().lower(): str(c).strip() for c in partial_df_raw.columns}
-                            _gp_col = _pc.get('gen pallet id', 'Gen Pallet ID')
-                            _pq_col = _pc.get('partial qty', 'Partial Qty')
+                            _gp_col  = _pc.get('gen pallet id', 'Gen Pallet ID')
+                            _pq_col  = _pc.get('partial qty',   'Partial Qty')
+                            _pp_col  = _pc.get('pallet',        'Pallet')
+                            _pl_col  = _pc.get('load id',       'Load ID')
+                            _cn_col  = _pc.get('country name',  'Country Name')
                             for _, pr in partial_df_raw.iterrows():
-                                gp = str(pr.get(_gp_col, '')).strip()
-                                pq = float(pd.to_numeric(pr.get(_pq_col, 0), errors='coerce') or 0)
+                                gp  = str(pr.get(_gp_col, '')).strip()
+                                pp  = str(pr.get(_pp_col, '')).strip()
+                                pq  = float(pd.to_numeric(pr.get(_pq_col, 0), errors='coerce') or 0)
+                                rec = pr.to_dict()
                                 if gp:
-                                    partial_gen_exact_map[(gp, pq)] = pr.to_dict()
+                                    partial_gen_exact_map[(gp, pq)] = rec
+                                if pp:
+                                    partial_pallet_to_gen.setdefault(pp, []).append(rec)
 
-                        fmt_rows = []
-                        unmatch_rows = []  # Logic 6: unmatched rows
+                        fmt_rows        = []
+                        unmatch_rows    = []
+                        already_processed = set()   # ← Pallet repeat guard — same pallet ආවොත් skip
 
                         for _, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
-                            if pd.isna(inv_actual_qty): inv_actual_qty = 0
+                            if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
+
+                            # ── Same pallet repeat row skip ──
+                            proc_key = (orig_pallet, float(inv_actual_qty))
+                            if proc_key in already_processed:
+                                continue
+                            already_processed.add(proc_key)
+
                             is_damaged   = orig_pallet in damage_pallets
                             total_picked = pick_qty_map.get(orig_pallet, 0)
 
-                            # ── UPDATED: Resolve Vendor Name ──
+                            # ── Resolve Vendor Name ──
                             vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
-                            if not vendor_name_row:
+                            if not vendor_name_row or vendor_name_row in ('nan', 'None'):
                                 vendor_name_row = partial_vendor_map_fmt.get(orig_pallet, '')
                             vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
 
-                            # ── UPDATED: Resolve Invoice Number ──
+                            # ── Resolve Invoice Number ──
                             invoice_number_row = str(inv_row.get('Invoice Number', '')).strip() if 'Invoice Number' in inv_row.index else ''
                             if not invoice_number_row or invoice_number_row in ('nan', 'None'):
                                 invoice_number_row = pallet_invoice_map_fmt.get(orig_pallet, '')
 
-                            # ── UPDATED: Resolve GRN Number ──
+                            # ── Resolve GRN Number ──
                             grn_number_row = str(inv_row.get('Grn Number', '')).strip() if 'Grn Number' in inv_row.index else ''
                             if not grn_number_row or grn_number_row in ('nan', 'None'):
                                 grn_number_row = pallet_grn_map_fmt.get(orig_pallet, '')
 
-                            # ══════════════════════════════════════════════════
-                            # LOGIC 1: Pallet + Actual Qty → master_pick_data
-                            # (ඒ කියන්නේ already pick වෙලා)
-                            # ══════════════════════════════════════════════════
-                            l1_key = (orig_pallet, float(inv_actual_qty))
-                            l1_pick_records = pick_exact_map.get(l1_key, [])
-                            if l1_pick_records and orig_pallet not in logic1_matched:
-                                logic1_matched.add(orig_pallet)
-                                for pr in l1_pick_records:
-                                    row = build_row(inv_row)
-                                    row['Pick Quantity']       = inv_actual_qty
-                                    row['Destination Country'] = str(pr.get('Country Name', '') or pr.get('country_name', ''))
-                                    row['Order NO']            = str(pr.get('Generated Load ID', '') or pr.get('generated_load_id', ''))
-                                    for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                    row['ATS']          = ''
-                                    row['Vendor Name']  = vendor_name_row
-                                    row['Vendor Country'] = vendor_country_row
-                                    row['Invoice Number'] = invoice_number_row
-                                    row['Grn Number']   = grn_number_row
-                                    row['COO']          = vendor_country_map.get(vendor_name_row.lower(), '')
-                                    row = fill_row_from_partial(row, pallet_key=orig_pallet)
-                                    fmt_rows.append(row)
-                                continue
-
-                            # ══════════════════════════════════════════════════
-                            # LOGIC 2: Pallet + Actual Qty → master_partial_data
-                            # gen_pallet_id + partial_qty match
-                            # (Logic 1 match නොවූ ඒවා පමණයි)
-                            # ══════════════════════════════════════════════════
-                            if orig_pallet not in logic1_matched:
-                                l2_key = (orig_pallet, float(inv_actual_qty))
-                                l2_partial_rec = partial_gen_exact_map.get(l2_key)
-                                if l2_partial_rec and orig_pallet not in logic2_matched:
-                                    logic2_matched.add(orig_pallet)
-                                    _pc2 = {str(c).strip().lower(): str(c).strip() for c in partial_df_raw.columns}
-                                    _pl2_col = _pc2.get('load id', 'Load ID')
-                                    _cn2_col = _pc2.get('country name', 'Country Name')
-                                    _pq2_col = _pc2.get('partial qty', 'Partial Qty')
-                                    row = build_row(inv_row)
-                                    row['Pick Quantity']       = float(l2_partial_rec.get(_pq2_col, inv_actual_qty))
-                                    row['Destination Country'] = str(l2_partial_rec.get(_cn2_col, ''))
-                                    row['Order NO']            = str(l2_partial_rec.get(_pl2_col, ''))
-                                    for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                    row['ATS']          = ''
-                                    row['Vendor Name']  = vendor_name_row
-                                    row['Vendor Country'] = vendor_country_row
-                                    row['Invoice Number'] = invoice_number_row
-                                    row['Grn Number']   = grn_number_row
-                                    row['COO']          = vendor_country_map.get(vendor_name_row.lower(), '')
-                                    row = fill_row_from_partial(row, pallet_key=orig_pallet)
-                                    fmt_rows.append(row)
-                                    continue
-
-                            # ══════════════════════════════════════════════════
-                            # LOGIC 3: Pallet → master_partial_data pallet match
-                            # (Logic 1 හා Logic 2 match නොවූ ඒවා පමණයි)
-                            # gen_pallet_id ගානට lines split කරන්නා
-                            # ══════════════════════════════════════════════════
-                            if orig_pallet not in logic1_matched and orig_pallet not in logic2_matched:
-                                if orig_pallet in gen_to_orig:
-                                    real_orig = gen_to_orig[orig_pallet]
-                                    if not vendor_name_row:
-                                        vendor_name_row = partial_vendor_map_fmt.get(real_orig, '')
-                                        vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
-                                    if not invoice_number_row or invoice_number_row in ('nan', 'None'):
-                                        invoice_number_row = inv_invoice_map_fmt.get(orig_pallet, '') or pallet_invoice_map_fmt.get(real_orig, '')
-                                    if not grn_number_row or grn_number_row in ('nan', 'None'):
-                                        grn_number_row = inv_grn_map_fmt.get(orig_pallet, '') or pallet_grn_map_fmt.get(real_orig, '')
-
-                                    matching_partial = next((p for p in partial_map.get(real_orig, []) if p['gen_pallet'] == orig_pallet), None)
-                                    if matching_partial:
-                                        logic3_matched.add(orig_pallet)
-                                        expected_qty = matching_partial['partial_qty']
-                                        qty_matches  = abs(inv_actual_qty - expected_qty) <= 0.01
-                                        row = build_row(inv_row)
-                                        if qty_matches:
-                                            row['Pick Quantity']       = matching_partial['partial_qty']
-                                            row['Destination Country'] = pick_country_map.get(real_orig, '')
-                                            row['Order NO']            = matching_partial['load_id']
-                                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                            row['ATS'] = ''
-                                        else:
-                                            row['Pick Quantity']       = ''
-                                            row['Destination Country'] = ''
-                                            row['Order NO']            = ''
-                                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                            row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
-                                        row['Vendor Name']    = vendor_name_row
-                                        row['Vendor Country'] = vendor_country_row
-                                        row['Invoice Number'] = invoice_number_row
-                                        row['Grn Number']     = grn_number_row
-                                        row['COO']            = vendor_country_map.get(vendor_name_row.lower(), '')
-                                        row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet, partial_entry=matching_partial)
-                                        fmt_rows.append(row)
-                                    continue
-
-                                partials = partial_map.get(orig_pallet, [])
-                                if partials:
-                                    logic3_matched.add(orig_pallet)
-                                    last_p       = partials[-1]
-                                    last_balance = float(last_p.get('balance_qty', 0))
-                                    if last_balance <= 0:
-                                        orig_actual_from_partial = max(p['mpd_actual'] for p in partials)
-                                        total_all_partial_qty    = sum(p['partial_qty'] for p in partials)
-                                        last_balance             = orig_actual_from_partial - total_all_partial_qty
-
-                                    qty_matches_balance = last_balance > 0.01 and abs(inv_actual_qty - last_balance) <= 0.01
-                                    qty_matches_full    = last_balance <= 0.01 and abs(inv_actual_qty - last_p['partial_qty']) <= 0.01
-
-                                    if qty_matches_balance or qty_matches_full:
-                                        row = build_row(inv_row)
-                                        if qty_matches_balance and last_balance > 0.01:
-                                            # balance remaining — ATS
-                                            row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
-                                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                            row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
-                                        else:
-                                            row['Pick Quantity']       = last_p['partial_qty']
-                                            row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                            row['Order NO']            = last_p['load_id']
-                                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                            row['ATS'] = ''
-                                        row['Vendor Name']    = vendor_name_row
-                                        row['Vendor Country'] = vendor_country_row
-                                        row['Invoice Number'] = invoice_number_row
-                                        row['Grn Number']     = grn_number_row
-                                        row['COO']            = vendor_country_map.get(vendor_name_row.lower(), '')
-                                        row = fill_row_from_partial(row, pallet_key=orig_pallet, partial_entry=last_p)
-                                        fmt_rows.append(row)
-                                    else:
-                                        # Multi-partial expansion
-                                        mpd_actual        = partials[0]['mpd_actual'] if partials[0]['mpd_actual'] > 0 else inv_actual_qty
-                                        total_partial_qty = sum(p['partial_qty'] for p in partials)
-                                        for par_entry in partials:
-                                            row = build_row(inv_row, override_pallet=par_entry['gen_pallet'], override_actual_qty=par_entry['partial_qty'])
-                                            row['Pick Quantity']       = par_entry['partial_qty']
-                                            row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                            row['Order NO']            = par_entry['load_id']
-                                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                            row['ATS']          = ''
-                                            row['Vendor Name']  = vendor_name_row
-                                            row['Vendor Country'] = vendor_country_row
-                                            gp = par_entry['gen_pallet']
-                                            row['Invoice Number'] = par_entry.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, '') or invoice_number_row
-                                            row['Grn Number']     = par_entry.get('grn_number', '')     or inv_grn_map_fmt.get(gp, '')    or grn_number_row
-                                            row['COO']            = vendor_country_map.get(vendor_name_row.lower(), '')
-                                            row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp, partial_entry=par_entry)
-                                            fmt_rows.append(row)
-                                        # Balance remaining → ATS
-                                        balance_qty = max(0.0, mpd_actual - total_partial_qty)
-                                        if balance_qty > 0 and not is_damaged:
-                                            bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=balance_qty)
-                                            bal_row['Pick Quantity'] = bal_row['Destination Country'] = bal_row['Order NO'] = ''
-                                            for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                            bal_row['ATS']          = int(balance_qty)
-                                            bal_row['Vendor Name']  = vendor_name_row
-                                            bal_row['Vendor Country'] = vendor_country_row
-                                            bal_row['Invoice Number'] = invoice_number_row
-                                            bal_row['Grn Number']   = grn_number_row
-                                            bal_row['COO']          = vendor_country_map.get(vendor_name_row.lower(), '')
-                                            bal_row = fill_row_from_partial(bal_row, pallet_key=orig_pallet)
-                                            fmt_rows.append(bal_row)
-                                    continue
-
-                            # ══════════════════════════════════════════════════
-                            # LOGIC 4: Logic 1/2/3 match නොවූ ටික → ATS
-                            # (pick වෙලා නැහැ)
-                            # ══════════════════════════════════════════════════
-                            if orig_pallet not in logic1_matched and orig_pallet not in logic2_matched and orig_pallet not in logic3_matched:
-                                row = build_row(inv_row)
-                                row['Pick Quantity']       = pick_qty_map.get(orig_pallet, '')
-                                row['Destination Country'] = pick_country_map.get(orig_pallet, '')
-                                row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
-                                for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                ats_qty   = inv_actual_qty - total_picked
-                                row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
+                            def _common_fields(row):
+                                """Common fields helper — repeat avoid"""
                                 row['Vendor Name']    = vendor_name_row
                                 row['Vendor Country'] = vendor_country_row
                                 row['Invoice Number'] = invoice_number_row
                                 row['Grn Number']     = grn_number_row
                                 row['COO']            = vendor_country_map.get(vendor_name_row.lower(), '')
+                                for rmk in damage_remarks:
+                                    row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                return row
+
+                            # ══════════════════════════════════════════════════
+                            # LOGIC 1:
+                            # Inventory Pallet == master_pick_data.pallet  AND
+                            # Inventory Actual Qty == master_pick_data.actual_qty
+                            # → Already picked → Pick Quantity = Actual Qty
+                            # ══════════════════════════════════════════════════
+                            l1_records = pick_exact_map.get((orig_pallet, float(inv_actual_qty)), [])
+                            if l1_records:
+                                # Take only the first matching pick record (one line per pallet)
+                                pr = l1_records[0]
+                                row = build_row(inv_row)
+                                row['Pick Quantity']       = inv_actual_qty
+                                row['Destination Country'] = str(pr.get('Country Name', '') or pr.get('country_name', ''))
+                                row['Order NO']            = str(pr.get('Generated Load ID', '') or pr.get('generated_load_id', ''))
+                                row['ATS']                 = ''
+                                row = _common_fields(row)
                                 row = fill_row_from_partial(row, pallet_key=orig_pallet)
                                 fmt_rows.append(row)
-                                # Logic 6: unmatched record save
-                                unmatch_rows.append({
-                                    'Pallet':          orig_pallet,
-                                    'Actual Qty':      inv_actual_qty,
-                                    'Vendor Name':     vendor_name_row,
-                                    'Invoice Number':  invoice_number_row,
-                                    'Grn Number':      grn_number_row,
-                                    'Lot Number':      str(inv_row.get('Lot Number', '')),
-                                    'Color':           str(inv_row.get('Color', '')),
-                                    'Size':            str(inv_row.get('Size', '')),
-                                    'Style':           str(inv_row.get('Style', '')),
-                                    'Inventory Type':  str(inv_row.get('Inventory Type', '')),
-                                    'COO':             vendor_country_map.get(vendor_name_row.lower(), ''),
-                                    'Unmatched Reason': 'No match in Pick/Partial data',
-                                })
+                                continue   # Logic 1 matched — next inventory row
+
+                            # ══════════════════════════════════════════════════
+                            # LOGIC 2:
+                            # Inventory Pallet == master_partial_data.gen_pallet_id  AND
+                            # Inventory Actual Qty == master_partial_data.partial_qty
+                            # → Already picked → Pick Quantity = Actual Qty
+                            # (Logic 1 match නොවූ ඒවා පමණයි)
+                            # ══════════════════════════════════════════════════
+                            l2_rec = partial_gen_exact_map.get((orig_pallet, float(inv_actual_qty)))
+                            if l2_rec:
+                                row = build_row(inv_row)
+                                row['Pick Quantity']       = inv_actual_qty
+                                row['Destination Country'] = str(l2_rec.get(_cn_col, '') or l2_rec.get('country_name', ''))
+                                row['Order NO']            = str(l2_rec.get(_pl_col, '') or l2_rec.get('load_id', ''))
+                                row['ATS']                 = ''
+                                row = _common_fields(row)
+                                row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                                fmt_rows.append(row)
+                                continue   # Logic 2 matched — next inventory row
+
+                            # ══════════════════════════════════════════════════
+                            # LOGIC 3:
+                            # Inventory Pallet == master_partial_data.pallet
+                            # (Logic 1 සහ Logic 2 match නොවූ ඒවා පමණයි)
+                            # ── gen_pallet_id ගානට lines expand ──
+                            # If inv Actual Qty >= sum(partial_qty): no balance row
+                            # If inv Actual Qty < sum(partial_qty):  balance → ATS row
+                            # ══════════════════════════════════════════════════
+                            gen_records = partial_pallet_to_gen.get(orig_pallet, [])
+                            if gen_records:
+                                total_partial_sum = sum(
+                                    float(pd.to_numeric(r.get(_pq_col, 0), errors='coerce') or 0)
+                                    for r in gen_records
+                                )
+                                for gen_rec in gen_records:
+                                    gp_id   = str(gen_rec.get(_gp_col, '')).strip()
+                                    pq_val  = float(pd.to_numeric(gen_rec.get(_pq_col, 0), errors='coerce') or 0)
+                                    cnt_val = str(gen_rec.get(_cn_col, '') or gen_rec.get('country_name', ''))
+                                    lid_val = str(gen_rec.get(_pl_col, '') or gen_rec.get('load_id', ''))
+                                    inv_num = str(gen_rec.get('Invoice Number', '') or gen_rec.get('invoice_number', '') or invoice_number_row)
+                                    grn_num = str(gen_rec.get('Grn Number', '')    or gen_rec.get('grn_number', '')    or grn_number_row)
+                                    if inv_num in ('nan', 'None', ''): inv_num = invoice_number_row
+                                    if grn_num in ('nan', 'None', ''): grn_num = grn_number_row
+
+                                    row = build_row(inv_row, override_pallet=gp_id, override_actual_qty=pq_val)
+                                    row['Pick Quantity']       = pq_val
+                                    row['Destination Country'] = cnt_val
+                                    row['Order NO']            = lid_val
+                                    row['ATS']                 = ''
+                                    row['Invoice Number']      = inv_num
+                                    row['Grn Number']          = grn_num
+                                    row = _common_fields(row)
+                                    row['Invoice Number']      = inv_num   # re-apply after _common_fields
+                                    row['Grn Number']          = grn_num
+                                    row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp_id)
+                                    fmt_rows.append(row)
+
+                                # Balance check: inv Actual Qty < sum(partial_qty) → ATS balance row
+                                balance_qty = round(float(inv_actual_qty) - total_partial_sum, 4)
+                                if balance_qty > 0.01 and not is_damaged:
+                                    bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=balance_qty)
+                                    bal_row['Pick Quantity']       = ''
+                                    bal_row['Destination Country'] = ''
+                                    bal_row['Order NO']            = ''
+                                    bal_row['ATS']                 = int(balance_qty)
+                                    bal_row = _common_fields(bal_row)
+                                    bal_row = fill_row_from_partial(bal_row, pallet_key=orig_pallet)
+                                    fmt_rows.append(bal_row)
+                                continue   # Logic 3 matched — next inventory row
+
+                            # ══════════════════════════════════════════════════
+                            # LOGIC 4: Logic 1/2/3 match නොවූ ටික → ATS
+                            # (pick වෙලා නැහැ)
+                            # ══════════════════════════════════════════════════
+                            row = build_row(inv_row)
+                            row['Pick Quantity']       = ''
+                            row['Destination Country'] = ''
+                            row['Order NO']            = ''
+                            ats_qty = float(inv_actual_qty) - total_picked
+                            row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
+                            row = _common_fields(row)
+                            row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                            fmt_rows.append(row)
+                            # Logic 6: unmatched record — save for Unmatch_Report sheet
+                            unmatch_rows.append({
+                                'Pallet':           orig_pallet,
+                                'Actual Qty':       inv_actual_qty,
+                                'Vendor Name':      vendor_name_row,
+                                'Invoice Number':   invoice_number_row,
+                                'Grn Number':       grn_number_row,
+                                'Lot Number':       str(inv_row.get('Lot Number', '')),
+                                'Color':            str(inv_row.get('Color', '')),
+                                'Size':             str(inv_row.get('Size', '')),
+                                'Style':            str(inv_row.get('Style', '')),
+                                'Inventory Type':   str(inv_row.get('Inventory Type', '')),
+                                'COO':              vendor_country_map.get(vendor_name_row.lower(), ''),
+                                'Unmatched Reason': 'No match in Pick/Partial data',
+                            })
 
                         # ── Logic 5 (COO): COO column ensure vendor_maintain country ──
                         # (COO is already set above in each branch; ensure final fill for any missed rows)
