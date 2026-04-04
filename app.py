@@ -654,45 +654,70 @@ def generate_formatted_pick_report(inv_data, sh):
     # --- Build Master_Pick_Data lookup: pallet → {actual_qty, country_name, generated_load_id} ---
     mpd_pallet_map = {}  # pallet_str → {'actual_qty': float, 'country': str, 'order_no': str}
     if not mpd_df.empty:
-        mpd_c = {str(c).strip().lower(): str(c).strip() for c in mpd_df.columns}
-        p_col = mpd_c.get('pallet', 'Pallet')
-        aq_col = mpd_c.get('actual qty', 'Actual Qty')
-        cn_col = mpd_c.get('country name', 'Country Name')
-        gl_col = mpd_c.get('generated load id', 'Generated Load ID')
+        def _nc(c):
+            return str(c).strip().lower().replace('_', ' ')
+        mpd_c = {_nc(c): str(c).strip() for c in mpd_df.columns}
+
+        def _gc(aliases, default):
+            for a in aliases:
+                f = mpd_c.get(a)
+                if f:
+                    return f
+            return default
+
+        p_col  = _gc(['pallet'], 'pallet')
+        aq_col = _gc(['actual qty'], 'actual_qty')
+        cn_col = _gc(['country name'], 'country_name')
+        gl_col = _gc(['generated load id'], 'generated_load_id')
+        vn_col_mpd = _gc(['vendor name'], 'vendor_name')
 
         for _, pr in mpd_df.iterrows():
             pkey = str(pr.get(p_col, '')).strip()
             if not pkey:
                 continue
-            aq = pd.to_numeric(pr.get(aq_col, 0), errors='coerce') or 0
+            aq = pd.to_numeric(pr.get(aq_col, 0), errors='coerce')
+            aq = 0 if pd.isna(aq) else float(aq)
             existing = mpd_pallet_map.get(pkey)
             if existing:
                 existing['actual_qty'] += aq
-                # Keep first country/order_no
+                # Keep first country/order_no/vendor
             else:
                 mpd_pallet_map[pkey] = {
                     'actual_qty': aq,
                     'country': str(pr.get(cn_col, '')),
                     'order_no': str(pr.get(gl_col, '')),
+                    'vendor_name': str(pr.get(vn_col_mpd, '')),
                 }
 
     # --- Build Master_Partial_Data lookup: pallet → list of partial entries ---
     mpart_map = {}  # orig_pallet → list of {gen_pallet_id, partial_qty, country, order_no, vendor_name, invoice_number, grn_number}
     if not mpart_df.empty:
-        mpc = {str(c).strip().lower(): str(c).strip() for c in mpart_df.columns}
-        pp_col = mpc.get('pallet', 'Pallet')
-        pg_col = mpc.get('gen pallet id', 'Gen Pallet ID')
-        pq_col = mpc.get('partial qty', 'Partial Qty')
-        pl_col = mpc.get('load id', 'Load ID')
-        pcn_col = mpc.get('country name', 'Country Name')
-        pvn_col = mpc.get('vendor name', 'Vendor Name')
-        pin_col = mpc.get('invoice number', 'Invoice Number')
-        pgn_col = mpc.get('grn number', 'Grn Number')
+        # Build column map: normalize both spaces and underscores to spaces (lowercase)
+        def _normalize_col(c):
+            return str(c).strip().lower().replace('_', ' ')
+        mpc = {_normalize_col(c): str(c).strip() for c in mpart_df.columns}
+
+        def _get_col(aliases, default):
+            for a in aliases:
+                found = mpc.get(a)
+                if found:
+                    return found
+            return default
+
+        pp_col  = _get_col(['pallet'], 'pallet')
+        pg_col  = _get_col(['gen pallet id'], 'gen_pallet_id')
+        pq_col  = _get_col(['partial qty'], 'partial_qty')
+        pl_col  = _get_col(['load id'], 'load_id')
+        pcn_col = _get_col(['country name'], 'country_name')
+        pvn_col = _get_col(['vendor name'], 'vendor_name')
+        pin_col = _get_col(['invoice number'], 'invoice_number')
+        pgn_col = _get_col(['grn number'], 'grn_number')
 
         for _, par in mpart_df.iterrows():
             opallet = str(par.get(pp_col, '')).strip()
             gpallet = str(par.get(pg_col, '')).strip()
-            pqty = pd.to_numeric(par.get(pq_col, 0), errors='coerce') or 0
+            pqty = pd.to_numeric(par.get(pq_col, 0), errors='coerce')
+            pqty = 0 if pd.isna(pqty) else float(pqty)
             if opallet:
                 if opallet not in mpart_map:
                     mpart_map[opallet] = []
@@ -723,21 +748,53 @@ def generate_formatted_pick_report(inv_data, sh):
                 dmg_pallet_remark_qty[key] = dmg_pallet_remark_qty.get(key, 0) + dqty
 
     # --- Build Vendor_Maintain COO lookup: vendor_name → country ---
-    vendor_coo_map = {}  # vendor_name (lower) → country
+    vendor_coo_map = {}  # vendor_name normalized → country
     if not vendor_df.empty:
-        vc = {str(c).strip().lower(): str(c).strip() for c in vendor_df.columns}
-        vn_col = vc.get('vendor name', 'Vendor Name')
-        vc_col = vc.get('country', 'Country')
-        if vn_col in vendor_df.columns and vc_col in vendor_df.columns:
-            for _, vr in vendor_df.iterrows():
-                vname = str(vr.get(vn_col, '')).strip().lower()
-                vcountry = str(vr.get(vc_col, '')).strip()
-                if vname:
-                    vendor_coo_map[vname] = vcountry
+        def _nc2(c):
+            return str(c).strip().lower().replace('_', ' ')
+        vc = {_nc2(c): str(c).strip() for c in vendor_df.columns}
+        vn_col_v = vc.get('vendor name', 'Vendor Name')
+        vc_col_v = vc.get('country', 'Country')
+        # Try actual column names directly
+        if vn_col_v not in vendor_df.columns:
+            for col in vendor_df.columns:
+                if 'vendor' in str(col).lower():
+                    vn_col_v = col
+                    break
+        if vc_col_v not in vendor_df.columns:
+            for col in vendor_df.columns:
+                if 'country' in str(col).lower():
+                    vc_col_v = col
+                    break
+        for _, vr in vendor_df.iterrows():
+            vname = str(vr.get(vn_col_v, '')).strip()
+            vcountry = str(vr.get(vc_col_v, '')).strip()
+            if vname and vcountry:
+                vendor_coo_map[vname.lower()] = vcountry
+
+    def _clean_vendor(name):
+        """Normalize vendor name: lowercase, strip, remove special chars for comparison."""
+        import re
+        s = str(name).strip().lower()
+        # Remove non-ascii artifacts
+        s = re.sub(r'[^\x00-\x7F]+', '', s).strip()
+        return s
 
     def get_coo(vendor_name):
-        """Lookup COO from vendor_maintain by vendor_name."""
-        return vendor_coo_map.get(str(vendor_name).strip().lower(), '')
+        """Lookup COO from vendor_maintain by vendor_name (fuzzy, encoding-safe)."""
+        if not vendor_name or str(vendor_name).strip() in ('', 'nan', 'None'):
+            return ''
+        key = _clean_vendor(vendor_name)
+        # Exact match first
+        result = vendor_coo_map.get(key, None)
+        if result is not None:
+            return result
+        # Partial match: check if any vendor_coo_map key is contained in the name or vice versa
+        for map_key, country in vendor_coo_map.items():
+            mk_clean = _clean_vendor(map_key)
+            if mk_clean and (mk_clean in key or key in mk_clean):
+                return country
+        return ''
 
     def build_base_row(inv_row, override_pallet=None, override_actual_qty=None,
                        override_vendor=None, override_invoice=None, override_grn=None):
