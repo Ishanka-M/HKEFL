@@ -2310,15 +2310,15 @@ if login_section():
                             unac_title_fmt   = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#ffffff', 'border': 1, 'font_size': 12, 'align': 'center', 'valign': 'vcenter'})
                             unac_ok_fmt      = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#ffffff', 'font_size': 12})
                             unac_sum_lbl     = wb.add_format({'bold': True, 'font_size': 11, 'bg_color': '#f2f2f2', 'border': 1})
-                            unac_sum_val     = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'border': 1})
-                            unac_sum_red     = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'font_color': '#c0392b', 'bold': True, 'border': 1, 'bg_color': '#fff0f0'})
-                            unac_sum_grn     = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'font_color': '#27ae60', 'bold': True, 'border': 1})
+                            unac_sum_val     = wb.add_format({'font_size': 11, 'num_format': '#,##0.00', 'border': 1})
+                            unac_sum_red     = wb.add_format({'font_size': 11, 'num_format': '#,##0.00', 'font_color': '#c0392b', 'bold': True, 'border': 1, 'bg_color': '#fff0f0'})
+                            unac_sum_grn     = wb.add_format({'font_size': 11, 'num_format': '#,##0.00', 'font_color': '#27ae60', 'bold': True, 'border': 1})
                             unac_hdr_fmt     = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#ffffff', 'border': 1, 'font_size': 10, 'align': 'center'})
                             unac_row_fmt     = wb.add_format({'border': 1, 'font_size': 10})
                             unac_row_red     = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff5f5'})
-                            unac_row_num     = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0'})
-                            unac_row_num_red = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0', 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff5f5'})
-                            unac_total_fmt   = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
+                            unac_row_num     = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00'})
+                            unac_row_num_red = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff5f5'})
+                            unac_total_fmt   = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0.00'})
                             unac_total_str   = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
 
                             if unaccounted_qty != 0:
@@ -2409,15 +2409,15 @@ if login_section():
 
                                 # extra formats for status-based row coloring
                                 unac_row_over  = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#fff0f0'})
-                                unac_row_over_num = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0', 'bg_color': '#fff0f0'})
+                                unac_row_over_num = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'bg_color': '#fff0f0'})
                                 unac_row_over_bold = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff0f0'})
-                                unac_row_over_num_bold = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0', 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff0f0'})
+                                unac_row_over_num_bold = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff0f0'})
                                 unac_row_under = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#fff8e1'})
-                                unac_row_under_num = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0', 'bg_color': '#fff8e1'})
+                                unac_row_under_num = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'bg_color': '#fff8e1'})
                                 unac_row_under_bold = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e67e22', 'bold': True, 'bg_color': '#fff8e1'})
-                                unac_row_under_num_bold = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0', 'font_color': '#e67e22', 'bold': True, 'bg_color': '#fff8e1'})
+                                unac_row_under_num_bold = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'font_color': '#e67e22', 'bold': True, 'bg_color': '#fff8e1'})
                                 unac_row_ok    = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#f0fff4'})
-                                unac_row_ok_num= wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0', 'bg_color': '#f0fff4'})
+                                unac_row_ok_num= wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'bg_color': '#f0fff4'})
 
                                 detail_label = f'Pallet-Level Detail — All {len(unac_detail_rows)} Pallets  |  🔴 Over-Picked: {over_picked_count}  |  ⚠️ Under-Picked: {under_picked_count}  |  ✅ OK: {len(unac_detail_rows) - mismatch_count_u}'
                                 unaccounted_sheet.write(detail_hdr_row - 1, 0, detail_label, unac_sum_lbl)
