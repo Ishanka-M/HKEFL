@@ -1701,7 +1701,7 @@ if login_section():
                             vendor_country_map = get_vendor_country_map()
 
                         # ── partial lookup maps ──────────────────────────────────────────────
-                        def get_partial_lookup_maps():
+def get_partial_lookup_maps():
     """
     Returns mappings for invoice, grn, and vendor to resolve blanks in reports.
     """
