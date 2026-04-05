@@ -1884,7 +1884,7 @@ if login_section():
                                     else:
                                         row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
+                                        row['ATS'] = round(float(inv_actual_qty), 2) if not is_damaged else ''
                                     row['Vendor Name']    = vendor_name_row
                                     row['Vendor Country'] = vendor_country_row
                                     row['Invoice Number'] = invoice_number_row
@@ -1911,7 +1911,7 @@ if login_section():
                                     if qty_matches_balance and last_balance > 0.01:
                                         row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
+                                        row['ATS'] = round(float(inv_actual_qty), 2) if not is_damaged else ''
                                     else:
                                         row['Pick Quantity']       = last_p['partial_qty']
                                         row['Destination Country'] = pick_country_map.get(orig_pallet, '')
@@ -1948,7 +1948,7 @@ if login_section():
                                         bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=balance_qty)
                                         bal_row['Pick Quantity'] = bal_row['Destination Country'] = bal_row['Order NO'] = ''
                                         for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        bal_row['ATS'] = int(balance_qty)
+                                        bal_row['ATS'] = round(float(balance_qty), 2)
                                         bal_row['Vendor Name']    = vendor_name_row
                                         bal_row['Vendor Country'] = vendor_country_row
                                         bal_row['Invoice Number'] = invoice_number_row
@@ -1963,7 +1963,7 @@ if login_section():
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 ats_qty   = inv_actual_qty - total_picked
-                                row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
+                                row['ATS'] = round(float(ats_qty), 2) if (not is_damaged and ats_qty > 0) else ''
                                 row['Vendor Name']    = vendor_name_row
                                 row['Vendor Country'] = vendor_country_row
                                 row['Invoice Number'] = invoice_number_row
