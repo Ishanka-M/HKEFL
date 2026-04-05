@@ -721,11 +721,11 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                     c = inv_col_map.get(col_name.lower())
                     return str(item[c]) if c and c in item.index else ''
 
-                        gen_pallet_id = make_unique_gen_pallet_id(pallet_val)
-                        pick_rows[-1]['Remark']        = 'Partial'
-                        pick_rows[-1]['Gen Pallet ID'] = gen_pallet_id
+                gen_pallet_id = make_unique_gen_pallet_id(pallet_val)
+                pick_rows[-1]['Remark']        = 'Partial'
+                pick_rows[-1]['Gen Pallet ID'] = gen_pallet_id
 
-                        partial_rows.append({
+                partial_rows.append({
                             'Batch ID':           batch_id,
                             'SO Number':          so_num,
                             'Pallet':             pallet_val,
