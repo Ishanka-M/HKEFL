@@ -408,49 +408,43 @@ def get_vendor_country_map() -> dict:
 
 def get_partial_lookup_maps():
     """
-    Returns three dicts keyed by gen_pallet_id (lowercase stripped):
-      - invoice_map:  {gen_pallet_id: invoice_number}
-      - grn_map:      {gen_pallet_id: grn_number}
-      - vendor_map:   {pallet: vendor_name}  (also keyed by gen_pallet_id)
-    And two dicts keyed by original pallet:
-      - pallet_invoice_map: {pallet: invoice_number}
-      - pallet_grn_map:     {pallet: grn_number}
+    Returns mappings for invoice, grn, and vendor to resolve blanks in reports.
     """
     invoice_map = {}
     grn_map = {}
     vendor_map = {}
     pallet_invoice_map = {}
     pallet_grn_map = {}
+    
     try:
         part_df = DBManager.read_table("master_partial_data")
         if not part_df.empty:
             for _, r in part_df.iterrows():
                 pallet_key   = str(r.get('Pallet', '')).strip()
-                gen_pallet   = str(r.get('Gen Pallet ID', '')).strip()
+                gen_pallet   = str(r.get('Gen Pallet ID', '')).strip().lower()
                 inv_num      = str(r.get('Invoice Number', '')).strip()
                 grn_num      = str(r.get('Grn Number', '')).strip()
                 vnd_name     = str(r.get('Vendor Name', '')).strip()
 
-                # keyed by gen_pallet_id
-                if gen_pallet and gen_pallet not in ('', 'nan', 'None'):
-                    if inv_num and inv_num not in ('', 'nan', 'None'):
-                        invoice_map[gen_pallet] = inv_num
-                    if grn_num and grn_num not in ('', 'nan', 'None'):
-                        grn_map[gen_pallet] = grn_num
-                    if vnd_name and vnd_name not in ('', 'nan', 'None'):
-                        vendor_map[gen_pallet] = vnd_name
-
-                # keyed by original pallet
-                if pallet_key and pallet_key not in ('', 'nan', 'None'):
-                    if inv_num and inv_num not in ('', 'nan', 'None'):
-                        pallet_invoice_map[pallet_key] = inv_num
-                    if grn_num and grn_num not in ('', 'nan', 'None'):
-                        pallet_grn_map[pallet_key] = grn_num
-                    if vnd_name and vnd_name not in ('', 'nan', 'None'):
-                        vendor_map[pallet_key] = vnd_name
-    except:
+                if gen_pallet:
+                    invoice_map[gen_pallet] = inv_num
+                    grn_map[gen_pallet] = grn_num
+                    vendor_map[gen_pallet] = vnd_name
+                if pallet_key:
+                    pallet_invoice_map[pallet_key] = inv_num
+                    pallet_grn_map[pallet_key] = grn_num
+                    vendor_map[pallet_key] = vnd_name
+    except Exception as e:
+        print(f"Error in get_partial_lookup_maps: {e}")
         pass
-    return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
+        
+    return {
+        'invoice_map': invoice_map,
+        'grn_map': grn_map,
+        'vendor_map': vendor_map,
+        'pallet_invoice_map': pallet_invoice_map,
+        'pallet_grn_map': pallet_grn_map
+    }
 
 
 # ── 2. User Management & Login ─────────────────────────────────────────────────
@@ -521,11 +515,12 @@ def get_damage_pallets():
 
 def reconcile_inventory(inv_df):
     inv_df = inv_df.copy()
+    
     # තීරු වල නම් වල ඇති අමතර හිස්තැන් ඉවත් කිරීම
     inv_df.columns = [str(c).strip() for c in inv_df.columns]
     inv_col_lower = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
 
-    # 1. අදාළ තීරු සංඛ්‍යා (numeric) බවට පත් කර, එහි ඇති හිස්තැන් (None/NaN) 0 ලෙස පිරවීම
+    # අදාළ තීරු සංඛ්‍යා (numeric) බවට පත් කර, එහි ඇති හිස්තැන් (None/NaN) 0 ලෙස පිරවීම
     if 'Pick Quantity' in inv_df.columns:
         inv_df['Pick Quantity'] = pd.to_numeric(inv_df['Pick Quantity'], errors='coerce').fillna(0)
     else:
@@ -546,11 +541,11 @@ def reconcile_inventory(inv_df):
     else:
         inv_df['Actual Qty'] = 0
 
-    # 2. Total Accounted සහ Difference ගණනය කිරීම
+    # Total Accounted සහ Difference ගණනය කිරීම
     inv_df['Total Accounted'] = inv_df['Pick Quantity'] + inv_df['Damage Qty'] + inv_df['ATS']
     inv_df['Difference'] = inv_df['Actual Qty'] - inv_df['Total Accounted']
 
-    # 3. Reconciled Status එක තීරණය කිරීම (Difference එක 0 නම් පමණක් Reconciled වේ)
+    # Reconciled Status එක තීරණය කිරීම (Difference එක 0 නම් පමණක් Reconciled වේ)
     inv_df['Reconciled'] = inv_df['Difference'].apply(
         lambda x: '✅ Reconciled' if x == 0 else '❌ Still Mismatch'
     )
@@ -692,7 +687,7 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                     if grn_number_col and grn_number_col in item.index:
                         grn_number_val = str(item[grn_number_col]).strip()
 
-                    partial_row = {
+            partial_row = {
                 'Batch ID': batch_id,
                 'SO Number': so_num,
                 'Pallet': pallet,
