@@ -521,43 +521,40 @@ def get_damage_pallets():
 
 def reconcile_inventory(inv_df):
     inv_df = inv_df.copy()
+    # තීරු වල නම් වල ඇති අමතර හිස්තැන් ඉවත් කිරීම
     inv_df.columns = [str(c).strip() for c in inv_df.columns]
     inv_col_lower = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
 
-    pallet_col = inv_col_lower.get('pallet', 'Pallet')
-    actual_col = inv_col_lower.get('actual qty', 'Actual Qty')
-    if actual_col not in inv_df.columns:
-        actual_col = next((c for c in inv_df.columns if 'actual' in c.lower()), actual_col)
+    # 1. අදාළ තීරු සංඛ්‍යා (numeric) බවට පත් කර, එහි ඇති හිස්තැන් (None/NaN) 0 ලෙස පිරවීම
+    if 'Pick Quantity' in inv_df.columns:
+        inv_df['Pick Quantity'] = pd.to_numeric(inv_df['Pick Quantity'], errors='coerce').fillna(0)
+    else:
+        inv_df['Pick Quantity'] = 0
+        
+    if 'Damage Qty' in inv_df.columns:
+        inv_df['Damage Qty'] = pd.to_numeric(inv_df['Damage Qty'], errors='coerce').fillna(0)
+    else:
+        inv_df['Damage Qty'] = 0
+        
+    if 'ATS' in inv_df.columns:
+        inv_df['ATS'] = pd.to_numeric(inv_df['ATS'], errors='coerce').fillna(0)
+    else:
+        inv_df['ATS'] = 0
+        
+    if 'Actual Qty' in inv_df.columns:
+        inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
+    else:
+        inv_df['Actual Qty'] = 0
 
-    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
+    # 2. Total Accounted සහ Difference ගණනය කිරීම
+    inv_df['Total Accounted'] = inv_df['Pick Quantity'] + inv_df['Damage Qty'] + inv_df['ATS']
+    inv_df['Difference'] = inv_df['Actual Qty'] - inv_df['Total Accounted']
 
-    try:
-        pick_history = DBManager.read_table("master_pick_data")
-        if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
-            pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
-            pick_history['Pallet'] = pick_history['Pallet'].astype(str).str.strip()
-            pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
-            pick_summary.columns = ['_pallet_key', 'Total_Picked']
+    # 3. Reconciled Status එක තීරණය කිරීම (Difference එක 0 නම් පමණක් Reconciled වේ)
+    inv_df['Reconciled'] = inv_df['Difference'].apply(
+        lambda x: '✅ Reconciled' if x == 0 else '❌ Still Mismatch'
+    )
 
-            inv_df['_pallet_key'] = inv_df[pallet_col].astype(str).str.strip()
-            inv_df = pd.merge(inv_df, pick_summary, on='_pallet_key', how='left')
-            inv_df = inv_df.drop(columns=['_pallet_key'], errors='ignore')
-            inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
-            inv_df[actual_col] = (inv_df[actual_col] - inv_df['Total_Picked']).clip(lower=0)
-            inv_df = inv_df.drop(columns=['Total_Picked'], errors='ignore')
-    except Exception as e:
-        st.warning(f"Inventory Reconcile Error: {e}")
-
-    try:
-        dmg_summary = get_damage_pallets()
-        if not dmg_summary.empty:
-            damage_pallet_set = set(dmg_summary['Pallet'].astype(str).str.strip().tolist())
-            inv_df = inv_df[~inv_df[pallet_col].astype(str).str.strip().isin(damage_pallet_set)].reset_index(drop=True)
-    except Exception as e:
-        st.warning(f"Damage Exclude Error: {e}")
-
-    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
-    inv_df = inv_df[inv_df[actual_col] > 0].reset_index(drop=True)
     return inv_df
 
 
