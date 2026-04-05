@@ -2320,7 +2320,7 @@ if login_section():
                                 ]
                                 for si, (lbl, val) in enumerate(recon_totals):
                                     recon_sheet.write(total_ri + si, 0, lbl, recon_sum_lbl_fmt)
-                                    recon_sheet.write(total_ri + si, 1, val, recon_sum_val_fmt)
+                                    recon_sheet.write_number(total_ri + si, 1, float(val), recon_sum_val_fmt)
                             else:
                                 recon_sheet.write(0, 0, 'No data to reconcile', recon_hdr_fmt)
 
