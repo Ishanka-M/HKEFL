@@ -388,12 +388,9 @@ def get_safe_dataframe(sh, sheet_name, retries=3):
 
 
 # ── Vendor lookup helper ──────────────────────────────────────────────────────
-# LOGIC 8: COO column — vendor_maintain table හි vendor_name → country lookup
-# Pick_Report generate වෙද්දී Vendor Name එකට අදාල Country (COO) automatically
-# vendor_maintain.vendor_name → vendor_maintain.country හරහා populate වේ.
 
 def get_vendor_country_map() -> dict:
-    """Returns {vendor_name_lower: country} from vendor_maintain table — used for COO column (Logic 8)."""
+    """Returns {vendor_name_lower: country} from vendor_maintain table."""
     try:
         vdf = DBManager.read_table("vendor_maintain")
         if not vdf.empty and 'Vendor Name' in vdf.columns and 'Country' in vdf.columns:
@@ -839,7 +836,7 @@ def generate_inventory_details_report(inv_df):
                 row['Vendor Name']       = vendor_name_inv
                 row['Invoice Number']    = invoice_number_inv
                 row['Grn Number']        = grn_number_inv
-                row['COO']    = country_from_vendor
+                row['Vendor Country']    = country_from_vendor
                 report_rows.append(row)
                 continue
 
@@ -868,7 +865,7 @@ def generate_inventory_details_report(inv_df):
                         pick_grn = grn_number_inv
                     row['Grn Number'] = pick_grn
 
-                    row['COO']     = country_from_vendor
+                    row['Vendor Country']     = country_from_vendor
                     report_rows.append(row)
             else:
                 row = inv_row.copy()
@@ -878,7 +875,7 @@ def generate_inventory_details_report(inv_df):
                 row['Vendor Name']       = vendor_name_inv
                 row['Invoice Number']    = invoice_number_inv
                 row['Grn Number']        = grn_number_inv
-                row['COO']    = country_from_vendor
+                row['Vendor Country']    = country_from_vendor
                 report_rows.append(row)
 
         return pd.DataFrame(report_rows)
@@ -1665,9 +1662,7 @@ if login_section():
                         except Exception:
                             pass
 
-                        # ── LOGIC 8: COO column — vendor_maintain.vendor_name → country ──────────
-                        # Generate report හෙදී Vendor Name → COO (Country of Origin) automatically
-                        # vendor_maintain table → vendor_name column → country column → COO
+                        # ── vendor_country_map ───────────────────────────────────────────────
                         def _get_vendor_country_map_from_df(vdf):
                             if vdf is None or vdf.empty:
                                 return {}
@@ -1851,7 +1846,7 @@ if login_section():
 
                             vname = str(row.get('Vendor Name', '')).strip()
                             if vname and not _is_blank(vname):
-                                row['COO'] = vendor_country_map.get(vname.lower(), row.get('COO', ''))
+                                row['Vendor Country'] = vendor_country_map.get(vname.lower(), row.get('Vendor Country', ''))
 
                             return row
 
@@ -1873,10 +1868,8 @@ if login_section():
                         fmt_rows = []
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 1: Inventory Pallet == master_pick_data pallet
-                        #          AND Inventory Actual Qty == master_pick_data actual_qty
-                        #          → Already picked (already pick වෙලා)
-                        #          → Pick_Report headers update + Actual Qty = Pick Quantity
+                        # LOGIC 1: inv pallet == mpd pallet AND inv actual_qty == mpd actual_qty
+                        #          → Already picked → Pick Quantity = Actual Qty, ATS = ''
                         # ════════════════════════════════════════════════════════════════
                         for _, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -1912,7 +1905,7 @@ if login_section():
                             for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                             row['ATS']            = ''
                             row['Vendor Name']    = vendor_name_row
-                            row['COO'] = vendor_country_row
+                            row['Vendor Country'] = vendor_country_row
                             row['Invoice Number'] = invoice_number_row
                             row['Grn Number']     = grn_number_row
                             row = fill_row_from_partial(row, pallet_key=orig_pallet)
@@ -1920,10 +1913,8 @@ if login_section():
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 2: Logic 1 match නොවූ rows — Inventory Pallet == gen_pallet_id
-                        #          AND Inventory Actual Qty == partial_qty
-                        #          → Already picked partial (already pick වෙලා)
-                        #          → Pick_Report headers update + Actual Qty = Pick Quantity
+                        # LOGIC 2: inv pallet == gen_pallet_id AND inv actual_qty == partial_qty
+                        #          → Already picked partial → Pick Quantity = Actual Qty, ATS = ''
                         #          Skip rows already matched by Logic 1
                         # ════════════════════════════════════════════════════════════════
                         for _, inv_row in inv_data.iterrows():
@@ -1968,7 +1959,7 @@ if login_section():
                             for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                             row['ATS']            = ''
                             row['Vendor Name']    = vendor_name_row
-                            row['COO'] = vendor_country_row
+                            row['Vendor Country'] = vendor_country_row
                             row['Invoice Number'] = invoice_number_row
                             row['Grn Number']     = grn_number_row
                             row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet, partial_entry=par_entry)
@@ -1976,12 +1967,9 @@ if login_section():
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 3: Logic 1 & 2 match නොවූ rows — Inventory Pallet ==
-                        #          master_partial_data pallet
-                        #          → gen_pallet_id ගානට lines expand (each → Pick Quantity update)
-                        #          → Inventory Actual Qty > sum(partial_qty) නම්:
-                        #              balance row: original pallet, balance qty → ATS (pick නොවූ)
-                        #          → Inventory Actual Qty == sum(partial_qty) නම්: no balance row
+                        # LOGIC 3: inv pallet == partial_data pallet (not matched by L1/L2)
+                        #          → Expand to gen_pallet_id count lines (each Pick)
+                        #          + balance row (ATS) if inv_actual_qty > sum(partial_qty)
                         #          Skip rows already matched by Logic 1 or Logic 2
                         # ════════════════════════════════════════════════════════════════
                         logic3_matched_pallets = set()
@@ -2028,7 +2016,7 @@ if login_section():
                                 for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 row['ATS']            = ''
                                 row['Vendor Name']    = vendor_name_row
-                                row['COO'] = vendor_country_row
+                                row['Vendor Country'] = vendor_country_row
                                 row['Invoice Number'] = par_entry.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, '') or invoice_number_row
                                 row['Grn Number']     = par_entry.get('grn_number', '') or inv_grn_map_fmt.get(gp, '') or grn_number_row
                                 row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp, partial_entry=par_entry)
@@ -2045,7 +2033,7 @@ if login_section():
                                 for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 bal_row['ATS']            = round(balance_qty, 3)
                                 bal_row['Vendor Name']    = vendor_name_row
-                                bal_row['COO'] = vendor_country_row
+                                bal_row['Vendor Country'] = vendor_country_row
                                 bal_row['Invoice Number'] = invoice_number_row
                                 bal_row['Grn Number']     = grn_number_row
                                 bal_row = fill_row_from_partial(bal_row, pallet_key=orig_pallet)
@@ -2054,9 +2042,7 @@ if login_section():
                             # if inv_actual_qty == total_partial_qty → no balance row needed (fully picked)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 4: Logic 1, 2, 3 match නොවූ ටික
-                        #          → Pick_Report headers update + Actual Qty → ATS
-                        #          (pick නොවූ — not picked)
+                        # LOGIC 4: Not matched by Logic 1, 2, or 3 → ATS (not picked)
                         # ════════════════════════════════════════════════════════════════
                         for _, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -2088,7 +2074,7 @@ if login_section():
                             for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                             row['ATS']            = round(inv_actual_qty, 3) if (not is_damaged and inv_actual_qty > 0) else ''
                             row['Vendor Name']    = vendor_name_row
-                            row['COO'] = vendor_country_row
+                            row['Vendor Country'] = vendor_country_row
                             row['Invoice Number'] = invoice_number_row
                             row['Grn Number']     = grn_number_row
                             row = fill_row_from_partial(row, pallet_key=orig_pallet)
@@ -2096,13 +2082,12 @@ if login_section():
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 7: Damage — handled via damage_pallets set in build_row
+                        # LOGIC 5: Damage — handled via damage_pallets set in build_row
                         # ATS = '' for damaged rows (already set above via is_damaged checks)
                         # Damage qty columns filled via dmg_pallet_remark_qty in all logics
-                        # (Notepad Logic 7: Damage details code එකේ තියෙන විදිහටම update කරන්න)
                         # ════════════════════════════════════════════════════════════════
 
-                        _extra_cols = ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'COO']
+                        _extra_cols = ['Pick Quantity', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'Vendor Country']
                         final_cols = REPORT_HEADERS + [c for c in _extra_cols if c not in REPORT_HEADERS]
                         fmt_df = pd.DataFrame(fmt_rows, columns=final_cols)
 
@@ -2208,46 +2193,18 @@ if login_section():
                             st.dataframe(pd.DataFrame(mismatch_pallets), use_container_width=True)
 
                         # ══════════════════════════════════════════════════════════════════════
-                        # LOGIC 5: Qty_Mismatch Pallets → master_partial_data
-                        # (Notepad Logic 5)
-                        # Logic 1, 2, 3, 4 වලින් match නොවූ (fail උන) Pallet ටික විතරක් ගන්න.
+                        # NEW VERIFICATION LOGIC: Qty_Mismatch Pallets → master_partial_data
                         # Verification කිරීම:
-                        #   1. Qty_Mismatch capture වෙන Pallet ටික ගෙන master_partial_data filter
-                        #   2. ඒ pallet ටිකේ gen_pallet_id ටිකේ partial_qty sum ගන්න
-                        #   3. Inventory Actual Qty - sum = balance
-                        #   4. balance + sum == Inventory Actual Qty නම්:
-                        #      → Pick_Report Actual Qty + ATS update
-                        #   5. Actual Qty = Pick Quantity + Damage + ATS reconcile
+                        #   1. Qty_Mismatch pallets ගෙන master_partial_data filter කරන්න
+                        #   2. ඒ pallet වල gen_pallet_id ටිකේ partial_qty sum ගන්න
+                        #   3. Inventory Actual Qty - partial_qty_sum = balance
+                        #   4. balance + partial_qty_sum == Inventory Actual Qty නම් verify ✅
+                        #   5. Pick_Report Actual Qty සහ ATS update කරන්න
+                        #   6. Actual Qty = Pick Quantity + Damage + ATS reconcile කරන්න
                         # ══════════════════════════════════════════════════════════════════════
-
-                        # Logic 1/2/3/4 හරහා successfully resolved වූ pallets set — Logic 5/6 skip
-                        _logic1234_resolved = set()
-                        for _rk in logic1_matched_keys | logic2_matched_keys:
-                            _logic1234_resolved.add(_rk[0])   # pallet string
-                        for _rp in logic3_matched_pallets:
-                            _logic1234_resolved.add(_rp)
-                        # Logic 4 pallets (ATS) — fully resolved, no qty mismatch expected,
-                        # but if they appear in mismatch_pallets they should also be skipped.
-                        # Logic 4 rows have ATS set = inv_actual_qty, so pallet+qty is fully
-                        # accounted — exclude them too by checking fmt_df ATS rows.
-                        for _, _l4r in fmt_df.iterrows():
-                            _l4_pal = str(_l4r.get('Pallet', '')).strip()
-                            _l4_ats = pd.to_numeric(_l4r.get('ATS', 0), errors='coerce') or 0
-                            _l4_pck = pd.to_numeric(_l4r.get('Pick Quantity', 0), errors='coerce') or 0
-                            # Pure ATS row (pick=0, ats>0) that is fully accounted
-                            if _l4_ats > 0 and _l4_pck == 0:
-                                _logic1234_resolved.add(_base_pallet(_l4_pal))
-
-                        # Filter mismatch_pallets — Logic 5/6 ට only truly unresolved pallets
-                        _l56_mismatch = [
-                            _mm for _mm in mismatch_pallets
-                            if str(_mm['Pallet']).strip() not in _logic1234_resolved
-                            and str(_mm.get('Raw Pallet', _mm['Pallet'])).strip() not in _logic1234_resolved
-                        ]
-
-                        if _l56_mismatch and not partial_df.empty:
+                        if mismatch_pallets and not partial_df.empty:
                             st.markdown("---")
-                            st.markdown("#### 🔎 Logic 5 — Qty_Mismatch × Master_Partial_Data (partial_qty sum verify)")
+                            st.markdown("#### 🔎 Verification Logic — Qty_Mismatch × Master_Partial_Data")
 
                             _ver_partial_df = partial_df.copy()
                             _vpc = {str(c).strip().lower(): str(c).strip() for c in _ver_partial_df.columns}
@@ -2259,12 +2216,12 @@ if login_section():
                             _ver_partial_df[_vp_pqty_col] = pd.to_numeric(_ver_partial_df[_vp_pqty_col], errors='coerce').fillna(0)
                             _ver_partial_df[_vp_aqty_col] = pd.to_numeric(_ver_partial_df[_vp_aqty_col], errors='coerce').fillna(0)
 
-                            _mm_pallet_set = set(str(m['Pallet']).strip() for m in _l56_mismatch)
+                            _mm_pallet_set = set(str(m['Pallet']).strip() for m in mismatch_pallets)
 
                             verification_results = []
                             _verified_updates = {}  # pallet → {new_actual_qty, new_ats}
 
-                            for _mm in _l56_mismatch:
+                            for _mm in mismatch_pallets:
                                 _mm_pal     = str(_mm['Pallet']).strip()       # canonical (e.g. PL032426017)
                                 _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string (e.g. PL032426017-P0001)
                                 _inv_aq     = float(_mm.get('Inventory Actual Qty', 0))
@@ -2410,28 +2367,28 @@ if login_section():
                                         st.dataframe(_pr_df2.astype(str), use_container_width=True)
 
                         # ══════════════════════════════════════════════════════════════════════
-                        # LOGIC 6: Qty_Mismatch Pallet → master_partial_data pallet exact filter
-                        # (Notepad Logic 6)
-                        # Logic 1/2/3/4 fail + Logic 5 fail වූ Pallet ටික විතරක් ගන්න.
-                        #   → ඕනෑම row ෙකක actual_qty හෝ balance_qty == Report Actual Qty නම්
+                        # VERIFICATION LOGIC 2: තවත් Qty_Mismatch තියෙනවා නම් →
+                        #   master_partial_data හි pallet exact filter →
+                        #   ඕනෑම row ෙකක actual_qty හෝ balance_qty == Report Actual Qty නම්
                         #   → Pick_Report Actual Qty + ATS update
                         #   → Actual Qty = Pick + Damage + ATS reconcile
                         # ══════════════════════════════════════════════════════════════════════
-                        if _l56_mismatch and not partial_df.empty:
+                        if mismatch_pallets and not partial_df.empty:
 
-                            # Logic 5 හි verified pallets skip කරන්න
+                            # Logic 1 හි verified pallets set (ඒ ටික skip කරන්න)
                             _already_verified = set(_verified_updates.keys()) if '_verified_updates' in dir() and _verified_updates else set()
 
-                            # _l56_mismatch හි Logic 5 ෙකෙන් pass නොවූ remaining mismatches
+                            # Logic 1 ෙකෙන් pass නොවූ remaining mismatches
+                            # _verified_updates key ෙකේ raw pallet store වෙනවා → raw + canonical දෙකෙන්ම check
                             _remaining_mm = [
-                                _m for _m in _l56_mismatch
+                                _m for _m in mismatch_pallets
                                 if str(_m.get('Raw Pallet', _m['Pallet'])).strip() not in _already_verified
                                 and str(_m['Pallet']).strip() not in _already_verified
                             ]
 
                             if _remaining_mm:
                                 st.markdown("---")
-                                st.markdown("#### 🔎 Logic 6 — Actual Qty / Balance Qty Row Match (pallet exact filter)")
+                                st.markdown("#### 🔎 Verification Logic 2 — Actual Qty / Balance Qty Row Match")
 
                                 _ver2_partial_df = partial_df.copy()
                                 _v2pc = {str(c).strip().lower(): str(c).strip() for c in _ver2_partial_df.columns}
@@ -2630,7 +2587,7 @@ if login_section():
                                             oh_master_lookup.get(base.lower(), {}).get('Vendor Name', '')
                                 if fb_vn:
                                     fmt_df.at[idx, 'Vendor Name'] = fb_vn
-                                    fmt_df.at[idx, 'COO'] = vendor_country_map.get(fb_vn.lower(), '')
+                                    fmt_df.at[idx, 'Vendor Country'] = vendor_country_map.get(fb_vn.lower(), '')
 
                             inv_n = str(fmt_df.at[idx, 'Invoice Number']).strip()
                             if not inv_n or inv_n in ('nan', 'None', ''):
@@ -2855,7 +2812,7 @@ if login_section():
                                     if col_name in ['Pick Quantity', 'Destination Country', 'Order NO']: ws_fmt.write(ri, ci, val, pick_fmt)
                                     elif col_name in damage_remarks: ws_fmt.write(ri, ci, val, dmg_fmt)
                                     elif col_name == 'ATS': ws_fmt.write(ri, ci, val, ats_fmt)
-                                    elif col_name in ['Vendor Name', 'COO']: ws_fmt.write(ri, ci, val, vnd_fmt)
+                                    elif col_name in ['Vendor Name', 'Vendor Country']: ws_fmt.write(ri, ci, val, vnd_fmt)
                                     else: ws_fmt.write(ri, ci, val, norm_fmt)
                             total_row_idx   = len(fmt_df) + 1
                             total_xl_num    = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
@@ -2937,7 +2894,7 @@ if login_section():
     # ==========================================================================
     elif choice == "🏷️ Vendor Maintain":
         st.title("🏷️ Vendor Maintain")
-        st.info("Vendor Name සහ ඒ vendor ට අදාළ Country මෙහි register කරන්න. Reports වල COO column automatically populate වේ.")
+        st.info("Vendor Name සහ ඒ vendor ට අදාළ Country මෙහි register කරන්න. Reports වල Vendor Country column automatically populate වේ.")
 
         vnd_tab1, vnd_tab2 = st.tabs(["➕ Add / Update Vendor", "📋 View All Vendors"])
 
