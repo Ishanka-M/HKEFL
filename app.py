@@ -1884,7 +1884,7 @@ if login_section():
                                     else:
                                         row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = round(inv_actual_qty, 2) if not is_damaged else ''
+                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     row['Vendor Name']    = vendor_name_row
                                     row['Vendor Country'] = vendor_country_row
                                     row['Invoice Number'] = invoice_number_row
@@ -1911,7 +1911,7 @@ if login_section():
                                     if qty_matches_balance and last_balance > 0.01:
                                         row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = round(inv_actual_qty, 2) if not is_damaged else ''
+                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     else:
                                         row['Pick Quantity']       = last_p['partial_qty']
                                         row['Destination Country'] = pick_country_map.get(orig_pallet, '')
@@ -1948,7 +1948,7 @@ if login_section():
                                         bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=balance_qty)
                                         bal_row['Pick Quantity'] = bal_row['Destination Country'] = bal_row['Order NO'] = ''
                                         for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        bal_row['ATS'] = round(balance_qty, 2)
+                                        bal_row['ATS'] = int(balance_qty)
                                         bal_row['Vendor Name']    = vendor_name_row
                                         bal_row['Vendor Country'] = vendor_country_row
                                         bal_row['Invoice Number'] = invoice_number_row
@@ -1963,7 +1963,7 @@ if login_section():
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 ats_qty   = inv_actual_qty - total_picked
-                                row['ATS'] = round(ats_qty, 2) if (not is_damaged and ats_qty > 0) else ''
+                                row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
                                 row['Vendor Name']    = vendor_name_row
                                 row['Vendor Country'] = vendor_country_row
                                 row['Invoice Number'] = invoice_number_row
@@ -2045,21 +2045,21 @@ if login_section():
                         partial_lines  = sum(1 for r in fmt_rows if r.get('Order NO', '') != '')
 
                         if qty_match:
-                            st.success(f"✅ Actual Qty Match! Inventory: **{round(inv_total_qty, 2)}** = Report: **{round(rpt_total_qty, 2)}**")
+                            st.success(f"✅ Actual Qty Match! Inventory: **{int(inv_total_qty)}** = Report: **{int(rpt_total_qty)}**")
                         else:
-                            st.error(f"⚠️ Actual Qty Mismatch! Inventory: **{round(inv_total_qty, 2)}** ≠ Report: **{round(rpt_total_qty, 2)}**")
+                            st.error(f"⚠️ Actual Qty Mismatch! Inventory: **{int(inv_total_qty)}** ≠ Report: **{int(rpt_total_qty)}**")
 
                         st.markdown("#### 📊 Report Summary")
                         sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-                        sc1.metric("Total Lines",   total_lines);  sc2.metric("Pick Qty",      round(total_pick_qty, 2))
-                        sc3.metric("ATS Qty",       round(total_ats_qty, 2)); sc4.metric("Damage Qty", round(total_dmg_qty, 2))
+                        sc1.metric("Total Lines",   total_lines);  sc2.metric("Pick Qty",      int(total_pick_qty))
+                        sc3.metric("ATS Qty",       int(total_ats_qty)); sc4.metric("Damage Qty", int(total_dmg_qty))
                         sc5.metric("Partial Lines", partial_lines)
 
                         accounted = total_pick_qty + total_ats_qty + total_dmg_qty
                         if abs(inv_total_qty - accounted) < 0.01:
-                            st.success(f"✅ Qty Reconciled: Pick({round(total_pick_qty, 2)}) + ATS({round(total_ats_qty, 2)}) + Damage({round(total_dmg_qty, 2)}) = {round(accounted, 2)}")
+                            st.success(f"✅ Qty Reconciled: Pick({int(total_pick_qty)}) + ATS({int(total_ats_qty)}) + Damage({int(total_dmg_qty)}) = {int(accounted)}")
                         else:
-                            st.warning(f"⚠️ Unaccounted Qty: {round(inv_total_qty - accounted, 2)}")
+                            st.warning(f"⚠️ Unaccounted Qty: {int(inv_total_qty - accounted)}")
 
                         if mismatch_pallets:
                             st.markdown("#### 🔍 Pallet Qty Mismatch Details")
@@ -2225,16 +2225,16 @@ if login_section():
                             ws_fmt = writer.sheets['Pick_Report']
                             ws_summ_sheet = wb.add_worksheet('Summary')
                             bold    = wb.add_format({'bold': True, 'font_size': 11})
-                            val_fmt = wb.add_format({'font_size': 11, 'num_format': '#,##0.##'})
+                            val_fmt = wb.add_format({'font_size': 11, 'num_format': '#,##0'})
                             ok_fmt  = wb.add_format({'bold': True, 'font_color': '#27ae60', 'font_size': 11})
                             err_fmt = wb.add_format({'bold': True, 'font_color': '#e74c3c', 'font_size': 11})
                             summary_rows_xl = [
-                                ('Inventory Total Actual Qty', round(inv_total_qty, 2)),
-                                ('Report Total Actual Qty',    round(rpt_total_qty, 2)),
+                                ('Inventory Total Actual Qty', int(inv_total_qty)),
+                                ('Report Total Actual Qty',    int(rpt_total_qty)),
                                 ('Qty Match', 'YES ✅' if qty_match else 'NO ⚠️'), ('', ''),
-                                ('Pick Quantity', round(total_pick_qty, 2)), ('ATS Quantity', round(total_ats_qty, 2)),
-                                ('Damage Quantity', round(total_dmg_qty, 2)), ('Total Accounted', round(accounted, 2)),
-                                ('Unaccounted', round(inv_total_qty - accounted, 2)), ('', ''),
+                                ('Pick Quantity', int(total_pick_qty)), ('ATS Quantity', int(total_ats_qty)),
+                                ('Damage Quantity', int(total_dmg_qty)), ('Total Accounted', int(accounted)),
+                                ('Unaccounted', int(inv_total_qty - accounted)), ('', ''),
                                 ('Total Report Lines', total_lines), ('Partial Lines', partial_lines), ('', ''),
                                 ('Qty Mismatch Pallets', len(mismatch_pallets)),
                                 ('Tally Fail Lines',     len(tally_fail_rows)),
@@ -2352,40 +2352,22 @@ if login_section():
                                 tally_sheet.set_column(0, 0, 55)
 
                             hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
-                            pick_fmt      = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
-                            pick_num_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
-                            dmg_fmt       = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
-                            dmg_num_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
-                            ats_fmt       = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
-                            ats_num_fmt   = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True, 'num_format': '#,##0.##'})
-                            vnd_fmt       = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
-                            norm_fmt      = wb.add_format({'border': 1, 'font_size': 10})
-                            norm_num_fmt  = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
-                            _num_col_fmts = {
-                                'Pick Quantity': pick_num_fmt,
-                                'ATS':           ats_num_fmt,
-                            }
-                            for rmk in damage_remarks:
-                                _num_col_fmts[rmk] = dmg_num_fmt
+                            pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
+                            dmg_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
+                            ats_fmt   = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
+                            vnd_fmt   = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
+                            norm_fmt  = wb.add_format({'border': 1, 'font_size': 10})
                             for ci, col_name in enumerate(final_cols):
                                 ws_fmt.write(0, ci, col_name, hdr_fmt); ws_fmt.set_column(ci, ci, 15)
                                 for ri in range(1, len(fmt_df)+1):
-                                    raw_val = fmt_df_with_total.iloc[ri-1][col_name]
-                                    str_val = str(raw_val)
-                                    if col_name in _num_col_fmts:
-                                        # numeric write — blank stays blank
-                                        if str_val in ('', 'nan', 'None', 'NaN'):
-                                            ws_fmt.write(ri, ci, '', _num_col_fmts[col_name])
-                                        else:
-                                            try:
-                                                ws_fmt.write_number(ri, ci, float(raw_val), _num_col_fmts[col_name])
-                                            except (ValueError, TypeError):
-                                                ws_fmt.write(ri, ci, str_val, pick_fmt if col_name == 'Pick Quantity' else (ats_fmt if col_name == 'ATS' else dmg_fmt))
-                                    elif col_name in ['Destination Country', 'Order NO']: ws_fmt.write(ri, ci, str_val, pick_fmt)
-                                    elif col_name in ['Vendor Name', 'Vendor Country']: ws_fmt.write(ri, ci, str_val, vnd_fmt)
-                                    else: ws_fmt.write(ri, ci, str_val, norm_fmt)
+                                    val = str(fmt_df_with_total.iloc[ri-1][col_name])
+                                    if col_name in ['Pick Quantity', 'Destination Country', 'Order NO']: ws_fmt.write(ri, ci, val, pick_fmt)
+                                    elif col_name in damage_remarks: ws_fmt.write(ri, ci, val, dmg_fmt)
+                                    elif col_name == 'ATS': ws_fmt.write(ri, ci, val, ats_fmt)
+                                    elif col_name in ['Vendor Name', 'Vendor Country']: ws_fmt.write(ri, ci, val, vnd_fmt)
+                                    else: ws_fmt.write(ri, ci, val, norm_fmt)
                             total_row_idx   = len(fmt_df) + 1
-                            total_xl_num    = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
+                            total_xl_num    = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
                             total_xl_str    = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
                             for ci, col_name in enumerate(final_cols):
                                 val = fmt_df_with_total.iloc[-1][col_name]
