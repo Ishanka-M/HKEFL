@@ -2318,9 +2318,17 @@ if login_section():
                                     ('Total Accounted',    round(sum(r['Accounted (P+D+A)'] for r in recon_rows), 2)),
                                     ('Net Difference',     round(sum(r['Difference'] for r in recon_rows), 2)),
                                 ]
+                                import math as _math
                                 for si, (lbl, val) in enumerate(recon_totals):
                                     recon_sheet.write(total_ri + si, 0, lbl, recon_sum_lbl_fmt)
-                                    recon_sheet.write_number(total_ri + si, 1, float(val), recon_sum_val_fmt)
+                                    try:
+                                        _fval = float(val)
+                                        if _math.isnan(_fval) or _math.isinf(_fval):
+                                            recon_sheet.write(total_ri + si, 1, 0.0, recon_sum_val_fmt)
+                                        else:
+                                            recon_sheet.write_number(total_ri + si, 1, _fval, recon_sum_val_fmt)
+                                    except (TypeError, ValueError):
+                                        recon_sheet.write(total_ri + si, 1, str(val), recon_sum_lbl_fmt)
                             else:
                                 recon_sheet.write(0, 0, 'No data to reconcile', recon_hdr_fmt)
 
