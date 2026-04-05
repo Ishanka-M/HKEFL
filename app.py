@@ -717,7 +717,7 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
             is_partial = (take < current_avail) or (orig_qty > take)
 
             if is_partial:
-                def _get(col_name):
+            def _get(col_name):
                 c = inv_col_map.get(col_name.lower())
                 return str(item[c]) if c and c in item.index else ''
 
