@@ -1884,7 +1884,7 @@ if login_section():
                                     else:
                                         row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = round(float(inv_actual_qty), 2) if not is_damaged else ''
+                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     row['Vendor Name']    = vendor_name_row
                                     row['Vendor Country'] = vendor_country_row
                                     row['Invoice Number'] = invoice_number_row
@@ -1911,7 +1911,7 @@ if login_section():
                                     if qty_matches_balance and last_balance > 0.01:
                                         row['Pick Quantity'] = row['Destination Country'] = row['Order NO'] = ''
                                         for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        row['ATS'] = round(float(inv_actual_qty), 2) if not is_damaged else ''
+                                        row['ATS'] = int(inv_actual_qty) if not is_damaged else ''
                                     else:
                                         row['Pick Quantity']       = last_p['partial_qty']
                                         row['Destination Country'] = pick_country_map.get(orig_pallet, '')
@@ -1948,7 +1948,7 @@ if login_section():
                                         bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=balance_qty)
                                         bal_row['Pick Quantity'] = bal_row['Destination Country'] = bal_row['Order NO'] = ''
                                         for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                        bal_row['ATS'] = round(float(balance_qty), 2)
+                                        bal_row['ATS'] = int(balance_qty)
                                         bal_row['Vendor Name']    = vendor_name_row
                                         bal_row['Vendor Country'] = vendor_country_row
                                         bal_row['Invoice Number'] = invoice_number_row
@@ -1963,7 +1963,7 @@ if login_section():
                                 row['Order NO']            = pick_loadid_map.get(orig_pallet, '')
                                 for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 ats_qty   = inv_actual_qty - total_picked
-                                row['ATS'] = round(float(ats_qty), 2) if (not is_damaged and ats_qty > 0) else ''
+                                row['ATS'] = int(ats_qty) if (not is_damaged and ats_qty > 0) else ''
                                 row['Vendor Name']    = vendor_name_row
                                 row['Vendor Country'] = vendor_country_row
                                 row['Invoice Number'] = invoice_number_row
@@ -2228,8 +2228,8 @@ if login_section():
                                 ('Report Total Actual Qty',    int(rpt_total_qty)),
                                 ('Qty Match', 'YES ✅' if qty_match else 'NO ⚠️'), ('', ''),
                                 ('Pick Quantity', int(total_pick_qty)), ('ATS Quantity', int(total_ats_qty)),
-                                ('Damage Quantity', int(total_dmg_qty)), ('Total Accounted', int(accounted)), ('', ''),
-                                ('Unaccounted Qty', '(see Unaccounted_Report sheet)'), ('', ''),
+                                ('Damage Quantity', int(total_dmg_qty)), ('Total Accounted', int(accounted)),
+                                ('Unaccounted', int(inv_total_qty - accounted)), ('', ''),
                                 ('Total Report Lines', total_lines), ('Partial Lines', partial_lines), ('', ''),
                                 ('Qty Mismatch Pallets', len(mismatch_pallets)),
                                 ('Tally Fail Lines',     len(tally_fail_rows)),
@@ -2301,190 +2301,6 @@ if login_section():
                             else:
                                 tally_sheet.write(0, 0, '✅ All Lines Tallied — Actual Qty = Pick + Damage + ATS', tally_ok_fmt)
                                 tally_sheet.set_column(0, 0, 55)
-
-                            # ── Unaccounted_Report sheet — pallet-level detail ───────────────
-                            unaccounted_qty = round(inv_total_qty - accounted, 2)
-                            unaccounted_sheet = wb.add_worksheet('Unaccounted_Report')
-
-                            # formats
-                            unac_title_fmt   = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#ffffff', 'border': 1, 'font_size': 12, 'align': 'center', 'valign': 'vcenter'})
-                            unac_ok_fmt      = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#ffffff', 'font_size': 12})
-                            unac_sum_lbl     = wb.add_format({'bold': True, 'font_size': 11, 'bg_color': '#f2f2f2', 'border': 1})
-                            unac_sum_val     = wb.add_format({'font_size': 11, 'num_format': '#,##0.00', 'border': 1})
-                            unac_sum_red     = wb.add_format({'font_size': 11, 'num_format': '#,##0.00', 'font_color': '#c0392b', 'bold': True, 'border': 1, 'bg_color': '#fff0f0'})
-                            unac_sum_grn     = wb.add_format({'font_size': 11, 'num_format': '#,##0.00', 'font_color': '#27ae60', 'bold': True, 'border': 1})
-                            unac_hdr_fmt     = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#ffffff', 'border': 1, 'font_size': 10, 'align': 'center'})
-                            unac_row_fmt     = wb.add_format({'border': 1, 'font_size': 10})
-                            unac_row_red     = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff5f5'})
-                            unac_row_num     = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00'})
-                            unac_row_num_red = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff5f5'})
-                            unac_total_fmt   = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0.00'})
-                            unac_total_str   = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
-
-                            if unaccounted_qty != 0:
-                                # ── Section 1: Summary block (rows 0-7) ──────────────────────────
-                                unaccounted_sheet.merge_range(0, 0, 0, 4, '⚠️  UNACCOUNTED QTY REPORT', unac_title_fmt)
-                                unac_sum_data = [
-                                    ('Inventory Total Actual Qty', int(inv_total_qty)),
-                                    ('Pick Quantity',              int(total_pick_qty)),
-                                    ('ATS Quantity',               int(total_ats_qty)),
-                                    ('Damage Quantity',            int(total_dmg_qty)),
-                                    ('Total Accounted',            int(accounted)),
-                                    ('Unaccounted Qty',            int(unaccounted_qty)),
-                                ]
-                                for ri_s, (lbl_s, val_s) in enumerate(unac_sum_data, start=1):
-                                    unaccounted_sheet.write(ri_s, 0, lbl_s, unac_sum_lbl)
-                                    if lbl_s == 'Unaccounted Qty':
-                                        unaccounted_sheet.write(ri_s, 1, val_s, unac_sum_red)
-                                    elif lbl_s == 'Total Accounted':
-                                        unaccounted_sheet.write(ri_s, 1, val_s, unac_sum_grn)
-                                    else:
-                                        unaccounted_sheet.write(ri_s, 1, val_s, unac_sum_val)
-
-                                # ── Section 2: Per-pallet detail table (row 9 onwards) ───────────
-                                # Build pallet-level detail — ALL pallets shown, status flagged
-                                unac_detail_rows = []
-                                for _idx_u, _r_u in fmt_df.iterrows():
-                                    _pal_u   = str(_r_u.get('Pallet', '')).strip()
-                                    if not _pal_u or _pal_u in ('nan', 'None', ''):
-                                        continue
-                                    _act_u   = pd.to_numeric(_r_u.get('Actual Qty',    0), errors='coerce') or 0
-                                    _pick_u  = pd.to_numeric(_r_u.get('Pick Quantity', 0), errors='coerce') or 0
-                                    _ats_u   = pd.to_numeric(_r_u.get('ATS',           0), errors='coerce') or 0
-                                    _dmg_u   = sum(pd.to_numeric(_r_u.get(rmk, 0), errors='coerce') or 0 for rmk in damage_remarks)
-                                    _acc_u   = _pick_u + _ats_u + _dmg_u
-                                    _unac_u  = round(_act_u - _acc_u, 2)
-                                    if abs(_unac_u) > 0.01:
-                                        if _unac_u < 0:
-                                            _status_u = '🔴 Over-Picked'
-                                        else:
-                                            _status_u = '⚠️ Under-Picked'
-                                    else:
-                                        _status_u = '✅ OK'
-                                    unac_detail_rows.append({
-                                        'Status':           _status_u,
-                                        'Pallet':           _pal_u,
-                                        'Vendor Name':      str(_r_u.get('Vendor Name',    '')),
-                                        'Invoice Number':   str(_r_u.get('Invoice Number', '')),
-                                        'Grn Number':       str(_r_u.get('Grn Number',     '')),
-                                        'Style':            str(_r_u.get('Style',          '')),
-                                        'Color':            str(_r_u.get('Color',          '')),
-                                        'Size':             str(_r_u.get('Size',           '')),
-                                        'Lot Number':       str(_r_u.get('Lot Number',     '')),
-                                        'Supplier':         str(_r_u.get('Supplier',       '')),
-                                        'Location Id':      str(_r_u.get('Location Id',    '')),
-                                        'Actual Qty':       _act_u,
-                                        'Pick Quantity':    _pick_u,
-                                        'ATS':              _ats_u,
-                                        'Damage Qty':       _dmg_u,
-                                        'Total Accounted':  _acc_u,
-                                        'Unaccounted Qty':  _unac_u,
-                                        'Destination Country': str(_r_u.get('Destination Country', '')),
-                                        'Order NO':         str(_r_u.get('Order NO', '')),
-                                    })
-
-                                # Sort: mismatch rows first (Over/Under), then OK
-                                unac_detail_rows.sort(key=lambda x: (0 if x['Status'] != '✅ OK' else 1))
-                                mismatch_count_u = sum(1 for r in unac_detail_rows if r['Status'] != '✅ OK')
-                                over_picked_count = sum(1 for r in unac_detail_rows if r['Status'] == '🔴 Over-Picked')
-                                under_picked_count = sum(1 for r in unac_detail_rows if r['Status'] == '⚠️ Under-Picked')
-
-                                detail_hdr_row = 9
-                                unac_detail_cols = [
-                                    'Status', 'Pallet', 'Vendor Name', 'Invoice Number', 'Grn Number',
-                                    'Style', 'Color', 'Size', 'Lot Number', 'Supplier', 'Location Id',
-                                    'Actual Qty', 'Pick Quantity', 'ATS', 'Damage Qty',
-                                    'Total Accounted', 'Unaccounted Qty',
-                                    'Destination Country', 'Order NO',
-                                ]
-                                col_widths = {
-                                    'Status': 18, 'Pallet': 20, 'Vendor Name': 22, 'Invoice Number': 18,
-                                    'Grn Number': 16, 'Style': 14, 'Color': 12, 'Size': 10,
-                                    'Lot Number': 16, 'Supplier': 18, 'Location Id': 14,
-                                    'Actual Qty': 14, 'Pick Quantity': 14, 'ATS': 12,
-                                    'Damage Qty': 14, 'Total Accounted': 16, 'Unaccounted Qty': 16,
-                                    'Destination Country': 20, 'Order NO': 16,
-                                }
-                                numeric_cols = {'Actual Qty', 'Pick Quantity', 'ATS', 'Damage Qty', 'Total Accounted', 'Unaccounted Qty'}
-
-                                # extra formats for status-based row coloring
-                                unac_row_over  = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#fff0f0'})
-                                unac_row_over_num = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'bg_color': '#fff0f0'})
-                                unac_row_over_bold = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff0f0'})
-                                unac_row_over_num_bold = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff0f0'})
-                                unac_row_under = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#fff8e1'})
-                                unac_row_under_num = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'bg_color': '#fff8e1'})
-                                unac_row_under_bold = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e67e22', 'bold': True, 'bg_color': '#fff8e1'})
-                                unac_row_under_num_bold = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'font_color': '#e67e22', 'bold': True, 'bg_color': '#fff8e1'})
-                                unac_row_ok    = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#f0fff4'})
-                                unac_row_ok_num= wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.00', 'bg_color': '#f0fff4'})
-
-                                detail_label = f'Pallet-Level Detail — All {len(unac_detail_rows)} Pallets  |  🔴 Over-Picked: {over_picked_count}  |  ⚠️ Under-Picked: {under_picked_count}  |  ✅ OK: {len(unac_detail_rows) - mismatch_count_u}'
-                                unaccounted_sheet.write(detail_hdr_row - 1, 0, detail_label, unac_sum_lbl)
-                                for ci_d, col_d in enumerate(unac_detail_cols):
-                                    unaccounted_sheet.write(detail_hdr_row, ci_d, col_d, unac_hdr_fmt)
-                                    unaccounted_sheet.set_column(ci_d, ci_d, col_widths.get(col_d, 15))
-
-                                for ri_d, det_row in enumerate(unac_detail_rows, start=detail_hdr_row + 1):
-                                    _st = det_row['Status']
-                                    is_over  = (_st == '🔴 Over-Picked')
-                                    is_under = (_st == '⚠️ Under-Picked')
-                                    for ci_d, col_d in enumerate(unac_detail_cols):
-                                        val_d = det_row.get(col_d, '')
-                                        is_unac_col = (col_d == 'Unaccounted Qty')
-                                        is_num = col_d in numeric_cols
-                                        if is_over:
-                                            fmt_use = (unac_row_over_num_bold if is_unac_col else unac_row_over_num) if is_num else (unac_row_over_bold if is_unac_col else unac_row_over)
-                                        elif is_under:
-                                            fmt_use = (unac_row_under_num_bold if is_unac_col else unac_row_under_num) if is_num else (unac_row_under_bold if is_unac_col else unac_row_under)
-                                        else:
-                                            fmt_use = unac_row_ok_num if is_num else unac_row_ok
-                                        if is_num:
-                                            try:
-                                                import math as _math
-                                                _nv = float(val_d)
-                                                if _math.isnan(_nv) or _math.isinf(_nv):
-                                                    unaccounted_sheet.write(ri_d, ci_d, 0, fmt_use)
-                                                else:
-                                                    unaccounted_sheet.write(ri_d, ci_d, _nv, fmt_use)
-                                            except (TypeError, ValueError):
-                                                unaccounted_sheet.write(ri_d, ci_d, 0, fmt_use)
-                                        else:
-                                            unaccounted_sheet.write(ri_d, ci_d, str(val_d), fmt_use)
-
-                                # Total row
-                                total_ri_d = detail_hdr_row + 1 + len(unac_detail_rows)
-                                for ci_d, col_d in enumerate(unac_detail_cols):
-                                    if col_d == 'Pallet':
-                                        unaccounted_sheet.write(total_ri_d, ci_d, 'TOTAL', unac_total_str)
-                                    elif col_d == 'Status':
-                                        unaccounted_sheet.write(total_ri_d, ci_d, f'{mismatch_count_u} mismatch(es)', unac_total_str)
-                                    elif col_d in numeric_cols:
-                                        col_total = 0.0
-                                        for _dr in unac_detail_rows:
-                                            try:
-                                                _v = float(_dr.get(col_d, 0) or 0)
-                                                if _v == _v:  # nan check
-                                                    col_total += _v
-                                            except (TypeError, ValueError):
-                                                pass
-                                        import math as _math
-                                        _safe_total = col_total if (not _math.isnan(col_total) and not _math.isinf(col_total)) else 0.0
-                                        unaccounted_sheet.write(total_ri_d, ci_d, _safe_total, unac_total_fmt)
-                                    else:
-                                        unaccounted_sheet.write(total_ri_d, ci_d, '', unac_total_str)
-
-                                unaccounted_sheet.freeze_panes(detail_hdr_row + 1, 0)
-                                unaccounted_sheet.autofilter(detail_hdr_row, 0, detail_hdr_row, len(unac_detail_cols) - 1)
-
-                                # Streamlit UI warning
-                                if mismatch_count_u > 0:
-                                    st.warning(f"⚠️ Unaccounted Qty: **{int(unaccounted_qty)}** — 🔴 Over-Picked: **{over_picked_count}** | ⚠️ Under-Picked: **{under_picked_count}** (see Unaccounted_Report sheet)")
-                                else:
-                                    st.info(f"ℹ️ Unaccounted total: **{int(unaccounted_qty)}** — No individual pallet mismatches found (see Unaccounted_Report sheet)")
-                            else:
-                                unaccounted_sheet.write(0, 0, '✅ No Unaccounted Qty — All Quantities Fully Accounted!', unac_ok_fmt)
-                                unaccounted_sheet.set_column(0, 0, 55)
 
                             hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
                             pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
