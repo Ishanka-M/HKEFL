@@ -2228,8 +2228,8 @@ if login_section():
                                 ('Report Total Actual Qty',    int(rpt_total_qty)),
                                 ('Qty Match', 'YES ✅' if qty_match else 'NO ⚠️'), ('', ''),
                                 ('Pick Quantity', int(total_pick_qty)), ('ATS Quantity', int(total_ats_qty)),
-                                ('Damage Quantity', int(total_dmg_qty)), ('Total Accounted', int(accounted)),
-                                ('Unaccounted', int(inv_total_qty - accounted)), ('', ''),
+                                ('Damage Quantity', int(total_dmg_qty)), ('Total Accounted', int(accounted)), ('', ''),
+                                ('Unaccounted Qty', '(see Unaccounted_Report sheet)'), ('', ''),
                                 ('Total Report Lines', total_lines), ('Partial Lines', partial_lines), ('', ''),
                                 ('Qty Mismatch Pallets', len(mismatch_pallets)),
                                 ('Tally Fail Lines',     len(tally_fail_rows)),
@@ -2301,6 +2301,47 @@ if login_section():
                             else:
                                 tally_sheet.write(0, 0, '✅ All Lines Tallied — Actual Qty = Pick + Damage + ATS', tally_ok_fmt)
                                 tally_sheet.set_column(0, 0, 55)
+
+                            # ── NEW: Unaccounted_Report sheet ────────────────────────────────
+                            unaccounted_qty = int(inv_total_qty - accounted)
+                            unaccounted_sheet    = wb.add_worksheet('Unaccounted_Report')
+                            unac_title_fmt  = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#ffffff', 'border': 1, 'font_size': 12})
+                            unac_ok_fmt     = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#ffffff', 'font_size': 12})
+                            unac_label_fmt  = wb.add_format({'bold': True, 'font_size': 11})
+                            unac_val_fmt    = wb.add_format({'font_size': 11, 'num_format': '#,##0'})
+                            unac_val_red    = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'font_color': '#c0392b', 'bold': True})
+                            unaccounted_sheet.set_column(0, 0, 32)
+                            unaccounted_sheet.set_column(1, 1, 20)
+                            if unaccounted_qty != 0:
+                                unaccounted_sheet.write(0, 0, '⚠️ Unaccounted Qty Report', unac_title_fmt)
+                                unaccounted_sheet.write(0, 1, '', unac_title_fmt)
+                                unac_rows = [
+                                    ('Inventory Total Actual Qty',  int(inv_total_qty)),
+                                    ('Pick Quantity',               int(total_pick_qty)),
+                                    ('ATS Quantity',                int(total_ats_qty)),
+                                    ('Damage Quantity',             int(total_dmg_qty)),
+                                    ('Total Accounted',             int(accounted)),
+                                    ('Unaccounted Qty',             unaccounted_qty),
+                                ]
+                                for ri_u, (lbl_u, val_u) in enumerate(unac_rows, start=1):
+                                    unaccounted_sheet.write(ri_u, 0, lbl_u, unac_label_fmt)
+                                    use_val_fmt = unac_val_red if lbl_u == 'Unaccounted Qty' else unac_val_fmt
+                                    unaccounted_sheet.write(ri_u, 1, val_u, use_val_fmt)
+                                # List mismatch pallets contributing to unaccounted qty
+                                if mismatch_pallets:
+                                    unaccounted_sheet.write(len(unac_rows) + 2, 0, 'Pallet Qty Mismatches (contributing to Unaccounted):', unac_label_fmt)
+                                    mm_unac_hdr = ['Pallet', 'Inventory Actual Qty', 'Report Actual Qty', 'Difference']
+                                    for ci_u, hdr_u in enumerate(mm_unac_hdr):
+                                        unaccounted_sheet.write(len(unac_rows) + 3, ci_u, hdr_u, unac_label_fmt)
+                                        unaccounted_sheet.set_column(ci_u, ci_u, 22)
+                                    for ri_u2, mm_row in enumerate(mismatch_pallets, start=len(unac_rows) + 4):
+                                        for ci_u2, hdr_u2 in enumerate(mm_unac_hdr):
+                                            val_u2 = mm_row.get(hdr_u2, '')
+                                            use_fmt_u2 = unac_val_red if hdr_u2 == 'Difference' else unac_val_fmt
+                                            unaccounted_sheet.write(ri_u2, ci_u2, val_u2, use_fmt_u2)
+                            else:
+                                unaccounted_sheet.write(0, 0, '✅ No Unaccounted Qty — All Quantities Fully Accounted!', unac_ok_fmt)
+                                unaccounted_sheet.set_column(0, 0, 55)
 
                             hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
                             pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
