@@ -2180,6 +2180,165 @@ if login_section():
                             st.markdown("#### 🔍 Pallet Qty Mismatch Details")
                             st.dataframe(pd.DataFrame(mismatch_pallets), use_container_width=True)
 
+                        # ══════════════════════════════════════════════════════════════════════
+                        # NEW VERIFICATION LOGIC: Qty_Mismatch Pallets → master_partial_data
+                        # Verification කිරීම:
+                        #   1. Qty_Mismatch pallets ගෙන master_partial_data filter කරන්න
+                        #   2. ඒ pallet වල gen_pallet_id ටිකේ partial_qty sum ගන්න
+                        #   3. Inventory Actual Qty - partial_qty_sum = balance
+                        #   4. balance + partial_qty_sum == Inventory Actual Qty නම් verify ✅
+                        #   5. Pick_Report Actual Qty සහ ATS update කරන්න
+                        #   6. Actual Qty = Pick Quantity + Damage + ATS reconcile කරන්න
+                        # ══════════════════════════════════════════════════════════════════════
+                        if mismatch_pallets and not partial_df.empty:
+                            st.markdown("---")
+                            st.markdown("#### 🔎 Verification Logic — Qty_Mismatch × Master_Partial_Data")
+
+                            _ver_partial_df = partial_df.copy()
+                            _vpc = {str(c).strip().lower(): str(c).strip() for c in _ver_partial_df.columns}
+                            _vp_pallet_col  = _vpc.get('pallet',        'Pallet')
+                            _vp_gen_col     = _vpc.get('gen pallet id', 'Gen Pallet ID')
+                            _vp_pqty_col    = _vpc.get('partial qty',   'Partial Qty')
+                            _vp_aqty_col    = _vpc.get('actual qty',    'Actual Qty')
+
+                            _ver_partial_df[_vp_pqty_col] = pd.to_numeric(_ver_partial_df[_vp_pqty_col], errors='coerce').fillna(0)
+                            _ver_partial_df[_vp_aqty_col] = pd.to_numeric(_ver_partial_df[_vp_aqty_col], errors='coerce').fillna(0)
+
+                            _mm_pallet_set = set(str(m['Pallet']).strip() for m in mismatch_pallets)
+
+                            verification_results = []
+                            _verified_updates = {}  # pallet → {new_actual_qty, new_ats}
+
+                            for _mm in mismatch_pallets:
+                                _mm_pal     = str(_mm['Pallet']).strip()
+                                _inv_aq     = float(_mm.get('Inventory Actual Qty', 0))
+
+                                # master_partial_data හි ඒ pallet ට අදාල rows filter කරගන්න
+                                _mpd_rows = _ver_partial_df[
+                                    _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_pal
+                                ].copy()
+
+                                if _mpd_rows.empty:
+                                    verification_results.append({
+                                        'Pallet':               _mm_pal,
+                                        'Inventory Actual Qty': _inv_aq,
+                                        'Partial Sum (MPD)':    0,
+                                        'Balance':              _inv_aq,
+                                        'Verification':         '⚠️ No MPD rows found',
+                                        'Action':               'No Update',
+                                    })
+                                    continue
+
+                                # ඒ pallet ටිකේ gen_pallet_id ටිකේ partial_qty sum ගන්න
+                                _partial_qty_sum = float(_mpd_rows[_vp_pqty_col].sum())
+
+                                # balance = Inventory Actual Qty - partial_qty_sum
+                                _balance = _inv_aq - _partial_qty_sum
+
+                                # Verification: balance + partial_qty_sum == Inventory Actual Qty
+                                _verify_ok = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
+
+                                if _verify_ok:
+                                    # Pick_Report fmt_df හි ඒ pallet ට අදාල rows update කරන්න
+                                    # Actual Qty = balance (remaining qty)
+                                    # ATS = partial_qty_sum (partials ගිය qty)
+                                    _rpt_mask = fmt_df['Pallet'].astype(str).str.strip().apply(
+                                        lambda p: gen_to_orig.get(p, _base_pallet(p))
+                                    ) == _mm_pal
+
+                                    _rpt_indices = fmt_df[_rpt_mask].index.tolist()
+
+                                    if _rpt_indices:
+                                        for _ri in _rpt_indices:
+                                            _cur_pick = pd.to_numeric(fmt_df.at[_ri, 'Pick Quantity'], errors='coerce') or 0
+                                            _cur_dmg  = sum(
+                                                pd.to_numeric(fmt_df.at[_ri, _r], errors='coerce') or 0
+                                                for _r in damage_remarks
+                                            )
+                                            # Actual Qty → balance ලෙස set
+                                            fmt_df.at[_ri, 'Actual Qty'] = _balance
+
+                                            # ATS = Actual Qty - Pick Quantity - Damage
+                                            # (balance = ATS + Pick + Damage, so ATS = balance - Pick - Damage)
+                                            _new_ats = max(0.0, _balance - _cur_pick - _cur_dmg)
+                                            fmt_df.at[_ri, 'ATS'] = _new_ats
+
+                                        _verified_updates[_mm_pal] = {
+                                            'new_actual_qty': _balance,
+                                            'partial_qty_sum': _partial_qty_sum,
+                                            'rows_updated': len(_rpt_indices),
+                                        }
+
+                                    verification_results.append({
+                                        'Pallet':               _mm_pal,
+                                        'Inventory Actual Qty': _inv_aq,
+                                        'Partial Sum (MPD)':    _partial_qty_sum,
+                                        'Balance':              _balance,
+                                        'Verification':         '✅ Verified (balance + sum = Inv Actual Qty)',
+                                        'Action':               f'Updated Actual Qty→{_balance}, ATS recalculated',
+                                    })
+                                else:
+                                    verification_results.append({
+                                        'Pallet':               _mm_pal,
+                                        'Inventory Actual Qty': _inv_aq,
+                                        'Partial Sum (MPD)':    _partial_qty_sum,
+                                        'Balance':              _balance,
+                                        'Verification':         '❌ Verification Failed (balance + sum ≠ Inv Actual Qty)',
+                                        'Action':               'No Update',
+                                    })
+
+                            _ver_df = pd.DataFrame(verification_results)
+                            if not _ver_df.empty:
+                                _v_ok   = (_ver_df['Verification'].str.startswith('✅')).sum()
+                                _v_fail = (_ver_df['Verification'].str.startswith('❌')).sum()
+                                _v_none = (_ver_df['Verification'].str.startswith('⚠️')).sum()
+
+                                _vc1, _vc2, _vc3 = st.columns(3)
+                                _vc1.metric("✅ Verified & Updated", _v_ok)
+                                _vc2.metric("❌ Verification Failed", _v_fail)
+                                _vc3.metric("⚠️ No MPD Data", _v_none)
+
+                                st.dataframe(_ver_df.astype(str), use_container_width=True)
+
+                                if _verified_updates:
+                                    st.success(f"✅ {len(_verified_updates)} pallets ගේ Actual Qty සහ ATS Pick_Report හි update කරන ලදී.")
+
+                                    # ── Post-update Reconciliation: Actual Qty = Pick + Damage + ATS ──
+                                    st.markdown("##### 🔄 Post-Verification Reconciliation — Actual Qty = Pick + Damage + ATS")
+                                    _post_recon_rows = []
+                                    for _pv_pal, _pv_info in _verified_updates.items():
+                                        _pr_mask2 = fmt_df['Pallet'].astype(str).str.strip().apply(
+                                            lambda p: gen_to_orig.get(p, _base_pallet(p))
+                                        ) == _pv_pal
+                                        for _ri2 in fmt_df[_pr_mask2].index.tolist():
+                                            _r2 = fmt_df.loc[_ri2]
+                                            _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce') or 0
+                                            _p2   = pd.to_numeric(_r2.get('Pick Quantity', 0), errors='coerce') or 0
+                                            _d2   = sum(pd.to_numeric(_r2.get(_rmk, 0), errors='coerce') or 0 for _rmk in damage_remarks)
+                                            _ats2 = pd.to_numeric(_r2.get('ATS',          0), errors='coerce') or 0
+                                            _acc2 = _p2 + _d2 + _ats2
+                                            _diff2 = round(_a2 - _acc2, 2)
+                                            _post_recon_rows.append({
+                                                'Pallet':          str(_r2.get('Pallet', '')),
+                                                'Actual Qty':      _a2,
+                                                'Pick Quantity':   _p2,
+                                                'Damage Qty':      _d2,
+                                                'ATS':             _ats2,
+                                                'Total Accounted': _acc2,
+                                                'Difference':      _diff2,
+                                                'Reconciled':      '✅ OK' if abs(_diff2) < 0.01 else '❌ Still Mismatch',
+                                            })
+                                    if _post_recon_rows:
+                                        _pr_df2 = pd.DataFrame(_post_recon_rows)
+                                        _ok_cnt  = (_pr_df2['Reconciled'] == '✅ OK').sum()
+                                        _bad_cnt = (_pr_df2['Reconciled'] == '❌ Still Mismatch').sum()
+                                        _rc1, _rc2 = st.columns(2)
+                                        _rc1.metric("✅ Reconciled Lines", _ok_cnt)
+                                        _rc2.metric("❌ Still Mismatched", _bad_cnt)
+                                        st.dataframe(_pr_df2.astype(str), use_container_width=True)
+
+                        # ── END VERIFICATION LOGIC ─────────────────────────────────────────────
+
                         st.dataframe(fmt_df.astype(str), use_container_width=True)
 
                         # ══════════════════════════════════════════════════════
