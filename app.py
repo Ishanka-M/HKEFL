@@ -2143,13 +2143,25 @@ if login_section():
                             _inv_pals      = _inv_pals_raw.apply(lambda p: gen_to_orig.get(p, _base_pallet(p)))
                             _inv_qtys      = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
                             orig_total_inv = _inv_qtys.groupby(_inv_pals).sum().to_dict()
+                            # raw pallet → canonical map (exact raw string preserve කරන්න)
+                            _raw_to_canonical = {}
+                            for _rp, _cp in zip(_inv_pals_raw, _inv_pals):
+                                _raw_to_canonical.setdefault(_cp, _rp)   # canonical → first raw pallet
                             for pal in set(orig_total_inv) | set(rpt_pallet_qty):
                                 if pal not in inv_pallets_canonical and pal not in orig_total_inv:
                                     continue
                                 inv_q = orig_total_inv.get(pal, 0.0)
                                 rpt_q = rpt_pallet_qty.get(pal, 0.0)
                                 if abs(inv_q - rpt_q) > 0.01:
-                                    mismatch_pallets.append({'Pallet': pal, 'Inventory Actual Qty': inv_q, 'Report Actual Qty': rpt_q, 'Difference': inv_q - rpt_q})
+                                    # raw_pallet = exact inventory pallet string (exact match සඳහා)
+                                    _raw_pal = _raw_to_canonical.get(pal, pal)
+                                    mismatch_pallets.append({
+                                        'Pallet':               pal,        # display (canonical)
+                                        'Raw Pallet':           _raw_pal,   # exact inventory string
+                                        'Inventory Actual Qty': inv_q,
+                                        'Report Actual Qty':    rpt_q,
+                                        'Difference':           inv_q - rpt_q,
+                                    })
                         except Exception as _mm_err:
                             st.warning(f"⚠️ Mismatch check error: {_mm_err}")
 
@@ -2210,17 +2222,18 @@ if login_section():
                             _verified_updates = {}  # pallet → {new_actual_qty, new_ats}
 
                             for _mm in mismatch_pallets:
-                                _mm_pal     = str(_mm['Pallet']).strip()
+                                _mm_pal     = str(_mm['Pallet']).strip()       # display / canonical
+                                _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string
                                 _inv_aq     = float(_mm.get('Inventory Actual Qty', 0))
 
-                                # master_partial_data හි ඒ pallet ට අදාල rows filter කරගන්න
+                                # master_partial_data හි ඒ pallet ට අදාල rows — EXACT match on raw pallet
                                 _mpd_rows = _ver_partial_df[
-                                    _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_pal
+                                    _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_raw_pal
                                 ].copy()
 
                                 if _mpd_rows.empty:
                                     verification_results.append({
-                                        'Pallet':               _mm_pal,
+                                        'Pallet':               _mm_raw_pal,
                                         'Inventory Actual Qty': _inv_aq,
                                         'Partial Sum (MPD)':    0,
                                         'Balance':              _inv_aq,
@@ -2239,12 +2252,8 @@ if login_section():
                                 _verify_ok = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
 
                                 if _verify_ok:
-                                    # Pick_Report fmt_df හි ඒ pallet ට අදාල rows update කරන්න
-                                    # Actual Qty = balance (remaining qty)
-                                    # ATS = partial_qty_sum (partials ගිය qty)
-                                    _rpt_mask = fmt_df['Pallet'].astype(str).str.strip().apply(
-                                        lambda p: gen_to_orig.get(p, _base_pallet(p))
-                                    ) == _mm_pal
+                                    # Pick_Report fmt_df හි — EXACT match on raw pallet string
+                                    _rpt_mask = fmt_df['Pallet'].astype(str).str.strip() == _mm_raw_pal
 
                                     _rpt_indices = fmt_df[_rpt_mask].index.tolist()
 
@@ -2258,19 +2267,18 @@ if login_section():
                                             # Actual Qty → balance ලෙස set
                                             fmt_df.at[_ri, 'Actual Qty'] = _balance
 
-                                            # ATS = Actual Qty - Pick Quantity - Damage
-                                            # (balance = ATS + Pick + Damage, so ATS = balance - Pick - Damage)
+                                            # ATS = balance - Pick Quantity - Damage
                                             _new_ats = max(0.0, _balance - _cur_pick - _cur_dmg)
                                             fmt_df.at[_ri, 'ATS'] = _new_ats
 
-                                        _verified_updates[_mm_pal] = {
-                                            'new_actual_qty': _balance,
+                                        _verified_updates[_mm_raw_pal] = {
+                                            'new_actual_qty':  _balance,
                                             'partial_qty_sum': _partial_qty_sum,
-                                            'rows_updated': len(_rpt_indices),
+                                            'rows_updated':    len(_rpt_indices),
                                         }
 
                                     verification_results.append({
-                                        'Pallet':               _mm_pal,
+                                        'Pallet':               _mm_raw_pal,
                                         'Inventory Actual Qty': _inv_aq,
                                         'Partial Sum (MPD)':    _partial_qty_sum,
                                         'Balance':              _balance,
@@ -2279,7 +2287,7 @@ if login_section():
                                     })
                                 else:
                                     verification_results.append({
-                                        'Pallet':               _mm_pal,
+                                        'Pallet':               _mm_raw_pal,
                                         'Inventory Actual Qty': _inv_aq,
                                         'Partial Sum (MPD)':    _partial_qty_sum,
                                         'Balance':              _balance,
@@ -2307,9 +2315,8 @@ if login_section():
                                     st.markdown("##### 🔄 Post-Verification Reconciliation — Actual Qty = Pick + Damage + ATS")
                                     _post_recon_rows = []
                                     for _pv_pal, _pv_info in _verified_updates.items():
-                                        _pr_mask2 = fmt_df['Pallet'].astype(str).str.strip().apply(
-                                            lambda p: gen_to_orig.get(p, _base_pallet(p))
-                                        ) == _pv_pal
+                                        # EXACT match — raw pallet string directly compare කරනවා
+                                        _pr_mask2 = fmt_df['Pallet'].astype(str).str.strip() == _pv_pal
                                         for _ri2 in fmt_df[_pr_mask2].index.tolist():
                                             _r2 = fmt_df.loc[_ri2]
                                             _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce') or 0
