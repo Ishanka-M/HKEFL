@@ -2222,14 +2222,20 @@ if login_section():
                             _verified_updates = {}  # pallet → {new_actual_qty, new_ats}
 
                             for _mm in mismatch_pallets:
-                                _mm_pal     = str(_mm['Pallet']).strip()       # display / canonical
-                                _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string
+                                _mm_pal     = str(_mm['Pallet']).strip()       # canonical (e.g. PL032426017)
+                                _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string (e.g. PL032426017-P0001)
                                 _inv_aq     = float(_mm.get('Inventory Actual Qty', 0))
 
-                                # master_partial_data හි ඒ pallet ට අදාල rows — EXACT match on raw pallet
+                                # master_partial_data හි ඒ pallet ට අදාල rows
+                                # MPD Pallet column ෙකේ canonical (original) pallet store වෙනවා
+                                # raw pallet ෙකෙන් try → හොයා ගත්තේ නැත්නම් canonical ෙකෙන් try
                                 _mpd_rows = _ver_partial_df[
                                     _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_raw_pal
                                 ].copy()
+                                if _mpd_rows.empty and _mm_pal != _mm_raw_pal:
+                                    _mpd_rows = _ver_partial_df[
+                                        _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_pal
+                                    ].copy()
 
                                 if _mpd_rows.empty:
                                     verification_results.append({
@@ -2357,9 +2363,11 @@ if login_section():
                             _already_verified = set(_verified_updates.keys()) if '_verified_updates' in dir() and _verified_updates else set()
 
                             # Logic 1 ෙකෙන් pass නොවූ remaining mismatches
+                            # _verified_updates key ෙකේ raw pallet store වෙනවා → raw + canonical දෙකෙන්ම check
                             _remaining_mm = [
                                 _m for _m in mismatch_pallets
                                 if str(_m.get('Raw Pallet', _m['Pallet'])).strip() not in _already_verified
+                                and str(_m['Pallet']).strip() not in _already_verified
                             ]
 
                             if _remaining_mm:
@@ -2380,14 +2388,20 @@ if login_section():
                                 _verified2_updates = {}
 
                                 for _mm2 in _remaining_mm:
-                                    _mm2_pal     = str(_mm2.get('Raw Pallet', _mm2['Pallet'])).strip()
-                                    _mm2_rpt_qty = float(_mm2.get('Report Actual Qty', 0))
-                                    _mm2_inv_qty = float(_mm2.get('Inventory Actual Qty', 0))
+                                    _mm2_canonical = str(_mm2['Pallet']).strip()               # canonical (e.g. PL032426017)
+                                    _mm2_pal       = str(_mm2.get('Raw Pallet', _mm2_canonical)).strip()  # raw inventory string
+                                    _mm2_rpt_qty   = float(_mm2.get('Report Actual Qty', 0))
+                                    _mm2_inv_qty   = float(_mm2.get('Inventory Actual Qty', 0))
 
                                     # master_partial_data හි ඒ pallet exact filter
+                                    # raw pallet ෙකෙන් try → හොයා ගත්තේ නැත්නම් canonical ෙකෙන් try
                                     _mpd2_rows = _ver2_partial_df[
                                         _ver2_partial_df[_v2_pallet_col].astype(str).str.strip() == _mm2_pal
                                     ].copy()
+                                    if _mpd2_rows.empty and _mm2_canonical != _mm2_pal:
+                                        _mpd2_rows = _ver2_partial_df[
+                                            _ver2_partial_df[_v2_pallet_col].astype(str).str.strip() == _mm2_canonical
+                                        ].copy()
 
                                     if _mpd2_rows.empty:
                                         verification2_results.append({
