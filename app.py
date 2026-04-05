@@ -2222,14 +2222,20 @@ if login_section():
                             _verified_updates = {}  # pallet → {new_actual_qty, new_ats}
 
                             for _mm in mismatch_pallets:
-                                _mm_pal     = str(_mm['Pallet']).strip()       # display / canonical
-                                _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string
+                                _mm_pal     = str(_mm['Pallet']).strip()       # canonical (e.g. PL032426017)
+                                _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string (e.g. PL032426017-P0001)
                                 _inv_aq     = float(_mm.get('Inventory Actual Qty', 0))
 
-                                # master_partial_data හි ඒ pallet ට අදාල rows — EXACT match on raw pallet
+                                # master_partial_data හි ඒ pallet ට අදාල rows
+                                # MPD Pallet column ෙකේ canonical (original) pallet store වෙනවා
+                                # raw pallet ෙකෙන් try → හොයා ගත්තේ නැත්නම් canonical ෙකෙන් try
                                 _mpd_rows = _ver_partial_df[
                                     _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_raw_pal
                                 ].copy()
+                                if _mpd_rows.empty and _mm_pal != _mm_raw_pal:
+                                    _mpd_rows = _ver_partial_df[
+                                        _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_pal
+                                    ].copy()
 
                                 if _mpd_rows.empty:
                                     verification_results.append({
@@ -2248,8 +2254,13 @@ if login_section():
                                 # balance = Inventory Actual Qty - partial_qty_sum
                                 _balance = _inv_aq - _partial_qty_sum
 
-                                # Verification: balance + partial_qty_sum == Inventory Actual Qty
-                                _verify_ok = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
+                                # Verification 1: balance + partial_qty_sum == Inventory Actual Qty (math check)
+                                _verify_math = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
+
+                                # Verification 2: balance == Report Actual Qty (Pick_Report ෙකේ දැනට තියෙන qty)
+                                # balance ≠ rpt_qty නම් Logic 2 ෙකට pass කරන්න (partial_qty match case)
+                                _mm_rpt_qty = float(_mm.get('Report Actual Qty', 0))
+                                _verify_ok  = _verify_math and abs(_balance - _mm_rpt_qty) < 0.01
 
                                 if _verify_ok:
                                     # Pick_Report fmt_df හි — EXACT match on raw pallet string
@@ -2285,7 +2296,18 @@ if login_section():
                                         'Verification':         '✅ Verified (balance + sum = Inv Actual Qty)',
                                         'Action':               f'Updated Actual Qty→{_balance}, ATS recalculated',
                                     })
+                                elif _verify_math and not abs(_balance - _mm_rpt_qty) < 0.01:
+                                    # Math OK නමුත් balance ≠ Report Actual Qty → Logic 2 ෙකට pass කරන්න
+                                    verification_results.append({
+                                        'Pallet':               _mm_raw_pal,
+                                        'Inventory Actual Qty': _inv_aq,
+                                        'Partial Sum (MPD)':    _partial_qty_sum,
+                                        'Balance':              _balance,
+                                        'Verification':         '⏩ Pass to Logic 2 (balance ≠ Report Actual Qty)',
+                                        'Action':               'No Update — Logic 2 will handle',
+                                    })
                                 else:
+                                    # Math fail — balance + sum ≠ Inv Actual Qty
                                     verification_results.append({
                                         'Pallet':               _mm_raw_pal,
                                         'Inventory Actual Qty': _inv_aq,
@@ -2343,6 +2365,200 @@ if login_section():
                                         _rc1.metric("✅ Reconciled Lines", _ok_cnt)
                                         _rc2.metric("❌ Still Mismatched", _bad_cnt)
                                         st.dataframe(_pr_df2.astype(str), use_container_width=True)
+
+                        # ══════════════════════════════════════════════════════════════════════
+                        # VERIFICATION LOGIC 2: තවත් Qty_Mismatch තියෙනවා නම් →
+                        #   master_partial_data හි pallet exact filter →
+                        #   ඕනෑම row ෙකක actual_qty හෝ balance_qty == Report Actual Qty නම්
+                        #   → Pick_Report Actual Qty + ATS update
+                        #   → Actual Qty = Pick + Damage + ATS reconcile
+                        # ══════════════════════════════════════════════════════════════════════
+                        if mismatch_pallets and not partial_df.empty:
+
+                            # Logic 1 හි verified pallets set (ඒ ටික skip කරන්න)
+                            _already_verified = set(_verified_updates.keys()) if '_verified_updates' in dir() and _verified_updates else set()
+
+                            # Logic 1 ෙකෙන් pass නොවූ remaining mismatches
+                            # _verified_updates key ෙකේ raw pallet store වෙනවා → raw + canonical දෙකෙන්ම check
+                            _remaining_mm = [
+                                _m for _m in mismatch_pallets
+                                if str(_m.get('Raw Pallet', _m['Pallet'])).strip() not in _already_verified
+                                and str(_m['Pallet']).strip() not in _already_verified
+                            ]
+
+                            if _remaining_mm:
+                                st.markdown("---")
+                                st.markdown("#### 🔎 Verification Logic 2 — Actual Qty / Balance Qty Row Match")
+
+                                _ver2_partial_df = partial_df.copy()
+                                _v2pc = {str(c).strip().lower(): str(c).strip() for c in _ver2_partial_df.columns}
+                                _v2_pallet_col = _v2pc.get('pallet',        'Pallet')
+                                _v2_gen_col    = _v2pc.get('gen pallet id', 'Gen Pallet ID')
+                                _v2_aqty_col   = _v2pc.get('actual qty',    'Actual Qty')
+                                _v2_bal_col    = _v2pc.get('balance qty',   'Balance Qty')
+                                _v2_pqty_col   = _v2pc.get('partial qty',   'Partial Qty')
+
+                                _ver2_partial_df[_v2_aqty_col]  = pd.to_numeric(_ver2_partial_df[_v2_aqty_col],  errors='coerce').fillna(0)
+                                _ver2_partial_df[_v2_bal_col]   = pd.to_numeric(_ver2_partial_df[_v2_bal_col],   errors='coerce').fillna(0)
+                                _ver2_partial_df[_v2_pqty_col]  = pd.to_numeric(_ver2_partial_df[_v2_pqty_col],  errors='coerce').fillna(0)
+
+                                verification2_results = []
+                                _verified2_updates = {}
+
+                                for _mm2 in _remaining_mm:
+                                    _mm2_canonical = str(_mm2['Pallet']).strip()               # canonical (e.g. PL032426017)
+                                    _mm2_pal       = str(_mm2.get('Raw Pallet', _mm2_canonical)).strip()  # raw inventory string
+                                    _mm2_rpt_qty   = float(_mm2.get('Report Actual Qty', 0))
+                                    _mm2_inv_qty   = float(_mm2.get('Inventory Actual Qty', 0))
+
+                                    # master_partial_data හි ඒ pallet exact filter
+                                    # raw pallet ෙකෙන් try → හොයා ගත්තේ නැත්නම් canonical ෙකෙන් try
+                                    _mpd2_rows = _ver2_partial_df[
+                                        _ver2_partial_df[_v2_pallet_col].astype(str).str.strip() == _mm2_pal
+                                    ].copy()
+                                    if _mpd2_rows.empty and _mm2_canonical != _mm2_pal:
+                                        _mpd2_rows = _ver2_partial_df[
+                                            _ver2_partial_df[_v2_pallet_col].astype(str).str.strip() == _mm2_canonical
+                                        ].copy()
+
+                                    if _mpd2_rows.empty:
+                                        verification2_results.append({
+                                            'Pallet':               _mm2_pal,
+                                            'Report Actual Qty':    _mm2_rpt_qty,
+                                            'Inventory Actual Qty': _mm2_inv_qty,
+                                            'Matched Gen Pallet ID': '',
+                                            'Matched Field':        '',
+                                            'Matched Value':        '',
+                                            'Match':                '⚠️ No MPD rows found',
+                                            'Action':               'No Update',
+                                        })
+                                        continue
+
+                                    # ── ඕනෑම row ෙකක actual_qty / balance_qty / partial_qty == Report Actual Qty scan ──
+                                    _matched_row  = None
+                                    _matched_field = ''
+                                    _matched_gen   = ''
+                                    _matched_val   = 0.0
+
+                                    for _, _scan_row in _mpd2_rows.iterrows():
+                                        _scan_aqty  = float(_scan_row[_v2_aqty_col])
+                                        _scan_bal   = float(_scan_row[_v2_bal_col])
+                                        _scan_pqty  = float(_scan_row[_v2_pqty_col])
+                                        _scan_gen   = str(_scan_row[_v2_gen_col]).strip()
+
+                                        if abs(_scan_aqty - _mm2_rpt_qty) < 0.01:
+                                            _matched_row   = _scan_row
+                                            _matched_field = 'Actual Qty'
+                                            _matched_gen   = _scan_gen
+                                            _matched_val   = _scan_aqty
+                                            break
+                                        if abs(_scan_bal - _mm2_rpt_qty) < 0.01:
+                                            _matched_row   = _scan_row
+                                            _matched_field = 'Balance Qty'
+                                            _matched_gen   = _scan_gen
+                                            _matched_val   = _scan_bal
+                                            break
+                                        if abs(_scan_pqty - _mm2_rpt_qty) < 0.01:
+                                            _matched_row   = _scan_row
+                                            _matched_field = 'Partial Qty'
+                                            _matched_gen   = _scan_gen
+                                            _matched_val   = _scan_pqty
+                                            break
+
+                                    if _matched_row is not None:
+                                        # Pick_Report fmt_df හි exact pallet match කරලා update
+                                        _rpt2_mask    = fmt_df['Pallet'].astype(str).str.strip() == _mm2_pal
+                                        _rpt2_indices = fmt_df[_rpt2_mask].index.tolist()
+
+                                        if _rpt2_indices:
+                                            for _ri3 in _rpt2_indices:
+                                                _cur_pick3 = pd.to_numeric(fmt_df.at[_ri3, 'Pick Quantity'], errors='coerce') or 0
+                                                _cur_dmg3  = sum(
+                                                    pd.to_numeric(fmt_df.at[_ri3, _r], errors='coerce') or 0
+                                                    for _r in damage_remarks
+                                                )
+                                                # Actual Qty → matched value (actual_qty හෝ balance_qty)
+                                                fmt_df.at[_ri3, 'Actual Qty'] = _matched_val
+                                                # ATS = Actual Qty - Pick - Damage
+                                                _new_ats3 = max(0.0, _matched_val - _cur_pick3 - _cur_dmg3)
+                                                fmt_df.at[_ri3, 'ATS'] = _new_ats3
+
+                                            _verified2_updates[_mm2_pal] = {
+                                                'matched_gen_pallet_id': _matched_gen,
+                                                'matched_field':         _matched_field,
+                                                'matched_value':         _matched_val,
+                                                'rows_updated':          len(_rpt2_indices),
+                                            }
+
+                                        verification2_results.append({
+                                            'Pallet':                _mm2_pal,
+                                            'Report Actual Qty':     _mm2_rpt_qty,
+                                            'Inventory Actual Qty':  _mm2_inv_qty,
+                                            'Matched Gen Pallet ID': _matched_gen,
+                                            'Matched Field':         _matched_field,
+                                            'Matched Value':         _matched_val,
+                                            'Match':                 '✅ Matched — Updated',
+                                            'Action':                f'Actual Qty→{_matched_val} (via {_matched_field}), ATS recalculated',
+                                        })
+                                    else:
+                                        verification2_results.append({
+                                            'Pallet':                _mm2_pal,
+                                            'Report Actual Qty':     _mm2_rpt_qty,
+                                            'Inventory Actual Qty':  _mm2_inv_qty,
+                                            'Matched Gen Pallet ID': '',
+                                            'Matched Field':         '',
+                                            'Matched Value':         '',
+                                            'Match':                 '❌ No Match (actual_qty / balance_qty ≠ Report Actual Qty)',
+                                            'Action':                'No Update',
+                                        })
+
+                                _ver2_df = pd.DataFrame(verification2_results)
+                                if not _ver2_df.empty:
+                                    _v2_ok   = (_ver2_df['Match'].str.startswith('✅')).sum()
+                                    _v2_fail = (_ver2_df['Match'].str.startswith('❌')).sum()
+                                    _v2_none = (_ver2_df['Match'].str.startswith('⚠️')).sum()
+
+                                    _v2c1, _v2c2, _v2c3 = st.columns(3)
+                                    _v2c1.metric("✅ Matched & Updated", _v2_ok)
+                                    _v2c2.metric("❌ No Match",          _v2_fail)
+                                    _v2c3.metric("⚠️ No MPD Data",       _v2_none)
+
+                                    st.dataframe(_ver2_df.astype(str), use_container_width=True)
+
+                                    if _verified2_updates:
+                                        st.success(f"✅ Logic 2: {len(_verified2_updates)} pallets ගේ Actual Qty සහ ATS Pick_Report හි update කරන ලදී.")
+
+                                        # ── Post-update Reconciliation: Actual Qty = Pick + Damage + ATS ──
+                                        st.markdown("##### 🔄 Logic 2 — Post-Verification Reconciliation")
+                                        _post2_recon_rows = []
+                                        for _pv2_pal in _verified2_updates:
+                                            _pr2_mask = fmt_df['Pallet'].astype(str).str.strip() == _pv2_pal
+                                            for _ri4 in fmt_df[_pr2_mask].index.tolist():
+                                                _r4    = fmt_df.loc[_ri4]
+                                                _a4    = pd.to_numeric(_r4.get('Actual Qty',    0), errors='coerce') or 0
+                                                _p4    = pd.to_numeric(_r4.get('Pick Quantity', 0), errors='coerce') or 0
+                                                _d4    = sum(pd.to_numeric(_r4.get(_rmk, 0), errors='coerce') or 0 for _rmk in damage_remarks)
+                                                _ats4  = pd.to_numeric(_r4.get('ATS',          0), errors='coerce') or 0
+                                                _acc4  = _p4 + _d4 + _ats4
+                                                _diff4 = round(_a4 - _acc4, 2)
+                                                _post2_recon_rows.append({
+                                                    'Pallet':          str(_r4.get('Pallet', '')),
+                                                    'Actual Qty':      _a4,
+                                                    'Pick Quantity':   _p4,
+                                                    'Damage Qty':      _d4,
+                                                    'ATS':             _ats4,
+                                                    'Total Accounted': _acc4,
+                                                    'Difference':      _diff4,
+                                                    'Reconciled':      '✅ OK' if abs(_diff4) < 0.01 else '❌ Still Mismatch',
+                                                })
+                                        if _post2_recon_rows:
+                                            _pr2_df = pd.DataFrame(_post2_recon_rows)
+                                            _ok2_cnt  = (_pr2_df['Reconciled'] == '✅ OK').sum()
+                                            _bad2_cnt = (_pr2_df['Reconciled'] == '❌ Still Mismatch').sum()
+                                            _r2c1, _r2c2 = st.columns(2)
+                                            _r2c1.metric("✅ Reconciled Lines", _ok2_cnt)
+                                            _r2c2.metric("❌ Still Mismatched", _bad2_cnt)
+                                            st.dataframe(_pr2_df.astype(str), use_container_width=True)
 
                         # ── END VERIFICATION LOGIC ─────────────────────────────────────────────
 
