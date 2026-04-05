@@ -2254,8 +2254,13 @@ if login_section():
                                 # balance = Inventory Actual Qty - partial_qty_sum
                                 _balance = _inv_aq - _partial_qty_sum
 
-                                # Verification: balance + partial_qty_sum == Inventory Actual Qty
-                                _verify_ok = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
+                                # Verification 1: balance + partial_qty_sum == Inventory Actual Qty (math check)
+                                _verify_math = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
+
+                                # Verification 2: balance == Report Actual Qty (Pick_Report ෙකේ දැනට තියෙන qty)
+                                # balance ≠ rpt_qty නම් Logic 2 ෙකට pass කරන්න (partial_qty match case)
+                                _mm_rpt_qty = float(_mm.get('Report Actual Qty', 0))
+                                _verify_ok  = _verify_math and abs(_balance - _mm_rpt_qty) < 0.01
 
                                 if _verify_ok:
                                     # Pick_Report fmt_df හි — EXACT match on raw pallet string
@@ -2291,7 +2296,18 @@ if login_section():
                                         'Verification':         '✅ Verified (balance + sum = Inv Actual Qty)',
                                         'Action':               f'Updated Actual Qty→{_balance}, ATS recalculated',
                                     })
+                                elif _verify_math and not abs(_balance - _mm_rpt_qty) < 0.01:
+                                    # Math OK නමුත් balance ≠ Report Actual Qty → Logic 2 ෙකට pass කරන්න
+                                    verification_results.append({
+                                        'Pallet':               _mm_raw_pal,
+                                        'Inventory Actual Qty': _inv_aq,
+                                        'Partial Sum (MPD)':    _partial_qty_sum,
+                                        'Balance':              _balance,
+                                        'Verification':         '⏩ Pass to Logic 2 (balance ≠ Report Actual Qty)',
+                                        'Action':               'No Update — Logic 2 will handle',
+                                    })
                                 else:
+                                    # Math fail — balance + sum ≠ Inv Actual Qty
                                     verification_results.append({
                                         'Pallet':               _mm_raw_pal,
                                         'Inventory Actual Qty': _inv_aq,
@@ -2380,9 +2396,11 @@ if login_section():
                                 _v2_gen_col    = _v2pc.get('gen pallet id', 'Gen Pallet ID')
                                 _v2_aqty_col   = _v2pc.get('actual qty',    'Actual Qty')
                                 _v2_bal_col    = _v2pc.get('balance qty',   'Balance Qty')
+                                _v2_pqty_col   = _v2pc.get('partial qty',   'Partial Qty')
 
-                                _ver2_partial_df[_v2_aqty_col] = pd.to_numeric(_ver2_partial_df[_v2_aqty_col], errors='coerce').fillna(0)
-                                _ver2_partial_df[_v2_bal_col]  = pd.to_numeric(_ver2_partial_df[_v2_bal_col],  errors='coerce').fillna(0)
+                                _ver2_partial_df[_v2_aqty_col]  = pd.to_numeric(_ver2_partial_df[_v2_aqty_col],  errors='coerce').fillna(0)
+                                _ver2_partial_df[_v2_bal_col]   = pd.to_numeric(_ver2_partial_df[_v2_bal_col],   errors='coerce').fillna(0)
+                                _ver2_partial_df[_v2_pqty_col]  = pd.to_numeric(_ver2_partial_df[_v2_pqty_col],  errors='coerce').fillna(0)
 
                                 verification2_results = []
                                 _verified2_updates = {}
@@ -2416,16 +2434,17 @@ if login_section():
                                         })
                                         continue
 
-                                    # ── ඕනෑම row ෙකක actual_qty හෝ balance_qty == Report Actual Qty scan කරන්න ──
+                                    # ── ඕනෑම row ෙකක actual_qty / balance_qty / partial_qty == Report Actual Qty scan ──
                                     _matched_row  = None
                                     _matched_field = ''
                                     _matched_gen   = ''
                                     _matched_val   = 0.0
 
                                     for _, _scan_row in _mpd2_rows.iterrows():
-                                        _scan_aqty = float(_scan_row[_v2_aqty_col])
-                                        _scan_bal  = float(_scan_row[_v2_bal_col])
-                                        _scan_gen  = str(_scan_row[_v2_gen_col]).strip()
+                                        _scan_aqty  = float(_scan_row[_v2_aqty_col])
+                                        _scan_bal   = float(_scan_row[_v2_bal_col])
+                                        _scan_pqty  = float(_scan_row[_v2_pqty_col])
+                                        _scan_gen   = str(_scan_row[_v2_gen_col]).strip()
 
                                         if abs(_scan_aqty - _mm2_rpt_qty) < 0.01:
                                             _matched_row   = _scan_row
@@ -2438,6 +2457,12 @@ if login_section():
                                             _matched_field = 'Balance Qty'
                                             _matched_gen   = _scan_gen
                                             _matched_val   = _scan_bal
+                                            break
+                                        if abs(_scan_pqty - _mm2_rpt_qty) < 0.01:
+                                            _matched_row   = _scan_row
+                                            _matched_field = 'Partial Qty'
+                                            _matched_gen   = _scan_gen
+                                            _matched_val   = _scan_pqty
                                             break
 
                                     if _matched_row is not None:
