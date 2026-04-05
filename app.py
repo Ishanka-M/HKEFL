@@ -750,7 +750,7 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
             else:
                 pick_rows[-1]['Gen Pallet ID'] = ''
 
-                    temp_inv.at[idx, actual_qty_col] -= take
+                temp_inv.at[idx, actual_qty_col] -= take
                     needed     -= take
                     picked_qty += take
 
