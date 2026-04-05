@@ -2352,20 +2352,38 @@ if login_section():
                                 tally_sheet.set_column(0, 0, 55)
 
                             hdr_fmt   = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
-                            pick_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
-                            dmg_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
-                            ats_fmt   = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
-                            vnd_fmt   = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
-                            norm_fmt  = wb.add_format({'border': 1, 'font_size': 10})
+                            pick_fmt      = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
+                            pick_num_fmt  = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
+                            dmg_fmt       = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
+                            dmg_num_fmt   = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
+                            ats_fmt       = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
+                            ats_num_fmt   = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True, 'num_format': '#,##0.##'})
+                            vnd_fmt       = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
+                            norm_fmt      = wb.add_format({'border': 1, 'font_size': 10})
+                            norm_num_fmt  = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
+                            _num_col_fmts = {
+                                'Pick Quantity': pick_num_fmt,
+                                'ATS':           ats_num_fmt,
+                            }
+                            for rmk in damage_remarks:
+                                _num_col_fmts[rmk] = dmg_num_fmt
                             for ci, col_name in enumerate(final_cols):
                                 ws_fmt.write(0, ci, col_name, hdr_fmt); ws_fmt.set_column(ci, ci, 15)
                                 for ri in range(1, len(fmt_df)+1):
-                                    val = str(fmt_df_with_total.iloc[ri-1][col_name])
-                                    if col_name in ['Pick Quantity', 'Destination Country', 'Order NO']: ws_fmt.write(ri, ci, val, pick_fmt)
-                                    elif col_name in damage_remarks: ws_fmt.write(ri, ci, val, dmg_fmt)
-                                    elif col_name == 'ATS': ws_fmt.write(ri, ci, val, ats_fmt)
-                                    elif col_name in ['Vendor Name', 'Vendor Country']: ws_fmt.write(ri, ci, val, vnd_fmt)
-                                    else: ws_fmt.write(ri, ci, val, norm_fmt)
+                                    raw_val = fmt_df_with_total.iloc[ri-1][col_name]
+                                    str_val = str(raw_val)
+                                    if col_name in _num_col_fmts:
+                                        # numeric write — blank stays blank
+                                        if str_val in ('', 'nan', 'None', 'NaN'):
+                                            ws_fmt.write(ri, ci, '', _num_col_fmts[col_name])
+                                        else:
+                                            try:
+                                                ws_fmt.write_number(ri, ci, float(raw_val), _num_col_fmts[col_name])
+                                            except (ValueError, TypeError):
+                                                ws_fmt.write(ri, ci, str_val, pick_fmt if col_name == 'Pick Quantity' else (ats_fmt if col_name == 'ATS' else dmg_fmt))
+                                    elif col_name in ['Destination Country', 'Order NO']: ws_fmt.write(ri, ci, str_val, pick_fmt)
+                                    elif col_name in ['Vendor Name', 'Vendor Country']: ws_fmt.write(ri, ci, str_val, vnd_fmt)
+                                    else: ws_fmt.write(ri, ci, str_val, norm_fmt)
                             total_row_idx   = len(fmt_df) + 1
                             total_xl_num    = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0.##'})
                             total_xl_str    = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
