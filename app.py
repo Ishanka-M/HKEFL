@@ -2441,9 +2441,14 @@ if login_section():
                                             fmt_use = unac_row_ok_num if is_num else unac_row_ok
                                         if is_num:
                                             try:
-                                                unaccounted_sheet.write(ri_d, ci_d, float(val_d), fmt_use)
-                                            except:
-                                                unaccounted_sheet.write(ri_d, ci_d, str(val_d), fmt_use)
+                                                import math as _math
+                                                _nv = float(val_d)
+                                                if _math.isnan(_nv) or _math.isinf(_nv):
+                                                    unaccounted_sheet.write(ri_d, ci_d, 0, fmt_use)
+                                                else:
+                                                    unaccounted_sheet.write(ri_d, ci_d, _nv, fmt_use)
+                                            except (TypeError, ValueError):
+                                                unaccounted_sheet.write(ri_d, ci_d, 0, fmt_use)
                                         else:
                                             unaccounted_sheet.write(ri_d, ci_d, str(val_d), fmt_use)
 
@@ -2458,10 +2463,14 @@ if login_section():
                                         col_total = 0.0
                                         for _dr in unac_detail_rows:
                                             try:
-                                                col_total += float(_dr.get(col_d, 0) or 0)
+                                                _v = float(_dr.get(col_d, 0) or 0)
+                                                if _v == _v:  # nan check
+                                                    col_total += _v
                                             except (TypeError, ValueError):
                                                 pass
-                                        unaccounted_sheet.write(total_ri_d, ci_d, col_total, unac_total_fmt)
+                                        import math as _math
+                                        _safe_total = col_total if (not _math.isnan(col_total) and not _math.isinf(col_total)) else 0.0
+                                        unaccounted_sheet.write(total_ri_d, ci_d, _safe_total, unac_total_fmt)
                                     else:
                                         unaccounted_sheet.write(total_ri_d, ci_d, '', unac_total_str)
 
