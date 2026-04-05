@@ -2455,7 +2455,12 @@ if login_section():
                                     elif col_d == 'Status':
                                         unaccounted_sheet.write(total_ri_d, ci_d, f'{mismatch_count_u} mismatch(es)', unac_total_str)
                                     elif col_d in numeric_cols:
-                                        col_total = sum(det_row.get(col_d, 0) or 0 for det_row in unac_detail_rows)
+                                        col_total = 0.0
+                                        for _dr in unac_detail_rows:
+                                            try:
+                                                col_total += float(_dr.get(col_d, 0) or 0)
+                                            except (TypeError, ValueError):
+                                                pass
                                         unaccounted_sheet.write(total_ri_d, ci_d, col_total, unac_total_fmt)
                                     else:
                                         unaccounted_sheet.write(total_ri_d, ci_d, '', unac_total_str)
