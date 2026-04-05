@@ -2166,44 +2166,39 @@ if login_section():
                         tally_df = pd.DataFrame(tally_fail_rows)
 
                         # ══════════════════════════════════════════════════════
-                        # Change 4: Full Reconcile Report — ALL rows
-                        # Formula: Actual Qty = Pick Quantity + Damage + ATS
+                        # Change 4: Reconciliation (from processed Pick_Report)
                         # ══════════════════════════════════════════════════════
                         recon_rows = []
-                        recon_mismatch_count = 0
                         for idx, r_row in fmt_df.iterrows():
                             pal    = str(r_row.get('Pallet', '')).strip()
-                            act_q  = round(pd.to_numeric(r_row.get('Actual Qty', 0), errors='coerce') or 0, 2)
-                            pick_q = round(pd.to_numeric(r_row.get('Pick Quantity', 0), errors='coerce') or 0, 2)
-                            dmg_q  = round(sum(pd.to_numeric(r_row.get(rmk, 0), errors='coerce') or 0 for rmk in damage_remarks), 2)
-                            ats_q  = round(pd.to_numeric(r_row.get('ATS', 0), errors='coerce') or 0, 2)
-                            total_accounted = round(pick_q + dmg_q + ats_q, 2)
+                            act_q  = pd.to_numeric(r_row.get('Actual Qty', 0), errors='coerce') or 0
+                            pick_q = pd.to_numeric(r_row.get('Pick Quantity', 0), errors='coerce') or 0
+                            dmg_q  = sum(pd.to_numeric(r_row.get(rmk, 0), errors='coerce') or 0 for rmk in damage_remarks)
+                            ats_q  = pd.to_numeric(r_row.get('ATS', 0), errors='coerce') or 0
+                            total_accounted = pick_q + dmg_q + ats_q
                             diff = round(act_q - total_accounted, 2)
-                            is_tallied = abs(diff) <= 0.01
-                            if not is_tallied:
-                                recon_mismatch_count += 1
-                            recon_rows.append({
-                                'Pallet':              pal,
-                                'Vendor Name':         str(r_row.get('Vendor Name', '')),
-                                'Invoice Number':      str(r_row.get('Invoice Number', '')),
-                                'Grn Number':          str(r_row.get('Grn Number', '')),
-                                'Style':               str(r_row.get('Style', '')),
-                                'Color':               str(r_row.get('Color', '')),
-                                'Size':                str(r_row.get('Size', '')),
-                                'Actual Qty':          act_q,
-                                'Pick Quantity':       pick_q,
-                                'Damage Qty':          dmg_q,
-                                'ATS':                 ats_q,
-                                'Accounted (P+D+A)':   total_accounted,
-                                'Difference':          diff,
-                                'Reconciled':          '✅ OK' if is_tallied else '⚠️ Mismatch',
-                            })
+                            if abs(diff) > 0.01:
+                                base = _base_pallet(pal)
+                                part_entries = partial_map.get(base, []) or partial_map.get(pal, [])
+                                recon_rows.append({
+                                    'Pallet':           pal,
+                                    'Actual Qty':       act_q,
+                                    'Pick Quantity':    pick_q,
+                                    'Damage Qty':       dmg_q,
+                                    'ATS':              ats_q,
+                                    'Accounted':        total_accounted,
+                                    'Unaccounted Diff': diff,
+                                    'Partial Entries':  len(part_entries),
+                                    'Vendor Name':      str(fmt_df.at[idx, 'Vendor Name']),
+                                    'Invoice Number':   str(fmt_df.at[idx, 'Invoice Number']),
+                                    'Grn Number':       str(fmt_df.at[idx, 'Grn Number']),
+                                    'Status':           '⚠️ Mismatch',
+                                })
 
                         recon_df = pd.DataFrame(recon_rows)
-                        if recon_mismatch_count > 0:
-                            st.warning(f"⚠️ Reconciliation Issues: **{recon_mismatch_count}** rows — Actual Qty ≠ Pick + Damage + ATS")
-                        else:
-                            st.success("✅ All rows reconciled — Actual Qty = Pick + Damage + ATS")
+                        if not recon_df.empty:
+                            st.warning(f"⚠️ Reconciliation Issues: **{len(recon_df)}** rows — Actual Qty ≠ Pick + Damage + ATS")
+                            st.dataframe(recon_df.astype(str), use_container_width=True)
 
                         # ══════════════════════════════════════════════════════
                         # Change 3: Total Row build
@@ -2274,63 +2269,19 @@ if login_section():
                                 mm_sheet.write(0, 0, '✅ No Qty Mismatches Found', mm_ok_fmt)
                                 mm_sheet.set_column(0, 0, 35)
 
-                            # ── Reconcile_Report sheet — ALL rows (Actual Qty = Pick + Damage + ATS) ──
-                            recon_sheet      = wb.add_worksheet('Reconcile_Report')
-                            recon_hdr_fmt    = wb.add_format({'bold': True, 'bg_color': '#1a3a5c', 'font_color': '#fff', 'border': 1, 'font_size': 10})
-                            recon_ok_fmt     = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#E8F5E9'})
-                            recon_ok_num_fmt = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#E8F5E9', 'num_format': '#,##0.##'})
-                            recon_bad_fmt    = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#FFE0E0'})
-                            recon_bad_num_fmt= wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#FFE0E0', 'num_format': '#,##0.##'})
-                            recon_diff_fmt   = wb.add_format({'border': 1, 'font_size': 10, 'bg_color': '#FFE0E0', 'font_color': '#c0392b', 'bold': True, 'num_format': '#,##0.##'})
-                            recon_num_cols   = {'Actual Qty', 'Pick Quantity', 'Damage Qty', 'ATS', 'Accounted (P+D+A)', 'Difference'}
+                            # ── Reconciliation_Report sheet (from processed Pick_Report) ──────
                             if not recon_df.empty:
+                                recon_sheet    = wb.add_worksheet('Reconciliation_Report')
+                                recon_hdr_fmt  = wb.add_format({'bold': True, 'bg_color': '#f39c12', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                                recon_row_fmt  = wb.add_format({'border': 1, 'font_size': 10})
+                                recon_warn_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e74c3c', 'bold': True})
                                 for ci, col in enumerate(recon_df.columns):
                                     recon_sheet.write(0, ci, col, recon_hdr_fmt)
                                     recon_sheet.set_column(ci, ci, 20)
                                 for ri2, row2 in recon_df.iterrows():
-                                    is_ok = str(row2.get('Reconciled', '')).startswith('✅')
-                                    for ci2, col2 in enumerate(recon_df.columns):
-                                        val2 = row2[col2]
-                                        if col2 in recon_num_cols:
-                                            try:
-                                                num_val = float(val2)
-                                                if col2 == 'Difference' and not is_ok:
-                                                    recon_sheet.write_number(ri2 + 1, ci2, num_val, recon_diff_fmt)
-                                                else:
-                                                    recon_sheet.write_number(ri2 + 1, ci2, num_val, recon_ok_num_fmt if is_ok else recon_bad_num_fmt)
-                                            except:
-                                                recon_sheet.write(ri2 + 1, ci2, str(val2), recon_ok_fmt if is_ok else recon_bad_fmt)
-                                        else:
-                                            recon_sheet.write(ri2 + 1, ci2, str(val2), recon_ok_fmt if is_ok else recon_bad_fmt)
-                                recon_sheet.freeze_panes(1, 0)
-                                # ── Reconcile summary rows at bottom ──
-                                total_ri = len(recon_df) + 2
-                                recon_sum_lbl_fmt = wb.add_format({'bold': True, 'font_size': 10, 'bg_color': '#1a3a5c', 'font_color': '#FFD700', 'border': 1})
-                                recon_sum_val_fmt = wb.add_format({'bold': True, 'font_size': 10, 'bg_color': '#1a3a5c', 'font_color': '#FFD700', 'border': 1, 'num_format': '#,##0.##'})
-                                recon_totals = [
-                                    ('Total Rows',         len(recon_df)),
-                                    ('Reconciled (OK)',    sum(1 for r in recon_rows if abs(r['Difference']) <= 0.01)),
-                                    ('Mismatch Rows',      recon_mismatch_count),
-                                    ('Total Actual Qty',   round(sum(r['Actual Qty'] for r in recon_rows), 2)),
-                                    ('Total Pick Qty',     round(sum(r['Pick Quantity'] for r in recon_rows), 2)),
-                                    ('Total Damage Qty',   round(sum(r['Damage Qty'] for r in recon_rows), 2)),
-                                    ('Total ATS',          round(sum(r['ATS'] for r in recon_rows), 2)),
-                                    ('Total Accounted',    round(sum(r['Accounted (P+D+A)'] for r in recon_rows), 2)),
-                                    ('Net Difference',     round(sum(r['Difference'] for r in recon_rows), 2)),
-                                ]
-                                import math as _math
-                                for si, (lbl, val) in enumerate(recon_totals):
-                                    recon_sheet.write(total_ri + si, 0, lbl, recon_sum_lbl_fmt)
-                                    try:
-                                        _fval = float(val)
-                                        if _math.isnan(_fval) or _math.isinf(_fval):
-                                            recon_sheet.write(total_ri + si, 1, 0.0, recon_sum_val_fmt)
-                                        else:
-                                            recon_sheet.write_number(total_ri + si, 1, _fval, recon_sum_val_fmt)
-                                    except (TypeError, ValueError):
-                                        recon_sheet.write(total_ri + si, 1, str(val), recon_sum_lbl_fmt)
-                            else:
-                                recon_sheet.write(0, 0, 'No data to reconcile', recon_hdr_fmt)
+                                    for ci2, val2 in enumerate(row2):
+                                        use_fmt = recon_warn_fmt if recon_df.columns[ci2] == 'Unaccounted Diff' else recon_row_fmt
+                                        recon_sheet.write(ri2 + 1, ci2, str(val2), use_fmt)
 
                             # ── NEW FEATURE 5: Tally_Fail_Report sheet ──────────────────────
                             tally_sheet   = wb.add_worksheet('Tally_Fail_Report')
