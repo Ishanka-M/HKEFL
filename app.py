@@ -2302,43 +2302,133 @@ if login_section():
                                 tally_sheet.write(0, 0, '✅ All Lines Tallied — Actual Qty = Pick + Damage + ATS', tally_ok_fmt)
                                 tally_sheet.set_column(0, 0, 55)
 
-                            # ── NEW: Unaccounted_Report sheet ────────────────────────────────
-                            unaccounted_qty = int(inv_total_qty - accounted)
-                            unaccounted_sheet    = wb.add_worksheet('Unaccounted_Report')
-                            unac_title_fmt  = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#ffffff', 'border': 1, 'font_size': 12})
-                            unac_ok_fmt     = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#ffffff', 'font_size': 12})
-                            unac_label_fmt  = wb.add_format({'bold': True, 'font_size': 11})
-                            unac_val_fmt    = wb.add_format({'font_size': 11, 'num_format': '#,##0'})
-                            unac_val_red    = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'font_color': '#c0392b', 'bold': True})
-                            unaccounted_sheet.set_column(0, 0, 32)
-                            unaccounted_sheet.set_column(1, 1, 20)
+                            # ── Unaccounted_Report sheet — pallet-level detail ───────────────
+                            unaccounted_qty = round(inv_total_qty - accounted, 2)
+                            unaccounted_sheet = wb.add_worksheet('Unaccounted_Report')
+
+                            # formats
+                            unac_title_fmt   = wb.add_format({'bold': True, 'bg_color': '#c0392b', 'font_color': '#ffffff', 'border': 1, 'font_size': 12, 'align': 'center', 'valign': 'vcenter'})
+                            unac_ok_fmt      = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#ffffff', 'font_size': 12})
+                            unac_sum_lbl     = wb.add_format({'bold': True, 'font_size': 11, 'bg_color': '#f2f2f2', 'border': 1})
+                            unac_sum_val     = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'border': 1})
+                            unac_sum_red     = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'font_color': '#c0392b', 'bold': True, 'border': 1, 'bg_color': '#fff0f0'})
+                            unac_sum_grn     = wb.add_format({'font_size': 11, 'num_format': '#,##0', 'font_color': '#27ae60', 'bold': True, 'border': 1})
+                            unac_hdr_fmt     = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#ffffff', 'border': 1, 'font_size': 10, 'align': 'center'})
+                            unac_row_fmt     = wb.add_format({'border': 1, 'font_size': 10})
+                            unac_row_red     = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff5f5'})
+                            unac_row_num     = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0'})
+                            unac_row_num_red = wb.add_format({'border': 1, 'font_size': 10, 'num_format': '#,##0', 'font_color': '#c0392b', 'bold': True, 'bg_color': '#fff5f5'})
+                            unac_total_fmt   = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
+                            unac_total_str   = wb.add_format({'bold': True, 'bg_color': '#2c3e50', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
+
                             if unaccounted_qty != 0:
-                                unaccounted_sheet.write(0, 0, '⚠️ Unaccounted Qty Report', unac_title_fmt)
-                                unaccounted_sheet.write(0, 1, '', unac_title_fmt)
-                                unac_rows = [
-                                    ('Inventory Total Actual Qty',  int(inv_total_qty)),
-                                    ('Pick Quantity',               int(total_pick_qty)),
-                                    ('ATS Quantity',                int(total_ats_qty)),
-                                    ('Damage Quantity',             int(total_dmg_qty)),
-                                    ('Total Accounted',             int(accounted)),
-                                    ('Unaccounted Qty',             unaccounted_qty),
+                                # ── Section 1: Summary block (rows 0-7) ──────────────────────────
+                                unaccounted_sheet.merge_range(0, 0, 0, 4, '⚠️  UNACCOUNTED QTY REPORT', unac_title_fmt)
+                                unac_sum_data = [
+                                    ('Inventory Total Actual Qty', int(inv_total_qty)),
+                                    ('Pick Quantity',              int(total_pick_qty)),
+                                    ('ATS Quantity',               int(total_ats_qty)),
+                                    ('Damage Quantity',            int(total_dmg_qty)),
+                                    ('Total Accounted',            int(accounted)),
+                                    ('Unaccounted Qty',            int(unaccounted_qty)),
                                 ]
-                                for ri_u, (lbl_u, val_u) in enumerate(unac_rows, start=1):
-                                    unaccounted_sheet.write(ri_u, 0, lbl_u, unac_label_fmt)
-                                    use_val_fmt = unac_val_red if lbl_u == 'Unaccounted Qty' else unac_val_fmt
-                                    unaccounted_sheet.write(ri_u, 1, val_u, use_val_fmt)
-                                # List mismatch pallets contributing to unaccounted qty
-                                if mismatch_pallets:
-                                    unaccounted_sheet.write(len(unac_rows) + 2, 0, 'Pallet Qty Mismatches (contributing to Unaccounted):', unac_label_fmt)
-                                    mm_unac_hdr = ['Pallet', 'Inventory Actual Qty', 'Report Actual Qty', 'Difference']
-                                    for ci_u, hdr_u in enumerate(mm_unac_hdr):
-                                        unaccounted_sheet.write(len(unac_rows) + 3, ci_u, hdr_u, unac_label_fmt)
-                                        unaccounted_sheet.set_column(ci_u, ci_u, 22)
-                                    for ri_u2, mm_row in enumerate(mismatch_pallets, start=len(unac_rows) + 4):
-                                        for ci_u2, hdr_u2 in enumerate(mm_unac_hdr):
-                                            val_u2 = mm_row.get(hdr_u2, '')
-                                            use_fmt_u2 = unac_val_red if hdr_u2 == 'Difference' else unac_val_fmt
-                                            unaccounted_sheet.write(ri_u2, ci_u2, val_u2, use_fmt_u2)
+                                for ri_s, (lbl_s, val_s) in enumerate(unac_sum_data, start=1):
+                                    unaccounted_sheet.write(ri_s, 0, lbl_s, unac_sum_lbl)
+                                    if lbl_s == 'Unaccounted Qty':
+                                        unaccounted_sheet.write(ri_s, 1, val_s, unac_sum_red)
+                                    elif lbl_s == 'Total Accounted':
+                                        unaccounted_sheet.write(ri_s, 1, val_s, unac_sum_grn)
+                                    else:
+                                        unaccounted_sheet.write(ri_s, 1, val_s, unac_sum_val)
+
+                                # ── Section 2: Per-pallet detail table (row 9 onwards) ───────────
+                                # Build pallet-level unaccounted detail from fmt_df
+                                unac_detail_rows = []
+                                for _idx_u, _r_u in fmt_df.iterrows():
+                                    _pal_u   = str(_r_u.get('Pallet', '')).strip()
+                                    _act_u   = pd.to_numeric(_r_u.get('Actual Qty',    0), errors='coerce') or 0
+                                    _pick_u  = pd.to_numeric(_r_u.get('Pick Quantity', 0), errors='coerce') or 0
+                                    _ats_u   = pd.to_numeric(_r_u.get('ATS',           0), errors='coerce') or 0
+                                    _dmg_u   = sum(pd.to_numeric(_r_u.get(rmk, 0), errors='coerce') or 0 for rmk in damage_remarks)
+                                    _acc_u   = _pick_u + _ats_u + _dmg_u
+                                    _unac_u  = round(_act_u - _acc_u, 2)
+                                    if abs(_unac_u) > 0.01:
+                                        unac_detail_rows.append({
+                                            'Pallet':           _pal_u,
+                                            'Vendor Name':      str(_r_u.get('Vendor Name',    '')),
+                                            'Invoice Number':   str(_r_u.get('Invoice Number', '')),
+                                            'Grn Number':       str(_r_u.get('Grn Number',     '')),
+                                            'Style':            str(_r_u.get('Style',          '')),
+                                            'Color':            str(_r_u.get('Color',          '')),
+                                            'Size':             str(_r_u.get('Size',           '')),
+                                            'Lot Number':       str(_r_u.get('Lot Number',     '')),
+                                            'Supplier':         str(_r_u.get('Supplier',       '')),
+                                            'Location Id':      str(_r_u.get('Location Id',    '')),
+                                            'Actual Qty':       _act_u,
+                                            'Pick Quantity':    _pick_u,
+                                            'ATS':              _ats_u,
+                                            'Damage Qty':       _dmg_u,
+                                            'Total Accounted':  _acc_u,
+                                            'Unaccounted Qty':  _unac_u,
+                                            'Destination Country': str(_r_u.get('Destination Country', '')),
+                                            'Order NO':         str(_r_u.get('Order NO', '')),
+                                        })
+
+                                detail_hdr_row = 9
+                                unac_detail_cols = [
+                                    'Pallet', 'Vendor Name', 'Invoice Number', 'Grn Number',
+                                    'Style', 'Color', 'Size', 'Lot Number', 'Supplier', 'Location Id',
+                                    'Actual Qty', 'Pick Quantity', 'ATS', 'Damage Qty',
+                                    'Total Accounted', 'Unaccounted Qty',
+                                    'Destination Country', 'Order NO',
+                                ]
+                                col_widths = {
+                                    'Pallet': 20, 'Vendor Name': 22, 'Invoice Number': 18,
+                                    'Grn Number': 16, 'Style': 14, 'Color': 12, 'Size': 10,
+                                    'Lot Number': 16, 'Supplier': 18, 'Location Id': 14,
+                                    'Actual Qty': 14, 'Pick Quantity': 14, 'ATS': 12,
+                                    'Damage Qty': 14, 'Total Accounted': 16, 'Unaccounted Qty': 16,
+                                    'Destination Country': 20, 'Order NO': 16,
+                                }
+                                numeric_cols = {'Actual Qty', 'Pick Quantity', 'ATS', 'Damage Qty', 'Total Accounted', 'Unaccounted Qty'}
+
+                                unaccounted_sheet.write(detail_hdr_row - 1, 0, f'Pallet-Level Unaccounted Detail  ({len(unac_detail_rows)} pallets)', unac_sum_lbl)
+                                for ci_d, col_d in enumerate(unac_detail_cols):
+                                    unaccounted_sheet.write(detail_hdr_row, ci_d, col_d, unac_hdr_fmt)
+                                    unaccounted_sheet.set_column(ci_d, ci_d, col_widths.get(col_d, 15))
+
+                                for ri_d, det_row in enumerate(unac_detail_rows, start=detail_hdr_row + 1):
+                                    for ci_d, col_d in enumerate(unac_detail_cols):
+                                        val_d = det_row.get(col_d, '')
+                                        is_unac_col = (col_d == 'Unaccounted Qty')
+                                        if col_d in numeric_cols:
+                                            try:
+                                                num_d = float(val_d)
+                                                unaccounted_sheet.write(ri_d, ci_d, num_d, unac_row_num_red if is_unac_col else unac_row_num)
+                                            except:
+                                                unaccounted_sheet.write(ri_d, ci_d, str(val_d), unac_row_red if is_unac_col else unac_row_fmt)
+                                        else:
+                                            unaccounted_sheet.write(ri_d, ci_d, str(val_d), unac_row_red if is_unac_col else unac_row_fmt)
+
+                                # Total row at bottom of detail table
+                                if unac_detail_rows:
+                                    total_ri_d = detail_hdr_row + 1 + len(unac_detail_rows)
+                                    for ci_d, col_d in enumerate(unac_detail_cols):
+                                        if col_d == 'Pallet':
+                                            unaccounted_sheet.write(total_ri_d, ci_d, 'TOTAL', unac_total_str)
+                                        elif col_d in numeric_cols:
+                                            col_total = sum(det_row.get(col_d, 0) or 0 for det_row in unac_detail_rows)
+                                            unaccounted_sheet.write(total_ri_d, ci_d, col_total, unac_total_fmt)
+                                        else:
+                                            unaccounted_sheet.write(total_ri_d, ci_d, '', unac_total_str)
+
+                                unaccounted_sheet.freeze_panes(detail_hdr_row + 1, 0)
+
+                                # Streamlit UI warning with detail count
+                                if unac_detail_rows:
+                                    st.warning(f"⚠️ Unaccounted Qty: **{int(unaccounted_qty)}** — **{len(unac_detail_rows)}** pallets affected (see Unaccounted_Report sheet)")
+                                else:
+                                    st.warning(f"⚠️ Unaccounted Qty: **{int(unaccounted_qty)}** (see Unaccounted_Report sheet)")
                             else:
                                 unaccounted_sheet.write(0, 0, '✅ No Unaccounted Qty — All Quantities Fully Accounted!', unac_ok_fmt)
                                 unaccounted_sheet.set_column(0, 0, 55)
