@@ -751,8 +751,8 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                 pick_rows[-1]['Gen Pallet ID'] = ''
 
                 temp_inv.at[idx, actual_qty_col] -= take
-                    needed     -= take
-                    picked_qty += take
+            needed     -= take
+            picked_qty += take
 
             variance = float(req['PICK QTY']) - picked_qty
             summary.append({
