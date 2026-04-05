@@ -718,8 +718,8 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
             partial_rows.append(partial_row)
 
             pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
-                    orig_qty   = orig_qty_map.get(pallet_val, current_avail)
-                    is_partial = (take < current_avail) or (orig_qty > take)
+            orig_qty   = orig_qty_map.get(pallet_val, current_avail)
+            is_partial = (take < current_avail) or (orig_qty > take)
 
                     if is_partial:
                         def _get(col_name):
