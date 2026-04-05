@@ -574,6 +574,7 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
     vendor_name_col   = next((inv_col_map[k] for k in inv_col_map if k == 'vendor name'), None)
     invoice_number_col = next((inv_col_map[k] for k in inv_col_map if k == 'invoice number'), None)
     grn_number_col    = next((inv_col_map[k] for k in inv_col_map if k == 'grn number'), None)
+    
 
     temp_inv = inv_df.copy()
     actual_qty_col = next((inv_col_map[k] for k in inv_col_map if k == 'actual qty'), 'Actual Qty')
@@ -694,22 +695,30 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                     if grn_number_col and grn_number_col in item.index:
                         grn_number_val = str(item[grn_number_col]).strip()
 
-                    p_row['Actual Qty']         = take
-                    p_row['Pick Quantity']      = take
-                    p_row['Pick Id']            = str(item[pick_id_col]) if pick_id_col and pick_id_col in item.index else ''
-                    p_row['Supplier']           = str(item[supplier_col]) if supplier_col and supplier_col in item.index else upc
-                    p_row['Batch ID']           = batch_id
-                    p_row['SO Number']          = so_num
-                    p_row['Generated Load ID']  = lid
-                    p_row['Country Name']       = country
-                    p_row['Remark']             = ''
-                    p_row['Order Type']         = 'Sample Orders'
-                    p_row['Order Number']       = lid
-                    p_row['Store Order Number'] = lid
-                    p_row['Customer Po Number'] = f"{country}-{lid}"
-                    p_row['Load Id']            = lid
-
-                    pick_rows.append(p_row)
+                    partial_row = {
+                'Batch ID': batch_id,
+                'SO Number': so_num,
+                'Pallet': pallet,
+                'Supplier': str(row.get('Supplier', '')).strip(),
+                'Load ID': load_id,
+                'Country Name': country,
+                'Actual Qty': original_qty,
+                'Partial Qty': partial_qty,
+                'Gen Pallet ID': gen_pallet_id,
+                'Balance Qty': original_qty - pick_qty,
+                'Location Id': str(row.get('Location Id', '')).strip(),
+                'Lot Number': str(row.get('Lot Number', '')).strip(),
+                'Color': str(row.get('Color', '')).strip(),
+                'Size': str(row.get('Size', '')).strip(),
+                'Style': str(row.get('Style', '')).strip(),
+                'Customer Po Number': str(row.get('Customer Po Number', '')).strip(),
+                'Vendor Name': str(row.get('Vendor Name', '')).strip(),
+                
+                # අලුතින් එකතු වූ fields (Invoice Number සහ Grn Number)
+                'Invoice Number': str(row.get('Invoice Number', '')).strip(),
+                'Grn Number': str(row.get('Grn Number', '')).strip()
+            }
+            partial_rows.append(partial_row)
 
                     pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
                     orig_qty   = orig_qty_map.get(pallet_val, current_avail)
@@ -776,22 +785,43 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
 def generate_inventory_details_report(inv_df):
     try:
         pick_df = DBManager.read_table("master_pick_data")
+        
+        # ... (ඔබගේ රිපෝට් එක සෑදීමේ ඉතිරි logic මෙහි ඇත. අවසානයේ report_df එකක් හැදෙනු ඇත) ...
 
-        damage_lookup = {}
-        try:
-            dmg_df = DBManager.read_table("damage_items")
-            if not dmg_df.empty and 'Pallet' in dmg_df.columns:
-                dmg_df['_pallet'] = dmg_df['Pallet'].astype(str).str.strip()
-                dmg_df['_remark'] = dmg_df.get('Remark', 'Damage').astype(str).str.strip()
-                dmg_df['_qty']    = dmg_df.get('Actual Qty', '').astype(str).str.strip()
-                dmg_df['_entry']  = dmg_df.apply(
-                    lambda r: f"DAMAGE: {r['_remark']} (Qty:{r['_qty']})" if r['_qty'] else f"DAMAGE: {r['_remark']}", axis=1
-                )
-                for p, grp in dmg_df.groupby('_pallet'):
-                    if p:
-                        damage_lookup[p] = ' | '.join(grp['_entry'].tolist())
-        except Exception:
-            pass
+        # ── අලුතින් එකතු කළ යුතු හිස්තැන් පිරවීමේ (Blank Fill) කේතය ──
+        lookup_maps = get_partial_lookup_maps()
+        invoice_map = lookup_maps.get('invoice_map', {})
+        grn_map = lookup_maps.get('grn_map', {})
+        pallet_invoice_map = lookup_maps.get('pallet_invoice_map', {})
+        pallet_grn_map = lookup_maps.get('pallet_grn_map', {})
+
+        # තීරු නොමැතිනම් ඒවා නිර්මාණය කිරීම
+        if 'Invoice Number' not in report_df.columns:
+            report_df['Invoice Number'] = ''
+        if 'Grn Number' not in report_df.columns:
+            report_df['Grn Number'] = ''
+
+        # Invoice Number එකේ හිස්තැන් පිරවීම
+        report_df['Invoice Number'] = report_df.apply(
+            lambda row: invoice_map.get(str(row['Pallet']).strip().lower()) 
+            or pallet_invoice_map.get(str(row['Pallet']).strip()) 
+            or str(row.get('Invoice Number', '')), 
+            axis=1
+        )
+
+        # Grn Number එකේ හිස්තැන් පිරවීම
+        report_df['Grn Number'] = report_df.apply(
+            lambda row: grn_map.get(str(row['Pallet']).strip().lower()) 
+            or pallet_grn_map.get(str(row['Pallet']).strip()) 
+            or str(row.get('Grn Number', '')), 
+            axis=1
+        )
+
+        return report_df
+
+    except Exception as e:
+        print(f"Error generating report: {e}")
+        return pd.DataFrame()
 
         # ── Load vendor_maintain for country lookup ──
         vendor_country_map = get_vendor_country_map()
@@ -1679,33 +1709,45 @@ if login_section():
                             vendor_country_map = get_vendor_country_map()
 
                         # ── partial lookup maps ──────────────────────────────────────────────
-                        def _get_partial_lookup_maps_from_df(part_df):
-                            invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map = {}, {}, {}, {}, {}
-                            if part_df is None or part_df.empty:
-                                return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
-                            for _, r in part_df.iterrows():
-                                pallet_key = str(r.get('Pallet', '')).strip()
-                                gen_pallet = str(r.get('Gen Pallet ID', '')).strip()
-                                inv_num    = str(r.get('Invoice Number', '')).strip()
-                                grn_num    = str(r.get('Grn Number', '')).strip()
-                                vnd_name   = str(r.get('Vendor Name', '')).strip()
-                                if inv_num in ('nan', 'None'): inv_num = ''
-                                if grn_num in ('nan', 'None'): grn_num = ''
-                                if vnd_name in ('nan', 'None'): vnd_name = ''
-                                if gen_pallet and gen_pallet not in ('', 'nan', 'None'):
-                                    if inv_num: invoice_map[gen_pallet] = inv_num
-                                    if grn_num: grn_map[gen_pallet] = grn_num
-                                    if vnd_name: vendor_map[gen_pallet] = vnd_name
-                                if pallet_key and pallet_key not in ('', 'nan', 'None'):
-                                    if inv_num: pallet_invoice_map[pallet_key] = inv_num
-                                    if grn_num: pallet_grn_map[pallet_key] = grn_num
-                                    if vnd_name: vendor_map[pallet_key] = vnd_name
-                            return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
+                        def get_partial_lookup_maps():
+    """
+    Returns mappings for invoice, grn, and vendor to resolve blanks in reports.
+    """
+    invoice_map = {}
+    grn_map = {}
+    vendor_map = {}
+    pallet_invoice_map = {}
+    pallet_grn_map = {}
+    
+    try:
+        part_df = DBManager.read_table("master_partial_data")
+        if not part_df.empty:
+            for _, r in part_df.iterrows():
+                pallet_key   = str(r.get('Pallet', '')).strip()
+                gen_pallet   = str(r.get('Gen Pallet ID', '')).strip().lower()
+                inv_num      = str(r.get('Invoice Number', '')).strip()
+                grn_num      = str(r.get('Grn Number', '')).strip()
+                vnd_name     = str(r.get('Vendor Name', '')).strip()
 
-                        inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = \
-                            _get_partial_lookup_maps_from_df(_partial_df_fmt)
-                        if not any([inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt]):
-                            inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = get_partial_lookup_maps()
+                if gen_pallet:
+                    invoice_map[gen_pallet] = inv_num
+                    grn_map[gen_pallet] = grn_num
+                    vendor_map[gen_pallet] = vnd_name
+                if pallet_key:
+                    pallet_invoice_map[pallet_key] = inv_num
+                    pallet_grn_map[pallet_key] = grn_num
+                    vendor_map[pallet_key] = vnd_name
+    except Exception as e:
+        print(f"Error in get_partial_lookup_maps: {e}")
+        pass
+        
+    return {
+        'invoice_map': invoice_map,
+        'grn_map': grn_map,
+        'vendor_map': vendor_map,
+        'pallet_invoice_map': pallet_invoice_map,
+        'pallet_grn_map': pallet_grn_map
+    }
 
                         # ── Logic 1 lookup: {(pallet, actual_qty): [mpd_row, ...]} ──────────
                         # Notepad Logic 1: inv pallet == mpd pallet AND inv actual_qty == mpd actual_qty → Pick
