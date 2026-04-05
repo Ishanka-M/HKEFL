@@ -408,43 +408,49 @@ def get_vendor_country_map() -> dict:
 
 def get_partial_lookup_maps():
     """
-    Returns mappings for invoice, grn, and vendor to resolve blanks in reports.
+    Returns three dicts keyed by gen_pallet_id (lowercase stripped):
+      - invoice_map:  {gen_pallet_id: invoice_number}
+      - grn_map:      {gen_pallet_id: grn_number}
+      - vendor_map:   {pallet: vendor_name}  (also keyed by gen_pallet_id)
+    And two dicts keyed by original pallet:
+      - pallet_invoice_map: {pallet: invoice_number}
+      - pallet_grn_map:     {pallet: grn_number}
     """
     invoice_map = {}
     grn_map = {}
     vendor_map = {}
     pallet_invoice_map = {}
     pallet_grn_map = {}
-    
     try:
         part_df = DBManager.read_table("master_partial_data")
         if not part_df.empty:
             for _, r in part_df.iterrows():
                 pallet_key   = str(r.get('Pallet', '')).strip()
-                gen_pallet   = str(r.get('Gen Pallet ID', '')).strip().lower()
+                gen_pallet   = str(r.get('Gen Pallet ID', '')).strip()
                 inv_num      = str(r.get('Invoice Number', '')).strip()
                 grn_num      = str(r.get('Grn Number', '')).strip()
                 vnd_name     = str(r.get('Vendor Name', '')).strip()
 
-                if gen_pallet:
-                    invoice_map[gen_pallet] = inv_num
-                    grn_map[gen_pallet] = grn_num
-                    vendor_map[gen_pallet] = vnd_name
-                if pallet_key:
-                    pallet_invoice_map[pallet_key] = inv_num
-                    pallet_grn_map[pallet_key] = grn_num
-                    vendor_map[pallet_key] = vnd_name
-    except Exception as e:
-        print(f"Error in get_partial_lookup_maps: {e}")
+                # keyed by gen_pallet_id
+                if gen_pallet and gen_pallet not in ('', 'nan', 'None'):
+                    if inv_num and inv_num not in ('', 'nan', 'None'):
+                        invoice_map[gen_pallet] = inv_num
+                    if grn_num and grn_num not in ('', 'nan', 'None'):
+                        grn_map[gen_pallet] = grn_num
+                    if vnd_name and vnd_name not in ('', 'nan', 'None'):
+                        vendor_map[gen_pallet] = vnd_name
+
+                # keyed by original pallet
+                if pallet_key and pallet_key not in ('', 'nan', 'None'):
+                    if inv_num and inv_num not in ('', 'nan', 'None'):
+                        pallet_invoice_map[pallet_key] = inv_num
+                    if grn_num and grn_num not in ('', 'nan', 'None'):
+                        pallet_grn_map[pallet_key] = grn_num
+                    if vnd_name and vnd_name not in ('', 'nan', 'None'):
+                        vendor_map[pallet_key] = vnd_name
+    except:
         pass
-        
-    return {
-        'invoice_map': invoice_map,
-        'grn_map': grn_map,
-        'vendor_map': vendor_map,
-        'pallet_invoice_map': pallet_invoice_map,
-        'pallet_grn_map': pallet_grn_map
-    }
+    return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
 
 
 # ── 2. User Management & Login ─────────────────────────────────────────────────
@@ -515,41 +521,43 @@ def get_damage_pallets():
 
 def reconcile_inventory(inv_df):
     inv_df = inv_df.copy()
-    
-    # තීරු වල නම් වල ඇති අමතර හිස්තැන් ඉවත් කිරීම
     inv_df.columns = [str(c).strip() for c in inv_df.columns]
     inv_col_lower = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
 
-    # අදාළ තීරු සංඛ්‍යා (numeric) බවට පත් කර, එහි ඇති හිස්තැන් (None/NaN) 0 ලෙස පිරවීම
-    if 'Pick Quantity' in inv_df.columns:
-        inv_df['Pick Quantity'] = pd.to_numeric(inv_df['Pick Quantity'], errors='coerce').fillna(0)
-    else:
-        inv_df['Pick Quantity'] = 0
-        
-    if 'Damage Qty' in inv_df.columns:
-        inv_df['Damage Qty'] = pd.to_numeric(inv_df['Damage Qty'], errors='coerce').fillna(0)
-    else:
-        inv_df['Damage Qty'] = 0
-        
-    if 'ATS' in inv_df.columns:
-        inv_df['ATS'] = pd.to_numeric(inv_df['ATS'], errors='coerce').fillna(0)
-    else:
-        inv_df['ATS'] = 0
-        
-    if 'Actual Qty' in inv_df.columns:
-        inv_df['Actual Qty'] = pd.to_numeric(inv_df['Actual Qty'], errors='coerce').fillna(0)
-    else:
-        inv_df['Actual Qty'] = 0
+    pallet_col = inv_col_lower.get('pallet', 'Pallet')
+    actual_col = inv_col_lower.get('actual qty', 'Actual Qty')
+    if actual_col not in inv_df.columns:
+        actual_col = next((c for c in inv_df.columns if 'actual' in c.lower()), actual_col)
 
-    # Total Accounted සහ Difference ගණනය කිරීම
-    inv_df['Total Accounted'] = inv_df['Pick Quantity'] + inv_df['Damage Qty'] + inv_df['ATS']
-    inv_df['Difference'] = inv_df['Actual Qty'] - inv_df['Total Accounted']
+    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
 
-    # Reconciled Status එක තීරණය කිරීම (Difference එක 0 නම් පමණක් Reconciled වේ)
-    inv_df['Reconciled'] = inv_df['Difference'].apply(
-        lambda x: '✅ Reconciled' if x == 0 else '❌ Still Mismatch'
-    )
+    try:
+        pick_history = DBManager.read_table("master_pick_data")
+        if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
+            pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
+            pick_history['Pallet'] = pick_history['Pallet'].astype(str).str.strip()
+            pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
+            pick_summary.columns = ['_pallet_key', 'Total_Picked']
 
+            inv_df['_pallet_key'] = inv_df[pallet_col].astype(str).str.strip()
+            inv_df = pd.merge(inv_df, pick_summary, on='_pallet_key', how='left')
+            inv_df = inv_df.drop(columns=['_pallet_key'], errors='ignore')
+            inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
+            inv_df[actual_col] = (inv_df[actual_col] - inv_df['Total_Picked']).clip(lower=0)
+            inv_df = inv_df.drop(columns=['Total_Picked'], errors='ignore')
+    except Exception as e:
+        st.warning(f"Inventory Reconcile Error: {e}")
+
+    try:
+        dmg_summary = get_damage_pallets()
+        if not dmg_summary.empty:
+            damage_pallet_set = set(dmg_summary['Pallet'].astype(str).str.strip().tolist())
+            inv_df = inv_df[~inv_df[pallet_col].astype(str).str.strip().isin(damage_pallet_set)].reset_index(drop=True)
+    except Exception as e:
+        st.warning(f"Damage Exclude Error: {e}")
+
+    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
+    inv_df = inv_df[inv_df[actual_col] > 0].reset_index(drop=True)
     return inv_df
 
 
@@ -566,7 +574,6 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
     vendor_name_col   = next((inv_col_map[k] for k in inv_col_map if k == 'vendor name'), None)
     invoice_number_col = next((inv_col_map[k] for k in inv_col_map if k == 'invoice number'), None)
     grn_number_col    = next((inv_col_map[k] for k in inv_col_map if k == 'grn number'), None)
-    
 
     temp_inv = inv_df.copy()
     actual_qty_col = next((inv_col_map[k] for k in inv_col_map if k == 'actual qty'), 'Actual Qty')
@@ -687,45 +694,37 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                     if grn_number_col and grn_number_col in item.index:
                         grn_number_val = str(item[grn_number_col]).strip()
 
-            partial_row = {
-                'Batch ID': batch_id,
-                'SO Number': so_num,
-                'Pallet': pallet,
-                'Supplier': str(row.get('Supplier', '')).strip(),
-                'Load ID': load_id,
-                'Country Name': country,
-                'Actual Qty': original_qty,
-                'Partial Qty': partial_qty,
-                'Gen Pallet ID': gen_pallet_id,
-                'Balance Qty': original_qty - pick_qty,
-                'Location Id': str(row.get('Location Id', '')).strip(),
-                'Lot Number': str(row.get('Lot Number', '')).strip(),
-                'Color': str(row.get('Color', '')).strip(),
-                'Size': str(row.get('Size', '')).strip(),
-                'Style': str(row.get('Style', '')).strip(),
-                'Customer Po Number': str(row.get('Customer Po Number', '')).strip(),
-                'Vendor Name': str(row.get('Vendor Name', '')).strip(),
-                
-                # අලුතින් එකතු වූ fields (Invoice Number සහ Grn Number)
-                'Invoice Number': str(row.get('Invoice Number', '')).strip(),
-                'Grn Number': str(row.get('Grn Number', '')).strip()
-            }
-            partial_rows.append(partial_row)
+                    p_row['Actual Qty']         = take
+                    p_row['Pick Quantity']      = take
+                    p_row['Pick Id']            = str(item[pick_id_col]) if pick_id_col and pick_id_col in item.index else ''
+                    p_row['Supplier']           = str(item[supplier_col]) if supplier_col and supplier_col in item.index else upc
+                    p_row['Batch ID']           = batch_id
+                    p_row['SO Number']          = so_num
+                    p_row['Generated Load ID']  = lid
+                    p_row['Country Name']       = country
+                    p_row['Remark']             = ''
+                    p_row['Order Type']         = 'Sample Orders'
+                    p_row['Order Number']       = lid
+                    p_row['Store Order Number'] = lid
+                    p_row['Customer Po Number'] = f"{country}-{lid}"
+                    p_row['Load Id']            = lid
 
-            pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
-            orig_qty   = orig_qty_map.get(pallet_val, current_avail)
-            is_partial = (take < current_avail) or (orig_qty > take)
+                    pick_rows.append(p_row)
 
-            if is_partial:
-                def _get(col_name):
-                    c = inv_col_map.get(col_name.lower())
-                    return str(item[c]) if c and c in item.index else ''
+                    pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
+                    orig_qty   = orig_qty_map.get(pallet_val, current_avail)
+                    is_partial = (take < current_avail) or (orig_qty > take)
 
-                gen_pallet_id = make_unique_gen_pallet_id(pallet_val)
-                pick_rows[-1]['Remark']        = 'Partial'
-                pick_rows[-1]['Gen Pallet ID'] = gen_pallet_id
+                    if is_partial:
+                        def _get(col_name):
+                            c = inv_col_map.get(col_name.lower())
+                            return str(item[c]) if c and c in item.index else ''
 
-                partial_rows.append({
+                        gen_pallet_id = make_unique_gen_pallet_id(pallet_val)
+                        pick_rows[-1]['Remark']        = 'Partial'
+                        pick_rows[-1]['Gen Pallet ID'] = gen_pallet_id
+
+                        partial_rows.append({
                             'Batch ID':           batch_id,
                             'SO Number':          so_num,
                             'Pallet':             pallet_val,
@@ -747,12 +746,12 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                             'Invoice Number':     invoice_number_val,
                             'Grn Number':         grn_number_val,
                         })
-            else:
-                pick_rows[-1]['Gen Pallet ID'] = ''
+                    else:
+                        pick_rows[-1]['Gen Pallet ID'] = ''
 
-                temp_inv.at[idx, actual_qty_col] -= take
-            needed     -= take
-            picked_qty += take
+                    temp_inv.at[idx, actual_qty_col] -= take
+                    needed     -= take
+                    picked_qty += take
 
             variance = float(req['PICK QTY']) - picked_qty
             summary.append({
@@ -777,43 +776,22 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
 def generate_inventory_details_report(inv_df):
     try:
         pick_df = DBManager.read_table("master_pick_data")
-        
-        # ... (ඔබගේ රිපෝට් එක සෑදීමේ ඉතිරි logic මෙහි ඇත. අවසානයේ report_df එකක් හැදෙනු ඇත) ...
 
-        # ── අලුතින් එකතු කළ යුතු හිස්තැන් පිරවීමේ (Blank Fill) කේතය ──
-        lookup_maps = get_partial_lookup_maps()
-        invoice_map = lookup_maps.get('invoice_map', {})
-        grn_map = lookup_maps.get('grn_map', {})
-        pallet_invoice_map = lookup_maps.get('pallet_invoice_map', {})
-        pallet_grn_map = lookup_maps.get('pallet_grn_map', {})
-
-        # තීරු නොමැතිනම් ඒවා නිර්මාණය කිරීම
-        if 'Invoice Number' not in report_df.columns:
-            report_df['Invoice Number'] = ''
-        if 'Grn Number' not in report_df.columns:
-            report_df['Grn Number'] = ''
-
-        # Invoice Number එකේ හිස්තැන් පිරවීම
-        report_df['Invoice Number'] = report_df.apply(
-            lambda row: invoice_map.get(str(row['Pallet']).strip().lower()) 
-            or pallet_invoice_map.get(str(row['Pallet']).strip()) 
-            or str(row.get('Invoice Number', '')), 
-            axis=1
-        )
-
-        # Grn Number එකේ හිස්තැන් පිරවීම
-        report_df['Grn Number'] = report_df.apply(
-            lambda row: grn_map.get(str(row['Pallet']).strip().lower()) 
-            or pallet_grn_map.get(str(row['Pallet']).strip()) 
-            or str(row.get('Grn Number', '')), 
-            axis=1
-        )
-
-        return report_df
-
-    except Exception as e:
-        print(f"Error generating report: {e}")
-        return pd.DataFrame()
+        damage_lookup = {}
+        try:
+            dmg_df = DBManager.read_table("damage_items")
+            if not dmg_df.empty and 'Pallet' in dmg_df.columns:
+                dmg_df['_pallet'] = dmg_df['Pallet'].astype(str).str.strip()
+                dmg_df['_remark'] = dmg_df.get('Remark', 'Damage').astype(str).str.strip()
+                dmg_df['_qty']    = dmg_df.get('Actual Qty', '').astype(str).str.strip()
+                dmg_df['_entry']  = dmg_df.apply(
+                    lambda r: f"DAMAGE: {r['_remark']} (Qty:{r['_qty']})" if r['_qty'] else f"DAMAGE: {r['_remark']}", axis=1
+                )
+                for p, grp in dmg_df.groupby('_pallet'):
+                    if p:
+                        damage_lookup[p] = ' | '.join(grp['_entry'].tolist())
+        except Exception:
+            pass
 
         # ── Load vendor_maintain for country lookup ──
         vendor_country_map = get_vendor_country_map()
@@ -1701,45 +1679,33 @@ if login_section():
                             vendor_country_map = get_vendor_country_map()
 
                         # ── partial lookup maps ──────────────────────────────────────────────
-def get_partial_lookup_maps():
-    """
-    Returns mappings for invoice, grn, and vendor to resolve blanks in reports.
-    """
-    invoice_map = {}
-    grn_map = {}
-    vendor_map = {}
-    pallet_invoice_map = {}
-    pallet_grn_map = {}
-    
-    try:
-        part_df = DBManager.read_table("master_partial_data")
-        if not part_df.empty:
-            for _, r in part_df.iterrows():
-                pallet_key   = str(r.get('Pallet', '')).strip()
-                gen_pallet   = str(r.get('Gen Pallet ID', '')).strip().lower()
-                inv_num      = str(r.get('Invoice Number', '')).strip()
-                grn_num      = str(r.get('Grn Number', '')).strip()
-                vnd_name     = str(r.get('Vendor Name', '')).strip()
+                        def _get_partial_lookup_maps_from_df(part_df):
+                            invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map = {}, {}, {}, {}, {}
+                            if part_df is None or part_df.empty:
+                                return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
+                            for _, r in part_df.iterrows():
+                                pallet_key = str(r.get('Pallet', '')).strip()
+                                gen_pallet = str(r.get('Gen Pallet ID', '')).strip()
+                                inv_num    = str(r.get('Invoice Number', '')).strip()
+                                grn_num    = str(r.get('Grn Number', '')).strip()
+                                vnd_name   = str(r.get('Vendor Name', '')).strip()
+                                if inv_num in ('nan', 'None'): inv_num = ''
+                                if grn_num in ('nan', 'None'): grn_num = ''
+                                if vnd_name in ('nan', 'None'): vnd_name = ''
+                                if gen_pallet and gen_pallet not in ('', 'nan', 'None'):
+                                    if inv_num: invoice_map[gen_pallet] = inv_num
+                                    if grn_num: grn_map[gen_pallet] = grn_num
+                                    if vnd_name: vendor_map[gen_pallet] = vnd_name
+                                if pallet_key and pallet_key not in ('', 'nan', 'None'):
+                                    if inv_num: pallet_invoice_map[pallet_key] = inv_num
+                                    if grn_num: pallet_grn_map[pallet_key] = grn_num
+                                    if vnd_name: vendor_map[pallet_key] = vnd_name
+                            return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
 
-                if gen_pallet:
-                    invoice_map[gen_pallet] = inv_num
-                    grn_map[gen_pallet] = grn_num
-                    vendor_map[gen_pallet] = vnd_name
-                if pallet_key:
-                    pallet_invoice_map[pallet_key] = inv_num
-                    pallet_grn_map[pallet_key] = grn_num
-                    vendor_map[pallet_key] = vnd_name
-    except Exception as e:
-        print(f"Error in get_partial_lookup_maps: {e}")
-        pass
-        
-    return {
-        'invoice_map': invoice_map,
-        'grn_map': grn_map,
-        'vendor_map': vendor_map,
-        'pallet_invoice_map': pallet_invoice_map,
-        'pallet_grn_map': pallet_grn_map
-    }
+                        inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = \
+                            _get_partial_lookup_maps_from_df(_partial_df_fmt)
+                        if not any([inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt]):
+                            inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = get_partial_lookup_maps()
 
                         # ── Logic 1 lookup: {(pallet, actual_qty): [mpd_row, ...]} ──────────
                         # Notepad Logic 1: inv pallet == mpd pallet AND inv actual_qty == mpd actual_qty → Pick
@@ -2256,20 +2222,14 @@ def get_partial_lookup_maps():
                             _verified_updates = {}  # pallet → {new_actual_qty, new_ats}
 
                             for _mm in mismatch_pallets:
-                                _mm_pal     = str(_mm['Pallet']).strip()       # canonical (e.g. PL032426017)
-                                _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string (e.g. PL032426017-P0001)
+                                _mm_pal     = str(_mm['Pallet']).strip()       # display / canonical
+                                _mm_raw_pal = str(_mm.get('Raw Pallet', _mm_pal)).strip()  # exact inventory string
                                 _inv_aq     = float(_mm.get('Inventory Actual Qty', 0))
 
-                                # master_partial_data හි ඒ pallet ට අදාල rows
-                                # MPD Pallet column ෙකේ canonical (original) pallet store වෙනවා
-                                # raw pallet ෙකෙන් try → හොයා ගත්තේ නැත්නම් canonical ෙකෙන් try
+                                # master_partial_data හි ඒ pallet ට අදාල rows — EXACT match on raw pallet
                                 _mpd_rows = _ver_partial_df[
                                     _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_raw_pal
                                 ].copy()
-                                if _mpd_rows.empty and _mm_pal != _mm_raw_pal:
-                                    _mpd_rows = _ver_partial_df[
-                                        _ver_partial_df[_vp_pallet_col].astype(str).str.strip() == _mm_pal
-                                    ].copy()
 
                                 if _mpd_rows.empty:
                                     verification_results.append({
@@ -2288,13 +2248,8 @@ def get_partial_lookup_maps():
                                 # balance = Inventory Actual Qty - partial_qty_sum
                                 _balance = _inv_aq - _partial_qty_sum
 
-                                # Verification 1: balance + partial_qty_sum == Inventory Actual Qty (math check)
-                                _verify_math = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
-
-                                # Verification 2: balance == Report Actual Qty (Pick_Report ෙකේ දැනට තියෙන qty)
-                                # balance ≠ rpt_qty නම් Logic 2 ෙකට pass කරන්න (partial_qty match case)
-                                _mm_rpt_qty = float(_mm.get('Report Actual Qty', 0))
-                                _verify_ok  = _verify_math and abs(_balance - _mm_rpt_qty) < 0.01
+                                # Verification: balance + partial_qty_sum == Inventory Actual Qty
+                                _verify_ok = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
 
                                 if _verify_ok:
                                     # Pick_Report fmt_df හි — EXACT match on raw pallet string
@@ -2330,18 +2285,7 @@ def get_partial_lookup_maps():
                                         'Verification':         '✅ Verified (balance + sum = Inv Actual Qty)',
                                         'Action':               f'Updated Actual Qty→{_balance}, ATS recalculated',
                                     })
-                                elif _verify_math and not abs(_balance - _mm_rpt_qty) < 0.01:
-                                    # Math OK නමුත් balance ≠ Report Actual Qty → Logic 2 ෙකට pass කරන්න
-                                    verification_results.append({
-                                        'Pallet':               _mm_raw_pal,
-                                        'Inventory Actual Qty': _inv_aq,
-                                        'Partial Sum (MPD)':    _partial_qty_sum,
-                                        'Balance':              _balance,
-                                        'Verification':         '⏩ Pass to Logic 2 (balance ≠ Report Actual Qty)',
-                                        'Action':               'No Update — Logic 2 will handle',
-                                    })
                                 else:
-                                    # Math fail — balance + sum ≠ Inv Actual Qty
                                     verification_results.append({
                                         'Pallet':               _mm_raw_pal,
                                         'Inventory Actual Qty': _inv_aq,
@@ -2399,200 +2343,6 @@ def get_partial_lookup_maps():
                                         _rc1.metric("✅ Reconciled Lines", _ok_cnt)
                                         _rc2.metric("❌ Still Mismatched", _bad_cnt)
                                         st.dataframe(_pr_df2.astype(str), use_container_width=True)
-
-                        # ══════════════════════════════════════════════════════════════════════
-                        # VERIFICATION LOGIC 2: තවත් Qty_Mismatch තියෙනවා නම් →
-                        #   master_partial_data හි pallet exact filter →
-                        #   ඕනෑම row ෙකක actual_qty හෝ balance_qty == Report Actual Qty නම්
-                        #   → Pick_Report Actual Qty + ATS update
-                        #   → Actual Qty = Pick + Damage + ATS reconcile
-                        # ══════════════════════════════════════════════════════════════════════
-                        if mismatch_pallets and not partial_df.empty:
-
-                            # Logic 1 හි verified pallets set (ඒ ටික skip කරන්න)
-                            _already_verified = set(_verified_updates.keys()) if '_verified_updates' in dir() and _verified_updates else set()
-
-                            # Logic 1 ෙකෙන් pass නොවූ remaining mismatches
-                            # _verified_updates key ෙකේ raw pallet store වෙනවා → raw + canonical දෙකෙන්ම check
-                            _remaining_mm = [
-                                _m for _m in mismatch_pallets
-                                if str(_m.get('Raw Pallet', _m['Pallet'])).strip() not in _already_verified
-                                and str(_m['Pallet']).strip() not in _already_verified
-                            ]
-
-                            if _remaining_mm:
-                                st.markdown("---")
-                                st.markdown("#### 🔎 Verification Logic 2 — Actual Qty / Balance Qty Row Match")
-
-                                _ver2_partial_df = partial_df.copy()
-                                _v2pc = {str(c).strip().lower(): str(c).strip() for c in _ver2_partial_df.columns}
-                                _v2_pallet_col = _v2pc.get('pallet',        'Pallet')
-                                _v2_gen_col    = _v2pc.get('gen pallet id', 'Gen Pallet ID')
-                                _v2_aqty_col   = _v2pc.get('actual qty',    'Actual Qty')
-                                _v2_bal_col    = _v2pc.get('balance qty',   'Balance Qty')
-                                _v2_pqty_col   = _v2pc.get('partial qty',   'Partial Qty')
-
-                                _ver2_partial_df[_v2_aqty_col]  = pd.to_numeric(_ver2_partial_df[_v2_aqty_col],  errors='coerce').fillna(0)
-                                _ver2_partial_df[_v2_bal_col]   = pd.to_numeric(_ver2_partial_df[_v2_bal_col],   errors='coerce').fillna(0)
-                                _ver2_partial_df[_v2_pqty_col]  = pd.to_numeric(_ver2_partial_df[_v2_pqty_col],  errors='coerce').fillna(0)
-
-                                verification2_results = []
-                                _verified2_updates = {}
-
-                                for _mm2 in _remaining_mm:
-                                    _mm2_canonical = str(_mm2['Pallet']).strip()               # canonical (e.g. PL032426017)
-                                    _mm2_pal       = str(_mm2.get('Raw Pallet', _mm2_canonical)).strip()  # raw inventory string
-                                    _mm2_rpt_qty   = float(_mm2.get('Report Actual Qty', 0))
-                                    _mm2_inv_qty   = float(_mm2.get('Inventory Actual Qty', 0))
-
-                                    # master_partial_data හි ඒ pallet exact filter
-                                    # raw pallet ෙකෙන් try → හොයා ගත්තේ නැත්නම් canonical ෙකෙන් try
-                                    _mpd2_rows = _ver2_partial_df[
-                                        _ver2_partial_df[_v2_pallet_col].astype(str).str.strip() == _mm2_pal
-                                    ].copy()
-                                    if _mpd2_rows.empty and _mm2_canonical != _mm2_pal:
-                                        _mpd2_rows = _ver2_partial_df[
-                                            _ver2_partial_df[_v2_pallet_col].astype(str).str.strip() == _mm2_canonical
-                                        ].copy()
-
-                                    if _mpd2_rows.empty:
-                                        verification2_results.append({
-                                            'Pallet':               _mm2_pal,
-                                            'Report Actual Qty':    _mm2_rpt_qty,
-                                            'Inventory Actual Qty': _mm2_inv_qty,
-                                            'Matched Gen Pallet ID': '',
-                                            'Matched Field':        '',
-                                            'Matched Value':        '',
-                                            'Match':                '⚠️ No MPD rows found',
-                                            'Action':               'No Update',
-                                        })
-                                        continue
-
-                                    # ── ඕනෑම row ෙකක actual_qty / balance_qty / partial_qty == Report Actual Qty scan ──
-                                    _matched_row  = None
-                                    _matched_field = ''
-                                    _matched_gen   = ''
-                                    _matched_val   = 0.0
-
-                                    for _, _scan_row in _mpd2_rows.iterrows():
-                                        _scan_aqty  = float(_scan_row[_v2_aqty_col])
-                                        _scan_bal   = float(_scan_row[_v2_bal_col])
-                                        _scan_pqty  = float(_scan_row[_v2_pqty_col])
-                                        _scan_gen   = str(_scan_row[_v2_gen_col]).strip()
-
-                                        if abs(_scan_aqty - _mm2_rpt_qty) < 0.01:
-                                            _matched_row   = _scan_row
-                                            _matched_field = 'Actual Qty'
-                                            _matched_gen   = _scan_gen
-                                            _matched_val   = _scan_aqty
-                                            break
-                                        if abs(_scan_bal - _mm2_rpt_qty) < 0.01:
-                                            _matched_row   = _scan_row
-                                            _matched_field = 'Balance Qty'
-                                            _matched_gen   = _scan_gen
-                                            _matched_val   = _scan_bal
-                                            break
-                                        if abs(_scan_pqty - _mm2_rpt_qty) < 0.01:
-                                            _matched_row   = _scan_row
-                                            _matched_field = 'Partial Qty'
-                                            _matched_gen   = _scan_gen
-                                            _matched_val   = _scan_pqty
-                                            break
-
-                                    if _matched_row is not None:
-                                        # Pick_Report fmt_df හි exact pallet match කරලා update
-                                        _rpt2_mask    = fmt_df['Pallet'].astype(str).str.strip() == _mm2_pal
-                                        _rpt2_indices = fmt_df[_rpt2_mask].index.tolist()
-
-                                        if _rpt2_indices:
-                                            for _ri3 in _rpt2_indices:
-                                                _cur_pick3 = pd.to_numeric(fmt_df.at[_ri3, 'Pick Quantity'], errors='coerce') or 0
-                                                _cur_dmg3  = sum(
-                                                    pd.to_numeric(fmt_df.at[_ri3, _r], errors='coerce') or 0
-                                                    for _r in damage_remarks
-                                                )
-                                                # Actual Qty → matched value (actual_qty හෝ balance_qty)
-                                                fmt_df.at[_ri3, 'Actual Qty'] = _matched_val
-                                                # ATS = Actual Qty - Pick - Damage
-                                                _new_ats3 = max(0.0, _matched_val - _cur_pick3 - _cur_dmg3)
-                                                fmt_df.at[_ri3, 'ATS'] = _new_ats3
-
-                                            _verified2_updates[_mm2_pal] = {
-                                                'matched_gen_pallet_id': _matched_gen,
-                                                'matched_field':         _matched_field,
-                                                'matched_value':         _matched_val,
-                                                'rows_updated':          len(_rpt2_indices),
-                                            }
-
-                                        verification2_results.append({
-                                            'Pallet':                _mm2_pal,
-                                            'Report Actual Qty':     _mm2_rpt_qty,
-                                            'Inventory Actual Qty':  _mm2_inv_qty,
-                                            'Matched Gen Pallet ID': _matched_gen,
-                                            'Matched Field':         _matched_field,
-                                            'Matched Value':         _matched_val,
-                                            'Match':                 '✅ Matched — Updated',
-                                            'Action':                f'Actual Qty→{_matched_val} (via {_matched_field}), ATS recalculated',
-                                        })
-                                    else:
-                                        verification2_results.append({
-                                            'Pallet':                _mm2_pal,
-                                            'Report Actual Qty':     _mm2_rpt_qty,
-                                            'Inventory Actual Qty':  _mm2_inv_qty,
-                                            'Matched Gen Pallet ID': '',
-                                            'Matched Field':         '',
-                                            'Matched Value':         '',
-                                            'Match':                 '❌ No Match (actual_qty / balance_qty ≠ Report Actual Qty)',
-                                            'Action':                'No Update',
-                                        })
-
-                                _ver2_df = pd.DataFrame(verification2_results)
-                                if not _ver2_df.empty:
-                                    _v2_ok   = (_ver2_df['Match'].str.startswith('✅')).sum()
-                                    _v2_fail = (_ver2_df['Match'].str.startswith('❌')).sum()
-                                    _v2_none = (_ver2_df['Match'].str.startswith('⚠️')).sum()
-
-                                    _v2c1, _v2c2, _v2c3 = st.columns(3)
-                                    _v2c1.metric("✅ Matched & Updated", _v2_ok)
-                                    _v2c2.metric("❌ No Match",          _v2_fail)
-                                    _v2c3.metric("⚠️ No MPD Data",       _v2_none)
-
-                                    st.dataframe(_ver2_df.astype(str), use_container_width=True)
-
-                                    if _verified2_updates:
-                                        st.success(f"✅ Logic 2: {len(_verified2_updates)} pallets ගේ Actual Qty සහ ATS Pick_Report හි update කරන ලදී.")
-
-                                        # ── Post-update Reconciliation: Actual Qty = Pick + Damage + ATS ──
-                                        st.markdown("##### 🔄 Logic 2 — Post-Verification Reconciliation")
-                                        _post2_recon_rows = []
-                                        for _pv2_pal in _verified2_updates:
-                                            _pr2_mask = fmt_df['Pallet'].astype(str).str.strip() == _pv2_pal
-                                            for _ri4 in fmt_df[_pr2_mask].index.tolist():
-                                                _r4    = fmt_df.loc[_ri4]
-                                                _a4    = pd.to_numeric(_r4.get('Actual Qty',    0), errors='coerce') or 0
-                                                _p4    = pd.to_numeric(_r4.get('Pick Quantity', 0), errors='coerce') or 0
-                                                _d4    = sum(pd.to_numeric(_r4.get(_rmk, 0), errors='coerce') or 0 for _rmk in damage_remarks)
-                                                _ats4  = pd.to_numeric(_r4.get('ATS',          0), errors='coerce') or 0
-                                                _acc4  = _p4 + _d4 + _ats4
-                                                _diff4 = round(_a4 - _acc4, 2)
-                                                _post2_recon_rows.append({
-                                                    'Pallet':          str(_r4.get('Pallet', '')),
-                                                    'Actual Qty':      _a4,
-                                                    'Pick Quantity':   _p4,
-                                                    'Damage Qty':      _d4,
-                                                    'ATS':             _ats4,
-                                                    'Total Accounted': _acc4,
-                                                    'Difference':      _diff4,
-                                                    'Reconciled':      '✅ OK' if abs(_diff4) < 0.01 else '❌ Still Mismatch',
-                                                })
-                                        if _post2_recon_rows:
-                                            _pr2_df = pd.DataFrame(_post2_recon_rows)
-                                            _ok2_cnt  = (_pr2_df['Reconciled'] == '✅ OK').sum()
-                                            _bad2_cnt = (_pr2_df['Reconciled'] == '❌ Still Mismatch').sum()
-                                            _r2c1, _r2c2 = st.columns(2)
-                                            _r2c1.metric("✅ Reconciled Lines", _ok2_cnt)
-                                            _r2c2.metric("❌ Still Mismatched", _bad2_cnt)
-                                            st.dataframe(_pr2_df.astype(str), use_container_width=True)
 
                         # ── END VERIFICATION LOGIC ─────────────────────────────────────────────
 
