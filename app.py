@@ -2252,24 +2252,50 @@ if login_section():
                                 _verify_ok = abs((_balance + _partial_qty_sum) - _inv_aq) < 0.01
 
                                 if _verify_ok:
-                                    # Pick_Report fmt_df හි — EXACT match on raw pallet string
-                                    _rpt_mask = fmt_df['Pallet'].astype(str).str.strip() == _mm_raw_pal
+                                    # ── Fix: gen_pallet rows ද match කරන්න (Logic 3 expanded rows) ──
+                                    # orig pallet mask: direct match (Logic 1 / Logic 4 rows)
+                                    _rpt_mask_orig = fmt_df['Pallet'].astype(str).str.strip() == _mm_raw_pal
+                                    # gen_pallet mask: gen_to_orig reverse lookup — orig pallet → gen pallets
+                                    _gen_pals_for_orig = [gp for gp, op in gen_to_orig.items() if op == _mm_raw_pal]
+                                    _rpt_mask_gen = fmt_df['Pallet'].astype(str).str.strip().isin(_gen_pals_for_orig)
+                                    # Combined mask
+                                    _rpt_mask = _rpt_mask_orig | _rpt_mask_gen
 
                                     _rpt_indices = fmt_df[_rpt_mask].index.tolist()
 
                                     if _rpt_indices:
+                                        # MPD partial_qty lookup: gen_pallet → partial_qty
+                                        _gen_pqty_map = {}
+                                        for _, _mpd_r in _mpd_rows.iterrows():
+                                            _gp_key = str(_mpd_r.get(_vp_gen_col, '')).strip()
+                                            _pq_val = pd.to_numeric(_mpd_r.get(_vp_pqty_col, 0), errors='coerce') or 0
+                                            if _gp_key:
+                                                _gen_pqty_map[_gp_key] = _pq_val
+
                                         for _ri in _rpt_indices:
+                                            _row_pal  = str(fmt_df.at[_ri, 'Pallet']).strip()
                                             _cur_pick = pd.to_numeric(fmt_df.at[_ri, 'Pick Quantity'], errors='coerce') or 0
                                             _cur_dmg  = sum(
                                                 pd.to_numeric(fmt_df.at[_ri, _r], errors='coerce') or 0
                                                 for _r in damage_remarks
                                             )
-                                            # Actual Qty → balance ලෙස set
-                                            fmt_df.at[_ri, 'Actual Qty'] = _balance
+                                            _cur_ats  = pd.to_numeric(fmt_df.at[_ri, 'ATS'], errors='coerce') or 0
 
-                                            # ATS = balance - Pick Quantity - Damage
-                                            _new_ats = max(0.0, _balance - _cur_pick - _cur_dmg)
-                                            fmt_df.at[_ri, 'ATS'] = _new_ats
+                                            if _row_pal in _gen_pals_for_orig:
+                                                # Logic 3 gen_pallet row → Actual Qty = partial_qty for that gen_pallet
+                                                _row_actual = _gen_pqty_map.get(_row_pal, _cur_pick)
+                                                fmt_df.at[_ri, 'Actual Qty'] = _row_actual
+                                                # Pick row: ATS = 0 (already picked)
+                                                fmt_df.at[_ri, 'ATS'] = max(0.0, _row_actual - _cur_pick - _cur_dmg)
+                                            else:
+                                                # orig pallet row (balance/ATS row හෝ Logic 1 row)
+                                                if _cur_ats > 0 and _cur_pick == 0:
+                                                    # Balance/ATS row → Actual Qty = balance
+                                                    fmt_df.at[_ri, 'Actual Qty'] = _balance
+                                                    fmt_df.at[_ri, 'ATS'] = max(0.0, _balance - _cur_dmg)
+                                                else:
+                                                    # Logic 1 fully-picked row → Actual Qty unchanged, ATS = 0
+                                                    fmt_df.at[_ri, 'ATS'] = max(0.0, _cur_pick - _cur_dmg)
 
                                         _verified_updates[_mm_raw_pal] = {
                                             'new_actual_qty':  _balance,
@@ -2315,14 +2341,19 @@ if login_section():
                                     st.markdown("##### 🔄 Post-Verification Reconciliation — Actual Qty = Pick + Damage + ATS")
                                     _post_recon_rows = []
                                     for _pv_pal, _pv_info in _verified_updates.items():
-                                        # EXACT match — raw pallet string directly compare කරනවා
-                                        _pr_mask2 = fmt_df['Pallet'].astype(str).str.strip() == _pv_pal
+                                        # orig pallet match (Logic 1 rows)
+                                        _pr_mask_orig2 = fmt_df['Pallet'].astype(str).str.strip() == _pv_pal
+                                        # gen_pallet rows match (Logic 3 expanded rows)
+                                        _gen_pals2 = [gp for gp, op in gen_to_orig.items() if op == _pv_pal]
+                                        _pr_mask_gen2 = fmt_df['Pallet'].astype(str).str.strip().isin(_gen_pals2)
+                                        _pr_mask2 = _pr_mask_orig2 | _pr_mask_gen2
+
                                         for _ri2 in fmt_df[_pr_mask2].index.tolist():
                                             _r2 = fmt_df.loc[_ri2]
                                             _p2   = pd.to_numeric(_r2.get('Pick Quantity', 0), errors='coerce') or 0
                                             _ats2 = pd.to_numeric(_r2.get('ATS',          0), errors='coerce') or 0
-                                            # ── Surgical Fix: Logic 3 balance rows (ATS-only, Pick Qty=0) skip කරන්න ──
-                                            # මේ rows වල Actual Qty = balance_qty (real actual qty නෙවේ) → reconciliation distort කරනවා
+                                            # ── Surgical Fix: ATS-only balance rows skip ──
+                                            # balance rows: Pick Qty=0, ATS>0, Actual Qty = balance_qty (not real actual)
                                             if _p2 == 0 and _ats2 > 0:
                                                 continue
                                             _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce') or 0
