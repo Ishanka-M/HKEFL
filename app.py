@@ -1757,9 +1757,10 @@ if login_section():
                             pa_col  = pc.get('actual qty', 'Actual Qty')
                             pi_col  = pc.get('invoice number', 'Invoice Number')
                             pg2_col = pc.get('grn number', 'Grn Number')
+                            pcn_col = pc.get('country name', 'Country Name')  # ← country column
 
                             _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col,
-                                                        pc.get('balance qty', 'Balance Qty')]
+                                                        pc.get('balance qty', 'Balance Qty'), pcn_col]
                                          if c in partial_df.columns]
                             pb_col  = pc.get('balance qty', 'Balance Qty')
                             _pdf = partial_df[_sel_cols].copy()
@@ -1776,14 +1777,17 @@ if login_section():
                                 bqty     = float(_pr.get(pb_col, 0)) if pb_col in _pr.index else 0.0
                                 inv_num  = str(_pr.get(pi_col,  '')).strip()
                                 grn_num  = str(_pr.get(pg2_col, '')).strip()
+                                cntry_p  = str(_pr.get(pcn_col, '')).strip() if pcn_col in _pr.index else ''
                                 if inv_num in ('nan', 'None'): inv_num = ''
                                 if grn_num in ('nan', 'None'): grn_num = ''
+                                if cntry_p in ('nan', 'None'): cntry_p = ''
                                 entry = {
                                     'gen_pallet': gpallet, 'partial_qty': pqty,
                                     'load_id': loadid_p, 'mpd_actual': aqty,
                                     'balance_qty': bqty,
                                     'invoice_number': inv_num, 'grn_number': grn_num,
                                     'orig_pallet': opallet,
+                                    'country': cntry_p,  # ← store country
                                 }
                                 if opallet:
                                     if opallet not in partial_map: partial_map[opallet] = []
@@ -1948,8 +1952,10 @@ if login_section():
                                 grn_number_row = par_entry.get('grn_number', '') or inv_grn_map_fmt.get(orig_pallet, '') or pallet_grn_map_fmt.get(real_orig, '')
 
                             # country/load: look up from mpd_pallet_rows keyed by real_orig pallet
+                            # fallback to partial_map entry country (from Master_Partial_Data)
                             _mpd_meta = mpd_pallet_rows.get(real_orig, [])
-                            _country  = _mpd_meta[0].get('country', '') if _mpd_meta else ''
+                            _country  = (_mpd_meta[0].get('country', '') if _mpd_meta else '') or \
+                                        par_entry.get('country', '')
                             _load_id  = par_entry.get('load_id', '')
 
                             row = build_row(inv_row)
@@ -2004,11 +2010,13 @@ if login_section():
 
                             # Expand one line per gen_pallet_id entry → each is a picked partial
                             _mpd_meta = mpd_pallet_rows.get(orig_pallet, [])
-                            _country  = _mpd_meta[0].get('country', '') if _mpd_meta else ''
+                            _country_fallback = _mpd_meta[0].get('country', '') if _mpd_meta else ''
 
                             for par_entry in partials:
                                 gp  = par_entry['gen_pallet']
                                 pqt = par_entry['partial_qty']
+                                # per gen_pallet country: partial_map entry → mpd_pallet_rows fallback
+                                _country = par_entry.get('country', '') or _country_fallback
                                 row = build_row(inv_row, override_pallet=gp, override_actual_qty=pqt)
                                 row['Pick Quantity']       = pqt
                                 row['Destination Country'] = _country
