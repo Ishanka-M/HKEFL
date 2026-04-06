@@ -4,6 +4,8 @@ from supabase import create_client, Client
 from datetime import datetime
 import io
 import time
+import pandas as pd
+import numpy as np
 
 # --- 1. System Config ---
 st.set_page_config(page_title="Advanced WMS Picking System", layout="wide", page_icon="📦")
@@ -520,45 +522,61 @@ def get_damage_pallets():
 
 
 def reconcile_inventory(inv_df):
+    # 1. Inventory DataFrame එක copy කර ගැනීම සහ columns format කිරීම
     inv_df = inv_df.copy()
     inv_df.columns = [str(c).strip() for c in inv_df.columns]
-    inv_col_lower = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
+    
+    # Pallet column එක string බවට පත් කර හිස්තැන් ඉවත් කිරීම
+    if 'Pallet' in inv_df.columns:
+        inv_df['Pallet'] = inv_df['Pallet'].astype(str).str.strip()
+    
+    # 2. Damage Data ලබාගැනීම
+    dmg_summary = get_damage_pallets() 
+    if not dmg_summary.empty:
+        dmg_summary['Pallet'] = dmg_summary['Pallet'].astype(str).str.strip()
+        dmg_summary.rename(columns={'Damage_Qty': 'Damage Qty'}, inplace=True)
+    else:
+        dmg_summary = pd.DataFrame(columns=['Pallet', 'Damage Qty'])
 
-    pallet_col = inv_col_lower.get('pallet', 'Pallet')
-    actual_col = inv_col_lower.get('actual qty', 'Actual Qty')
-    if actual_col not in inv_df.columns:
-        actual_col = next((c for c in inv_df.columns if 'actual' in c.lower()), actual_col)
-
-    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
-
+    # 3. Master Pick Data ලබාගෙන Pick Quantity එකතු කිරීම
     try:
-        pick_history = DBManager.read_table("master_pick_data")
-        if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
-            pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
-            pick_history['Pallet'] = pick_history['Pallet'].astype(str).str.strip()
-            pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
-            pick_summary.columns = ['_pallet_key', 'Total_Picked']
-
-            inv_df['_pallet_key'] = inv_df[pallet_col].astype(str).str.strip()
-            inv_df = pd.merge(inv_df, pick_summary, on='_pallet_key', how='left')
-            inv_df = inv_df.drop(columns=['_pallet_key'], errors='ignore')
-            inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
-            inv_df[actual_col] = (inv_df[actual_col] - inv_df['Total_Picked']).clip(lower=0)
-            inv_df = inv_df.drop(columns=['Total_Picked'], errors='ignore')
+        pick_df = DBManager.read_table("master_pick_data")
+        if not pick_df.empty and 'Pallet' in pick_df.columns and 'Pick Quantity' in pick_df.columns:
+            pick_df['Pallet'] = pick_df['Pallet'].astype(str).str.strip()
+            pick_df['Pick Quantity'] = pd.to_numeric(pick_df['Pick Quantity'], errors='coerce').fillna(0)
+            pick_summary = pick_df.groupby('Pallet')['Pick Quantity'].sum().reset_index()
+        else:
+            pick_summary = pd.DataFrame(columns=['Pallet', 'Pick Quantity'])
     except Exception as e:
-        st.warning(f"Inventory Reconcile Error: {e}")
+        pick_summary = pd.DataFrame(columns=['Pallet', 'Pick Quantity'])
 
-    try:
-        dmg_summary = get_damage_pallets()
-        if not dmg_summary.empty:
-            damage_pallet_set = set(dmg_summary['Pallet'].astype(str).str.strip().tolist())
-            inv_df = inv_df[~inv_df[pallet_col].astype(str).str.strip().isin(damage_pallet_set)].reset_index(drop=True)
-    except Exception as e:
-        st.warning(f"Damage Exclude Error: {e}")
+    # 4. Inventory Data සමග Pick සහ Damage Data Merge කිරීම
+    recon_df = inv_df.merge(pick_summary, on='Pallet', how='left')
+    recon_df = recon_df.merge(dmg_summary, on='Pallet', how='left')
 
-    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
-    inv_df = inv_df[inv_df[actual_col] > 0].reset_index(drop=True)
-    return inv_df
+    # *** මෙතැනදී None/NaN අගයන් 0 වලින් fill කිරීම අනිවාර්ය වේ (Screenshot එකේ error එක මෙතනින් හැදෙයි) ***
+    recon_df['Pick Quantity'] = recon_df['Pick Quantity'].fillna(0)
+    recon_df['Damage Qty'] = recon_df['Damage Qty'].fillna(0)
+    
+    # ATS සහ Actual Qty Numeric බවට පත් කර 0 වලින් fill කිරීම
+    if 'Unavailable Qty' in recon_df.columns:
+        recon_df['ATS'] = pd.to_numeric(recon_df['Unavailable Qty'], errors='coerce').fillna(0)
+    else:
+        recon_df['ATS'] = 0.0
+
+    if 'Actual Qty' in recon_df.columns:
+        recon_df['Actual Qty'] = pd.to_numeric(recon_df['Actual Qty'], errors='coerce').fillna(0)
+
+    # 5. Calculation කිරීම
+    recon_df['Total Accounted'] = recon_df['Pick Quantity'] + recon_df['Damage Qty'] + recon_df['ATS']
+    recon_df['Difference'] = recon_df['Actual Qty'] - recon_df['Total Accounted']
+    
+    # 6. Status එක තීරණය කිරීම (ශුන්‍ය නම් Reconciled)
+    recon_df['Reconciled'] = recon_df['Difference'].apply(
+        lambda x: "✅ Reconciled" if np.isclose(x, 0, atol=1e-5) else "❌ Still Mismatch"
+    )
+
+    return recon_df
 
 
 def process_picking(inv_df, req_df, batch_id, inv_original=None):
