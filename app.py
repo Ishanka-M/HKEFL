@@ -511,69 +511,75 @@ def login_section():
 def get_damage_pallets():
     try:
         dmg_df = DBManager.read_table("damage_items")
+        # Check if table exists and has data
         if not dmg_df.empty and 'Pallet' in dmg_df.columns and 'Actual Qty' in dmg_df.columns:
-            dmg_df['Actual Qty'] = pd.to_numeric(dmg_df['Actual Qty'], errors='coerce').fillna(0)
-            dmg_summary = dmg_df.groupby('Pallet')['Actual Qty'].sum().reset_index()
-            dmg_summary.columns = ['Pallet', 'Damage_Qty']
+            # Clean Pallet ID (Remove .0 if parsed as float)
+            dmg_df['Pallet'] = dmg_df['Pallet'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            # Force to numeric
+            dmg_df['Damage Qty'] = pd.to_numeric(dmg_df['Actual Qty'], errors='coerce').fillna(0.0)
+            
+            dmg_summary = dmg_df.groupby('Pallet')['Damage Qty'].sum().reset_index()
             return dmg_summary
-    except:
+    except Exception as e:
         pass
-    return pd.DataFrame(columns=['Pallet', 'Damage_Qty'])
+    
+    # Return empty DataFrame with correct column names if failed
+    return pd.DataFrame(columns=['Pallet', 'Damage Qty'])
 
 
 def reconcile_inventory(inv_df):
-    # 1. Inventory DataFrame එක copy කර ගැනීම සහ columns format කිරීම
+    # 1. Inventory DataFrame එක Copy කර ගැනීම සහ Column Headers clean කිරීම
     inv_df = inv_df.copy()
     inv_df.columns = [str(c).strip() for c in inv_df.columns]
     
-    # Pallet column එක string බවට පත් කර හිස්තැන් ඉවත් කිරීම
+    # 2. Inventory හි Pallet ID Clean කිරීම (Match වීම තහවුරු කිරීමට)
     if 'Pallet' in inv_df.columns:
-        inv_df['Pallet'] = inv_df['Pallet'].astype(str).str.strip()
-    
-    # 2. Damage Data ලබාගැනීම
-    dmg_summary = get_damage_pallets() 
-    if not dmg_summary.empty:
-        dmg_summary['Pallet'] = dmg_summary['Pallet'].astype(str).str.strip()
-        dmg_summary.rename(columns={'Damage_Qty': 'Damage Qty'}, inplace=True)
+        inv_df['Pallet'] = inv_df['Pallet'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
     else:
-        dmg_summary = pd.DataFrame(columns=['Pallet', 'Damage Qty'])
+        inv_df['Pallet'] = ""
+        
+    # 3. Damage Data ලබා ගැනීම
+    dmg_summary = get_damage_pallets() 
 
-    # 3. Master Pick Data ලබාගෙන Pick Quantity එකතු කිරීම
+    # 4. Master Pick Data ලබා ගැනීම
     try:
         pick_df = DBManager.read_table("master_pick_data")
+        # 'pick_quantity' database column නමින් ඇත්නම් එය 'Pick Quantity' ලෙස මාරු කිරීම
+        if not pick_df.empty and 'pick_quantity' in pick_df.columns and 'Pick Quantity' not in pick_df.columns:
+            pick_df.rename(columns={'pick_quantity': 'Pick Quantity', 'pallet': 'Pallet'}, inplace=True)
+
         if not pick_df.empty and 'Pallet' in pick_df.columns and 'Pick Quantity' in pick_df.columns:
-            pick_df['Pallet'] = pick_df['Pallet'].astype(str).str.strip()
-            pick_df['Pick Quantity'] = pd.to_numeric(pick_df['Pick Quantity'], errors='coerce').fillna(0)
+            pick_df['Pallet'] = pick_df['Pallet'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+            pick_df['Pick Quantity'] = pd.to_numeric(pick_df['Pick Quantity'], errors='coerce').fillna(0.0)
             pick_summary = pick_df.groupby('Pallet')['Pick Quantity'].sum().reset_index()
         else:
             pick_summary = pd.DataFrame(columns=['Pallet', 'Pick Quantity'])
     except Exception as e:
         pick_summary = pd.DataFrame(columns=['Pallet', 'Pick Quantity'])
 
-    # 4. Inventory Data සමග Pick සහ Damage Data Merge කිරීම
+    # 5. Inventory Data සමග Pick සහ Damage Data Merge කිරීම (Left Join)
     recon_df = inv_df.merge(pick_summary, on='Pallet', how='left')
     recon_df = recon_df.merge(dmg_summary, on='Pallet', how='left')
 
-    # *** මෙතැනදී None/NaN අගයන් 0 වලින් fill කිරීම අනිවාර්ය වේ (Screenshot එකේ error එක මෙතනින් හැදෙයි) ***
-    recon_df['Pick Quantity'] = recon_df['Pick Quantity'].fillna(0)
-    recon_df['Damage Qty'] = recon_df['Damage Qty'].fillna(0)
-    
-    # ATS සහ Actual Qty Numeric බවට පත් කර 0 වලින් fill කිරීම
-    if 'Unavailable Qty' in recon_df.columns:
-        recon_df['ATS'] = pd.to_numeric(recon_df['Unavailable Qty'], errors='coerce').fillna(0)
-    else:
-        recon_df['ATS'] = 0.0
+    # 6. අනිවාර්යයෙන්ම Columns වලට Numeric Data වර්ගය ලබාදීම හා හිස්තැන් 0.0 කිරීම
+    # Column එක merge වීමේදී drop වී ඇත්නම් එය 0 ලෙස අලුතින් සෑදීම
+    if 'Pick Quantity' not in recon_df.columns: recon_df['Pick Quantity'] = 0.0
+    if 'Damage Qty' not in recon_df.columns: recon_df['Damage Qty'] = 0.0
+    if 'Unavailable Qty' not in recon_df.columns: recon_df['Unavailable Qty'] = 0.0
+    if 'Actual Qty' not in recon_df.columns: recon_df['Actual Qty'] = 0.0
 
-    if 'Actual Qty' in recon_df.columns:
-        recon_df['Actual Qty'] = pd.to_numeric(recon_df['Actual Qty'], errors='coerce').fillna(0)
+    recon_df['Pick Quantity'] = pd.to_numeric(recon_df['Pick Quantity'], errors='coerce').fillna(0.0)
+    recon_df['Damage Qty'] = pd.to_numeric(recon_df['Damage Qty'], errors='coerce').fillna(0.0)
+    recon_df['ATS'] = pd.to_numeric(recon_df['Unavailable Qty'], errors='coerce').fillna(0.0)
+    recon_df['Actual Qty'] = pd.to_numeric(recon_df['Actual Qty'], errors='coerce').fillna(0.0)
 
-    # 5. Calculation කිරීම
+    # 7. අවසන් Calculation එක කිරීම
     recon_df['Total Accounted'] = recon_df['Pick Quantity'] + recon_df['Damage Qty'] + recon_df['ATS']
     recon_df['Difference'] = recon_df['Actual Qty'] - recon_df['Total Accounted']
     
-    # 6. Status එක තීරණය කිරීම (ශුන්‍ය නම් Reconciled)
+    # 8. Status එක තීරණය කිරීම
     recon_df['Reconciled'] = recon_df['Difference'].apply(
-        lambda x: "✅ Reconciled" if np.isclose(x, 0, atol=1e-5) else "❌ Still Mismatch"
+        lambda x: "✅ Reconciled" if abs(x) < 1e-5 else "❌ Still Mismatch"
     )
 
     return recon_df
