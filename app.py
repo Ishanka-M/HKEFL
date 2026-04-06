@@ -2451,6 +2451,32 @@ if login_section():
                                         fmt_df.at[idx, _oh_col] = _oh_val
 
                         # ══════════════════════════════════════════════════════
+                        # AUTO-FIX: Actual Qty ≠ Pick + Damage + ATS rows fix
+                        # ATS = Actual Qty - Pick Quantity - Damage (min 0)
+                        # ══════════════════════════════════════════════════════
+                        _autofix_count = 0
+                        for _af_idx, _af_row in fmt_df.iterrows():
+                            _af_act  = pd.to_numeric(_af_row.get('Actual Qty',    0), errors='coerce')
+                            _af_act  = float(_af_act)  if pd.notna(_af_act)  else 0.0
+                            _af_pick = pd.to_numeric(_af_row.get('Pick Quantity', 0), errors='coerce')
+                            _af_pick = float(_af_pick) if pd.notna(_af_pick) else 0.0
+                            _af_dmg  = sum(
+                                (lambda v: float(v) if pd.notna(v) else 0.0)(pd.to_numeric(_af_row.get(_rmk, 0), errors='coerce'))
+                                for _rmk in damage_remarks
+                            )
+                            _af_ats  = pd.to_numeric(_af_row.get('ATS', 0), errors='coerce')
+                            _af_ats  = float(_af_ats)  if pd.notna(_af_ats)  else 0.0
+                            _af_acc  = round(_af_pick + _af_dmg + _af_ats, 3)
+                            _af_diff = round(_af_act - _af_acc, 3)
+                            if abs(_af_diff) > 0.01:
+                                # ATS = Actual Qty - Pick - Damage (min 0)
+                                _new_ats = max(0.0, round(_af_act - _af_pick - _af_dmg, 3))
+                                fmt_df.at[_af_idx, 'ATS'] = _new_ats
+                                _autofix_count += 1
+                        if _autofix_count > 0:
+                            st.info(f"🔧 Auto-Fix: **{_autofix_count}** rows — ATS adjusted so Actual Qty = Pick + Damage + ATS")
+
+                        # ══════════════════════════════════════════════════════
                         # NEW FEATURE 5: Tally check — Actual Qty = Pick+Dmg+ATS
                         # Uses processed Pick_Report data
                         # ══════════════════════════════════════════════════════
