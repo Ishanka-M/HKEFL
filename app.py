@@ -4,8 +4,6 @@ from supabase import create_client, Client
 from datetime import datetime
 import io
 import time
-import pandas as pd
-import numpy as np
 
 # --- 1. System Config ---
 st.set_page_config(page_title="Advanced WMS Picking System", layout="wide", page_icon="📦")
@@ -511,78 +509,56 @@ def login_section():
 def get_damage_pallets():
     try:
         dmg_df = DBManager.read_table("damage_items")
-        # Check if table exists and has data
         if not dmg_df.empty and 'Pallet' in dmg_df.columns and 'Actual Qty' in dmg_df.columns:
-            # Clean Pallet ID (Remove .0 if parsed as float)
-            dmg_df['Pallet'] = dmg_df['Pallet'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-            # Force to numeric
-            dmg_df['Damage Qty'] = pd.to_numeric(dmg_df['Actual Qty'], errors='coerce').fillna(0.0)
-            
-            dmg_summary = dmg_df.groupby('Pallet')['Damage Qty'].sum().reset_index()
+            dmg_df['Actual Qty'] = pd.to_numeric(dmg_df['Actual Qty'], errors='coerce').fillna(0)
+            dmg_summary = dmg_df.groupby('Pallet')['Actual Qty'].sum().reset_index()
+            dmg_summary.columns = ['Pallet', 'Damage_Qty']
             return dmg_summary
-    except Exception as e:
+    except:
         pass
-    
-    # Return empty DataFrame with correct column names if failed
-    return pd.DataFrame(columns=['Pallet', 'Damage Qty'])
+    return pd.DataFrame(columns=['Pallet', 'Damage_Qty'])
 
 
 def reconcile_inventory(inv_df):
-    # 1. Inventory DataFrame එක Copy කර ගැනීම සහ Column Headers clean කිරීම
     inv_df = inv_df.copy()
     inv_df.columns = [str(c).strip() for c in inv_df.columns]
-    
-    # 2. Inventory හි Pallet ID Clean කිරීම (Match වීම තහවුරු කිරීමට)
-    if 'Pallet' in inv_df.columns:
-        inv_df['Pallet'] = inv_df['Pallet'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-    else:
-        inv_df['Pallet'] = ""
-        
-    # 3. Damage Data ලබා ගැනීම
-    dmg_summary = get_damage_pallets() 
+    inv_col_lower = {str(c).strip().lower(): str(c).strip() for c in inv_df.columns}
 
-    # 4. Master Pick Data ලබා ගැනීම
+    pallet_col = inv_col_lower.get('pallet', 'Pallet')
+    actual_col = inv_col_lower.get('actual qty', 'Actual Qty')
+    if actual_col not in inv_df.columns:
+        actual_col = next((c for c in inv_df.columns if 'actual' in c.lower()), actual_col)
+
+    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
+
     try:
-        pick_df = DBManager.read_table("master_pick_data")
-        # 'pick_quantity' database column නමින් ඇත්නම් එය 'Pick Quantity' ලෙස මාරු කිරීම
-        if not pick_df.empty and 'pick_quantity' in pick_df.columns and 'Pick Quantity' not in pick_df.columns:
-            pick_df.rename(columns={'pick_quantity': 'Pick Quantity', 'pallet': 'Pallet'}, inplace=True)
+        pick_history = DBManager.read_table("master_pick_data")
+        if not pick_history.empty and 'Actual Qty' in pick_history.columns and 'Pallet' in pick_history.columns:
+            pick_history['Actual Qty'] = pd.to_numeric(pick_history['Actual Qty'], errors='coerce').fillna(0)
+            pick_history['Pallet'] = pick_history['Pallet'].astype(str).str.strip()
+            pick_summary = pick_history.groupby('Pallet')['Actual Qty'].sum().reset_index()
+            pick_summary.columns = ['_pallet_key', 'Total_Picked']
 
-        if not pick_df.empty and 'Pallet' in pick_df.columns and 'Pick Quantity' in pick_df.columns:
-            pick_df['Pallet'] = pick_df['Pallet'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-            pick_df['Pick Quantity'] = pd.to_numeric(pick_df['Pick Quantity'], errors='coerce').fillna(0.0)
-            pick_summary = pick_df.groupby('Pallet')['Pick Quantity'].sum().reset_index()
-        else:
-            pick_summary = pd.DataFrame(columns=['Pallet', 'Pick Quantity'])
+            inv_df['_pallet_key'] = inv_df[pallet_col].astype(str).str.strip()
+            inv_df = pd.merge(inv_df, pick_summary, on='_pallet_key', how='left')
+            inv_df = inv_df.drop(columns=['_pallet_key'], errors='ignore')
+            inv_df['Total_Picked'] = inv_df['Total_Picked'].fillna(0)
+            inv_df[actual_col] = (inv_df[actual_col] - inv_df['Total_Picked']).clip(lower=0)
+            inv_df = inv_df.drop(columns=['Total_Picked'], errors='ignore')
     except Exception as e:
-        pick_summary = pd.DataFrame(columns=['Pallet', 'Pick Quantity'])
+        st.warning(f"Inventory Reconcile Error: {e}")
 
-    # 5. Inventory Data සමග Pick සහ Damage Data Merge කිරීම (Left Join)
-    recon_df = inv_df.merge(pick_summary, on='Pallet', how='left')
-    recon_df = recon_df.merge(dmg_summary, on='Pallet', how='left')
+    try:
+        dmg_summary = get_damage_pallets()
+        if not dmg_summary.empty:
+            damage_pallet_set = set(dmg_summary['Pallet'].astype(str).str.strip().tolist())
+            inv_df = inv_df[~inv_df[pallet_col].astype(str).str.strip().isin(damage_pallet_set)].reset_index(drop=True)
+    except Exception as e:
+        st.warning(f"Damage Exclude Error: {e}")
 
-    # 6. අනිවාර්යයෙන්ම Columns වලට Numeric Data වර්ගය ලබාදීම හා හිස්තැන් 0.0 කිරීම
-    # Column එක merge වීමේදී drop වී ඇත්නම් එය 0 ලෙස අලුතින් සෑදීම
-    if 'Pick Quantity' not in recon_df.columns: recon_df['Pick Quantity'] = 0.0
-    if 'Damage Qty' not in recon_df.columns: recon_df['Damage Qty'] = 0.0
-    if 'Unavailable Qty' not in recon_df.columns: recon_df['Unavailable Qty'] = 0.0
-    if 'Actual Qty' not in recon_df.columns: recon_df['Actual Qty'] = 0.0
-
-    recon_df['Pick Quantity'] = pd.to_numeric(recon_df['Pick Quantity'], errors='coerce').fillna(0.0)
-    recon_df['Damage Qty'] = pd.to_numeric(recon_df['Damage Qty'], errors='coerce').fillna(0.0)
-    recon_df['ATS'] = pd.to_numeric(recon_df['Unavailable Qty'], errors='coerce').fillna(0.0)
-    recon_df['Actual Qty'] = pd.to_numeric(recon_df['Actual Qty'], errors='coerce').fillna(0.0)
-
-    # 7. අවසන් Calculation එක කිරීම
-    recon_df['Total Accounted'] = recon_df['Pick Quantity'] + recon_df['Damage Qty'] + recon_df['ATS']
-    recon_df['Difference'] = recon_df['Actual Qty'] - recon_df['Total Accounted']
-    
-    # 8. Status එක තීරණය කිරීම
-    recon_df['Reconciled'] = recon_df['Difference'].apply(
-        lambda x: "✅ Reconciled" if abs(x) < 1e-5 else "❌ Still Mismatch"
-    )
-
-    return recon_df
+    inv_df[actual_col] = pd.to_numeric(inv_df[actual_col], errors='coerce').fillna(0)
+    inv_df = inv_df[inv_df[actual_col] > 0].reset_index(drop=True)
+    return inv_df
 
 
 def process_picking(inv_df, req_df, batch_id, inv_original=None):
@@ -2343,10 +2319,14 @@ if login_section():
                                         _pr_mask2 = fmt_df['Pallet'].astype(str).str.strip() == _pv_pal
                                         for _ri2 in fmt_df[_pr_mask2].index.tolist():
                                             _r2 = fmt_df.loc[_ri2]
-                                            _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce') or 0
                                             _p2   = pd.to_numeric(_r2.get('Pick Quantity', 0), errors='coerce') or 0
-                                            _d2   = sum(pd.to_numeric(_r2.get(_rmk, 0), errors='coerce') or 0 for _rmk in damage_remarks)
                                             _ats2 = pd.to_numeric(_r2.get('ATS',          0), errors='coerce') or 0
+                                            # ── Surgical Fix: Logic 3 balance rows (ATS-only, Pick Qty=0) skip කරන්න ──
+                                            # මේ rows වල Actual Qty = balance_qty (real actual qty නෙවේ) → reconciliation distort කරනවා
+                                            if _p2 == 0 and _ats2 > 0:
+                                                continue
+                                            _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce') or 0
+                                            _d2   = sum(pd.to_numeric(_r2.get(_rmk, 0), errors='coerce') or 0 for _rmk in damage_remarks)
                                             _acc2 = _p2 + _d2 + _ats2
                                             _diff2 = round(_a2 - _acc2, 2)
                                             _post_recon_rows.append({
