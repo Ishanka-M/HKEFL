@@ -2282,20 +2282,14 @@ if login_section():
                                             _cur_ats  = pd.to_numeric(fmt_df.at[_ri, 'ATS'], errors='coerce') or 0
 
                                             if _row_pal in _gen_pals_for_orig:
-                                                # Logic 3 gen_pallet row → Actual Qty = partial_qty for that gen_pallet
+                                                # Logic 3 gen_pallet (picked partial) row → Actual Qty = partial_qty
                                                 _row_actual = _gen_pqty_map.get(_row_pal, _cur_pick)
                                                 fmt_df.at[_ri, 'Actual Qty'] = _row_actual
-                                                # Pick row: ATS = 0 (already picked)
-                                                fmt_df.at[_ri, 'ATS'] = max(0.0, _row_actual - _cur_pick - _cur_dmg)
+                                                fmt_df.at[_ri, 'ATS'] = 0
                                             else:
-                                                # orig pallet row (balance/ATS row හෝ Logic 1 row)
-                                                if _cur_ats > 0 and _cur_pick == 0:
-                                                    # Balance/ATS row → Actual Qty = balance
-                                                    fmt_df.at[_ri, 'Actual Qty'] = _balance
-                                                    fmt_df.at[_ri, 'ATS'] = max(0.0, _balance - _cur_dmg)
-                                                else:
-                                                    # Logic 1 fully-picked row → Actual Qty unchanged, ATS = 0
-                                                    fmt_df.at[_ri, 'ATS'] = max(0.0, _cur_pick - _cur_dmg)
+                                                # orig pallet row = Logic 3 balance row → Actual Qty = balance, ATS = balance
+                                                fmt_df.at[_ri, 'Actual Qty'] = _balance
+                                                fmt_df.at[_ri, 'ATS'] = max(0.0, _balance - _cur_dmg)
 
                                         _verified_updates[_mm_raw_pal] = {
                                             'new_actual_qty':  _balance,
@@ -2349,15 +2343,16 @@ if login_section():
                                         _pr_mask2 = _pr_mask_orig2 | _pr_mask_gen2
 
                                         for _ri2 in fmt_df[_pr_mask2].index.tolist():
-                                            _r2 = fmt_df.loc[_ri2]
-                                            _p2   = pd.to_numeric(_r2.get('Pick Quantity', 0), errors='coerce') or 0
-                                            _ats2 = pd.to_numeric(_r2.get('ATS',          0), errors='coerce') or 0
-                                            # ── Surgical Fix: ATS-only balance rows skip ──
-                                            # balance rows: Pick Qty=0, ATS>0, Actual Qty = balance_qty (not real actual)
-                                            if _p2 == 0 and _ats2 > 0:
+                                            _r2     = fmt_df.loc[_ri2]
+                                            _row_pal2 = str(_r2.get('Pallet', '')).strip()
+                                            # ── orig pallet rows (balance/ATS rows) reconciliation table වලින් exclude ──
+                                            # ඒ rows reconciliation distort කරනවා — gen_pallet pick rows only show
+                                            if _row_pal2 not in _gen_pals2:
                                                 continue
                                             _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce') or 0
+                                            _p2   = pd.to_numeric(_r2.get('Pick Quantity', 0), errors='coerce') or 0
                                             _d2   = sum(pd.to_numeric(_r2.get(_rmk, 0), errors='coerce') or 0 for _rmk in damage_remarks)
+                                            _ats2 = pd.to_numeric(_r2.get('ATS',          0), errors='coerce') or 0
                                             _acc2 = _p2 + _d2 + _ats2
                                             _diff2 = round(_a2 - _acc2, 2)
                                             _post_recon_rows.append({
