@@ -1866,8 +1866,11 @@ if login_section():
 
                         # ── Track which inv rows are matched by Logic 1 or Logic 2 ──────────
                         # used to skip them in Logic 3 / Logic 4
-                        logic1_matched_keys = set()  # (pallet, qty) pairs matched by Logic 1
-                        logic2_matched_keys = set()  # (pallet, qty) pairs matched by Logic 2
+                        # Row INDEX use කරනවා — (pallet,qty) key නෙවේ
+                        # same pallet+qty ඒත් different Style/Color/Size rows drop නොවෙයි
+                        logic1_matched_keys = set()  # inv_data row indices matched by Logic 1
+                        logic2_matched_keys = set()  # inv_data row indices matched by Logic 2
+                        logic3_matched_pallets = set()  # orig pallet strings matched by Logic 3
 
                         fmt_rows = []
 
@@ -1875,7 +1878,7 @@ if login_section():
                         # LOGIC 1: inv pallet == mpd pallet AND inv actual_qty == mpd actual_qty
                         #          → Already picked → Pick Quantity = Actual Qty, ATS = ''
                         # ════════════════════════════════════════════════════════════════
-                        for _, inv_row in inv_data.iterrows():
+                        for _inv_idx, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
@@ -1886,7 +1889,7 @@ if login_section():
                             if _l1key not in mpd_exact_map:
                                 continue  # not matched by Logic 1
 
-                            logic1_matched_keys.add(_l1key)
+                            logic1_matched_keys.add(_inv_idx)  # row index track
 
                             # resolve meta info
                             vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
@@ -1921,22 +1924,21 @@ if login_section():
                         #          → Already picked partial → Pick Quantity = Actual Qty, ATS = ''
                         #          Skip rows already matched by Logic 1
                         # ════════════════════════════════════════════════════════════════
-                        for _, inv_row in inv_data.iterrows():
+                        for _inv_idx, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
                             inv_actual_qty = float(inv_actual_qty)
                             is_damaged     = orig_pallet in damage_pallets
 
-                            _l1key = (orig_pallet, round(inv_actual_qty, 6))
-                            if _l1key in logic1_matched_keys:
+                            if _inv_idx in logic1_matched_keys:
                                 continue  # already handled by Logic 1
 
                             _l2key = (orig_pallet, round(inv_actual_qty, 6))
                             if _l2key not in gen_pallet_exact_map:
                                 continue  # not matched by Logic 2
 
-                            logic2_matched_keys.add(_l2key)
+                            logic2_matched_keys.add(_inv_idx)  # row index track
 
                             par_entry  = gen_pallet_exact_map[_l2key]
                             real_orig  = par_entry.get('orig_pallet', orig_pallet)
@@ -1978,16 +1980,14 @@ if login_section():
                         #          + balance row (ATS) if inv_actual_qty > sum(partial_qty)
                         #          Skip rows already matched by Logic 1 or Logic 2
                         # ════════════════════════════════════════════════════════════════
-                        logic3_matched_pallets = set()
-                        for _, inv_row in inv_data.iterrows():
+                        for _inv_idx, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
                             inv_actual_qty = float(inv_actual_qty)
                             is_damaged     = orig_pallet in damage_pallets
 
-                            _l1key = (orig_pallet, round(inv_actual_qty, 6))
-                            if _l1key in logic1_matched_keys or _l1key in logic2_matched_keys:
+                            if _inv_idx in logic1_matched_keys or _inv_idx in logic2_matched_keys:
                                 continue  # already handled
 
                             partials = partial_map.get(orig_pallet, [])
@@ -2052,15 +2052,14 @@ if login_section():
                         # ════════════════════════════════════════════════════════════════
                         # LOGIC 4: Not matched by Logic 1, 2, or 3 → ATS (not picked)
                         # ════════════════════════════════════════════════════════════════
-                        for _, inv_row in inv_data.iterrows():
+                        for _inv_idx, inv_row in inv_data.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
                             if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
                             inv_actual_qty = float(inv_actual_qty)
                             is_damaged     = orig_pallet in damage_pallets
 
-                            _l1key = (orig_pallet, round(inv_actual_qty, 6))
-                            if _l1key in logic1_matched_keys or _l1key in logic2_matched_keys:
+                            if _inv_idx in logic1_matched_keys or _inv_idx in logic2_matched_keys:
                                 continue
                             if orig_pallet in logic3_matched_pallets:
                                 continue
