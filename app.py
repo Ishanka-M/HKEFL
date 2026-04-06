@@ -2416,6 +2416,11 @@ if login_section():
                                 if fb_vn:
                                     fmt_df.at[idx, 'Vendor Name'] = fb_vn
                                     fmt_df.at[idx, 'Vendor Country'] = vendor_country_map.get(fb_vn.lower(), '')
+                            else:
+                                # Vendor Name already filled — Vendor Country blank නම් re-lookup
+                                vc = str(fmt_df.at[idx, 'Vendor Country']).strip()
+                                if not vc or vc in ('nan', 'None', ''):
+                                    fmt_df.at[idx, 'Vendor Country'] = vendor_country_map.get(vn.lower(), '')
 
                             inv_n = str(fmt_df.at[idx, 'Invoice Number']).strip()
                             if not inv_n or inv_n in ('nan', 'None', ''):
