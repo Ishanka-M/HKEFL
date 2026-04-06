@@ -2107,7 +2107,8 @@ if login_section():
                         # NEW FEATURE 1: Duplicate Pallet check — same Pick Qty/Country/Order
                         # same නම් keep first, delete rest
                         # ══════════════════════════════════════════════════════════════════════
-                        dup_key_cols = ['Pallet', 'Pick Quantity', 'Destination Country', 'Order NO']
+                        dup_key_cols = ['Pallet', 'Pick Quantity', 'Destination Country', 'Order NO',
+                                        'Style', 'Color', 'Size']
                         _dup_key_cols_present = [c for c in dup_key_cols if c in fmt_df.columns]
                         if _dup_key_cols_present:
                             fmt_df['_dup_key'] = fmt_df[_dup_key_cols_present].astype(str).agg('|'.join, axis=1)
@@ -2118,7 +2119,7 @@ if login_section():
                             fmt_df.drop(columns=['_dup_key'], inplace=True, errors='ignore')
                             dup_removed_df.drop(columns=['_dup_key'], inplace=True, errors='ignore')
                             if _dup_count > 0:
-                                st.warning(f"⚠️ Duplicate Pallets: **{_dup_count}** rows removed (same Pallet + Pick Quantity + Destination Country + Order NO)")
+                                st.warning(f"⚠️ Duplicate Pallets: **{_dup_count}** rows removed (same Pallet + Pick Quantity + Destination Country + Order NO + Style + Color + Size)")
                                 with st.expander(f"🔍 View Removed Duplicates ({_dup_count} rows)", expanded=False):
                                     st.dataframe(dup_removed_df[_dup_key_cols_present].astype(str), use_container_width=True)
                             else:
