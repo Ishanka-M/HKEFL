@@ -2349,11 +2349,17 @@ if login_section():
                                             # ඒ rows reconciliation distort කරනවා — gen_pallet pick rows only show
                                             if _row_pal2 not in _gen_pals2:
                                                 continue
-                                            _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce') or 0
-                                            _p2   = pd.to_numeric(_r2.get('Pick Quantity', 0), errors='coerce') or 0
-                                            _d2   = sum(pd.to_numeric(_r2.get(_rmk, 0), errors='coerce') or 0 for _rmk in damage_remarks)
-                                            _ats2 = pd.to_numeric(_r2.get('ATS',          0), errors='coerce') or 0
-                                            _acc2 = _p2 + _d2 + _ats2
+                                            _a2   = pd.to_numeric(_r2.get('Actual Qty',    0), errors='coerce')
+                                            _a2   = float(_a2) if pd.notna(_a2) else 0.0
+                                            _p2   = pd.to_numeric(_r2.get('Pick Quantity', 0), errors='coerce')
+                                            _p2   = float(_p2) if pd.notna(_p2) else 0.0
+                                            _d2   = sum(
+                                                (lambda v: float(v) if pd.notna(v) else 0.0)(pd.to_numeric(_r2.get(_rmk, 0), errors='coerce'))
+                                                for _rmk in damage_remarks
+                                            )
+                                            _ats2 = pd.to_numeric(_r2.get('ATS', 0), errors='coerce')
+                                            _ats2 = float(_ats2) if pd.notna(_ats2) else 0.0
+                                            _acc2  = round(_p2 + _d2 + _ats2, 3)
                                             _diff2 = round(_a2 - _acc2, 2)
                                             _post_recon_rows.append({
                                                 'Pallet':          str(_r2.get('Pallet', '')),
