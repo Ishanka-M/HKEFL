@@ -2003,8 +2003,10 @@ if login_section():
                         # LOGIC 3: Pick Id = 0
                         #   inv Pallet + Actual Qty exact match with master_pick_data
                         #   → Actual Qty update + Allocated column update
-                        #   Matched pallets do NOT go to Logic 4
+                        #   Matched rows (by inv row index) do NOT go to Logic 4
                         # ════════════════════════════════════════════════════════════════════
+                        l3_matched_idx = set()  # track inv row indices matched by Logic 3
+
                         for _inv_idx, inv_row in inv_data.iterrows():
                             if not _pick_id_is_zero(inv_row):
                                 continue  # Logic 3 only handles zero Pick Id rows
@@ -2016,6 +2018,7 @@ if login_section():
                             if _l3key not in mpd_exact_map:
                                 continue  # not matched — goes to Logic 4
 
+                            l3_matched_idx.add(_inv_idx)
                             l3_matched.add(orig_pallet + '|' + str(round(inv_actual_qty, 6)))
 
                             vname, inv_n, grn_n, coo = _resolve_meta(inv_row, orig_pallet)
@@ -2047,12 +2050,11 @@ if login_section():
                             if not _pick_id_is_zero(inv_row):
                                 continue  # Logic 4 only handles zero Pick Id rows
 
+                            if _inv_idx in l3_matched_idx:
+                                continue  # already handled by Logic 3
+
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = float(pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
-
-                            _l3key_str = orig_pallet + '|' + str(round(inv_actual_qty, 6))
-                            if _l3key_str in l3_matched:
-                                continue  # already handled by Logic 3
 
                             is_damaged = orig_pallet in damage_pallets
                             partials   = partial_map.get(orig_pallet, [])
