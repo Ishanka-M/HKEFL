@@ -1538,7 +1538,7 @@ if login_section():
                             st.warning("Report generate කිරීම අසාර්ථක විය.")
 
             with tab_formatted:
-                st.caption("Logic 1-5 Pick Report — Pick Id check → master_pick_data / master_partial_data matching → COO → Reconcile")
+                st.caption("Pick Id → Logic 1/2 (picked) | Pick Id=0 → Logic 3/4 (allocated) | Logic 5 damage | Logic 6 merge")
 
                 # ── CSV Fallback Upload Section ──────────────────────────────────────────
                 with st.expander("📂 CSV Data Override (Optional — Supabase connect නොවේ නම් CSV upload කරන්න)", expanded=False):
@@ -1551,11 +1551,9 @@ if login_section():
                     csv_vendor_file  = col_csv4.file_uploader("vendor_maintain CSV",     type=['csv'], key="fmt_csv_vendor")
 
                 if st.button("📊 Generate Formatted Pick Report", type="primary", use_container_width=True, key="gen_fmt"):
-                    with st.spinner("Generating Formatted Report — Logic 1→5 ..."):
+                    with st.spinner("Generating Formatted Report..."):
                         inv_report_file.seek(0)
-                        inv_data = (pd.read_csv(inv_report_file, keep_default_na=False, na_values=[''])
-                                    if inv_report_file.name.endswith('.csv')
-                                    else pd.read_excel(inv_report_file, keep_default_na=False, na_values=['']))
+                        inv_data = pd.read_csv(inv_report_file, keep_default_na=False, na_values=['']) if inv_report_file.name.endswith('.csv') else pd.read_excel(inv_report_file, keep_default_na=False, na_values=[''])
                         inv_data.columns = [str(c).strip() for c in inv_data.columns]
                         inv_col_map_r = {str(c).strip().lower(): str(c).strip() for c in inv_data.columns}
 
@@ -1570,16 +1568,15 @@ if login_section():
                         if rename_map:
                             inv_data = inv_data.rename(columns=rename_map)
                         inv_col_map_r = {str(c).strip().lower(): str(c).strip() for c in inv_data.columns}
-                        _inv_aq_col   = inv_col_map_r.get('actual qty', 'Actual Qty')
-                        _inv_pal_col  = inv_col_map_r.get('pallet', 'Pallet')
-                        _inv_pid_col  = inv_col_map_r.get('pick id', 'Pick Id')
+                        _inv_aq_col  = inv_col_map_r.get('actual qty', 'Actual Qty')
+                        _inv_pal_col = inv_col_map_r.get('pallet', 'Pallet')
+                        _inv_pid_col = inv_col_map_r.get('pick id', 'Pick Id')
 
                         REPORT_HEADERS = ['Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
                                           'Client So', 'Pallet', 'Supplier Hu', 'Supplier',
                                           'Lot Number', 'Style', 'Color', 'Size', 'Client So 2',
                                           'Inventory Type', 'Actual Qty']
 
-                        # ── Helper: load CSV and rename columns using a reverse-map ─────────
                         def _load_csv_with_rev_map(uploaded_file, rev_col_map):
                             try:
                                 df = pd.read_csv(uploaded_file)
@@ -1590,7 +1587,7 @@ if login_section():
                                 st.warning(f"CSV read error: {_e}")
                                 return pd.DataFrame()
 
-                        # ── Load data: CSV first, fallback to Supabase ──────────────────────
+                        # ── Load data ──────────────────────────────────────────────────────
                         if csv_pick_file:
                             csv_pick_file.seek(0)
                             mpd_df = _load_csv_with_rev_map(csv_pick_file, PICK_COL_MAP_REV)
@@ -1633,7 +1630,7 @@ if login_section():
 
                         mpd_col = {str(c).strip().lower(): str(c).strip() for c in (mpd_df.columns if not mpd_df.empty else [])}
 
-                        # ── old_history_master lookup ────────────────────────────────────────
+                        # ── old_history_master lookup ──────────────────────────────────────
                         OH_FILL_COLS = ['Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
                                         'Client So', 'Supplier Hu', 'Supplier', 'Lot Number',
                                         'Style', 'Color', 'Size', 'Client So 2']
@@ -1645,26 +1642,24 @@ if login_section():
                             'Style': 'style', 'Color': 'color', 'Size': 'size',
                             'Client So 2': 'client_so_2',
                         }
-                        OH_COL_DB_MAP_REV = {v: k for k, v in OH_COL_DB_MAP.items()}
                         oh_master_lookup = {}
                         try:
-                            oh_master_df = DBManager.read_table("old_history_master")
-                            if not oh_master_df.empty:
-                                oh_master_df.rename(columns=OH_COL_DB_MAP_REV, inplace=True)
-                                pallet_oh_col = next((c for c in oh_master_df.columns if c.lower() == 'pallet'), None)
-                                if pallet_oh_col:
-                                    for _, oh_row in oh_master_df.iterrows():
-                                        pkey_oh = str(oh_row.get(pallet_oh_col, '')).strip().lower()
-                                        if pkey_oh:
-                                            oh_master_lookup[pkey_oh] = {
-                                                col: str(oh_row.get(col, '')).strip()
-                                                for col in OH_FILL_COLS
-                                                if str(oh_row.get(col, '')).strip() not in ('', 'nan', 'None')
-                                            }
+                            _oh_df = DBManager.read_table("load_history")
+                            if not _oh_df.empty and 'Pallet' in _oh_df.columns:
+                                for _, _oh_r in _oh_df.iterrows():
+                                    _oh_pal = str(_oh_r.get('Pallet', '')).strip().lower()
+                                    if _oh_pal:
+                                        _oh_entry = {}
+                                        for _col_d, _col_db in OH_COL_DB_MAP.items():
+                                            _v = str(_oh_r.get(_col_d, '')).strip()
+                                            if _v and _v not in ('nan', 'None'):
+                                                _oh_entry[_col_d] = _v
+                                        if _oh_entry:
+                                            oh_master_lookup[_oh_pal] = _oh_entry
                         except Exception:
                             pass
 
-                        # ── vendor_country_map (COO) ─────────────────────────────────────────
+                        # ── vendor_country_map ──────────────────────────────────────────────
                         def _get_vendor_country_map_from_df(vdf):
                             if vdf is None or vdf.empty:
                                 return {}
@@ -1680,28 +1675,38 @@ if login_section():
                         if not vendor_country_map:
                             vendor_country_map = get_vendor_country_map()
 
-                        # ── Partial lookup maps ──────────────────────────────────────────────
+                        # ── partial lookup maps ────────────────────────────────────────────
                         def _get_partial_lookup_maps_from_df(part_df):
-                            invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map = {}, {}, {}, {}, {}
+                            invoice_map = {}; grn_map = {}; vendor_map = {}
+                            pallet_invoice_map = {}; pallet_grn_map = {}
                             if part_df is None or part_df.empty:
                                 return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
-                            for _, r in part_df.iterrows():
-                                pallet_key = str(r.get('Pallet', '')).strip()
-                                gen_pallet = str(r.get('Gen Pallet ID', '')).strip()
-                                inv_num    = str(r.get('Invoice Number', '')).strip()
-                                grn_num    = str(r.get('Grn Number', '')).strip()
-                                vnd_name   = str(r.get('Vendor Name', '')).strip()
-                                if inv_num in ('nan', 'None'): inv_num = ''
-                                if grn_num in ('nan', 'None'): grn_num = ''
-                                if vnd_name in ('nan', 'None'): vnd_name = ''
-                                if gen_pallet and gen_pallet not in ('', 'nan', 'None'):
-                                    if inv_num: invoice_map[gen_pallet] = inv_num
-                                    if grn_num: grn_map[gen_pallet] = grn_num
-                                    if vnd_name: vendor_map[gen_pallet] = vnd_name
-                                if pallet_key and pallet_key not in ('', 'nan', 'None'):
-                                    if inv_num: pallet_invoice_map[pallet_key] = inv_num
-                                    if grn_num: pallet_grn_map[pallet_key] = grn_num
-                                    if vnd_name: vendor_map[pallet_key] = vnd_name
+                            pc2 = {str(c).strip().lower(): str(c).strip() for c in part_df.columns}
+                            gp_col2 = pc2.get('gen pallet id', 'Gen Pallet ID')
+                            iv_col2 = pc2.get('invoice number', 'Invoice Number')
+                            gr_col2 = pc2.get('grn number', 'Grn Number')
+                            vn_col2 = pc2.get('vendor name', 'Vendor Name')
+                            pp_col2 = pc2.get('pallet', 'Pallet')
+                            for _, r2 in part_df.iterrows():
+                                gp_key = str(r2.get(gp_col2, '')).strip().lower()
+                                pp_key = str(r2.get(pp_col2, '')).strip().lower()
+                                inv_num = str(r2.get(iv_col2, '')).strip()
+                                grn_num = str(r2.get(gr_col2, '')).strip()
+                                vnd_name = str(r2.get(vn_col2, '')).strip()
+                                pallet_key = str(r2.get(pp_col2, '')).strip()
+                                if inv_num and inv_num not in ('nan','None'):
+                                    if gp_key: invoice_map[gp_key] = inv_num
+                                if grn_num and grn_num not in ('nan','None'):
+                                    if gp_key: grn_map[gp_key] = grn_num
+                                if vnd_name and vnd_name not in ('nan','None'):
+                                    if gp_key: vendor_map[gp_key] = vnd_name
+                                if pallet_key:
+                                    if inv_num and inv_num not in ('nan','None'):
+                                        pallet_invoice_map[pallet_key] = inv_num
+                                    if grn_num and grn_num not in ('nan','None'):
+                                        pallet_grn_map[pallet_key] = grn_num
+                                    if vnd_name and vnd_name not in ('nan','None'):
+                                        vendor_map[pallet_key.lower()] = vnd_name
                             return invoice_map, grn_map, vendor_map, pallet_invoice_map, pallet_grn_map
 
                         inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = \
@@ -1709,7 +1714,31 @@ if login_section():
                         if not any([inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt]):
                             inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = get_partial_lookup_maps()
 
-                        # ── Damage setup ─────────────────────────────────────────────────────
+                        # ── MPD exact map: {(pallet, actual_qty): [entries]} ───────────────
+                        mpd_exact_map = {}
+                        mpd_pallet_rows = {}
+                        if not mpd_df.empty:
+                            p_col  = mpd_col.get('pallet', 'Pallet')
+                            aq_col = mpd_col.get('actual qty', 'Actual Qty')
+                            cn_col = mpd_col.get('country name', 'Country Name')
+                            gl_col = mpd_col.get('generated load id', 'Generated Load ID')
+                            for _, _mrow in mpd_df.iterrows():
+                                _mp  = str(_mrow.get(p_col, '')).strip()
+                                _mq  = pd.to_numeric(_mrow.get(aq_col, 0), errors='coerce')
+                                if pd.isna(_mq): _mq = 0.0
+                                _mq  = float(_mq)
+                                _mcn = str(_mrow.get(cn_col, '')).strip()
+                                _mgl = str(_mrow.get(gl_col, '')).strip()
+                                if _mp:
+                                    _key = (_mp, round(_mq, 6))
+                                    if _key not in mpd_exact_map:
+                                        mpd_exact_map[_key] = []
+                                    mpd_exact_map[_key].append({'country': _mcn, 'load_id': _mgl, 'actual_qty': _mq})
+                                    if _mp not in mpd_pallet_rows:
+                                        mpd_pallet_rows[_mp] = []
+                                    mpd_pallet_rows[_mp].append({'country': _mcn, 'load_id': _mgl, 'actual_qty': _mq})
+
+                        # ── Damage setup ────────────────────────────────────────────────────
                         dmg_df = _damage_df_fmt
                         damage_remarks = []
                         dmg_pallet_remark_qty = {}
@@ -1722,38 +1751,33 @@ if login_section():
                             damage_remarks = list(_dmg['_rmk'].unique())
                             _dmg_grp = _dmg.groupby(['_pkey', '_rmk'])['_dqty'].sum()
                             dmg_pallet_remark_qty = {(p, r): v for (p, r), v in _dmg_grp.items()}
-                            damage_pallets = set(_dmg['_pkey'].tolist())
+                        if not dmg_df.empty and 'Pallet' in dmg_df.columns:
+                            damage_pallets = set(str(p).strip() for p in dmg_df['Pallet'].dropna())
 
-                        # ── Partial data maps ────────────────────────────────────────────────
+                        # ── Partial map: orig_pallet → [entries] ───────────────────────────
                         partial_df = _partial_df_fmt
-                        # partial_map: orig_pallet → list of partial entries
                         partial_map = {}
-                        # gen_pallet_exact_map: (gen_pallet_id, partial_qty) → entry  [Logic 2]
-                        gen_pallet_exact_map = {}
-                        # gen_to_orig: gen_pallet_id → orig_pallet
                         gen_to_orig = {}
+                        gen_pallet_exact_map = {}
                         if not partial_df.empty:
                             pc = {str(c).strip().lower(): str(c).strip() for c in partial_df.columns}
-                            pp_col  = pc.get('pallet',        'Pallet')
-                            pq_col  = pc.get('partial qty',   'Partial Qty')
+                            pp_col  = pc.get('pallet', 'Pallet')
+                            pq_col  = pc.get('partial qty', 'Partial Qty')
                             pg_col  = pc.get('gen pallet id', 'Gen Pallet ID')
-                            pl_col  = pc.get('load id',       'Load ID')
-                            pa_col  = pc.get('actual qty',    'Actual Qty')
-                            pi_col  = pc.get('invoice number','Invoice Number')
-                            pg2_col = pc.get('grn number',    'Grn Number')
-                            pcn_col = pc.get('country name',  'Country Name')
-                            pb_col  = pc.get('balance qty',   'Balance Qty')
+                            pl_col  = pc.get('load id', 'Load ID')
+                            pa_col  = pc.get('actual qty', 'Actual Qty')
+                            pi_col  = pc.get('invoice number', 'Invoice Number')
+                            pg2_col = pc.get('grn number', 'Grn Number')
+                            pcn_col = pc.get('country name', 'Country Name')
+                            pb_col  = pc.get('balance qty', 'Balance Qty')
 
-                            _sel = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col,
-                                                pi_col, pg2_col, pb_col, pcn_col]
-                                    if c in partial_df.columns]
-                            _pdf = partial_df[_sel].copy()
-                            for _nc in [pq_col, pa_col]:
-                                if _nc in _pdf.columns:
-                                    _pdf[_nc] = pd.to_numeric(_pdf[_nc], errors='coerce').fillna(0)
+                            _sel_cols = [c for c in [pp_col, pq_col, pg_col, pl_col, pa_col, pi_col, pg2_col, pb_col, pcn_col]
+                                         if c in partial_df.columns]
+                            _pdf = partial_df[_sel_cols].copy()
+                            _pdf[pq_col] = pd.to_numeric(_pdf[pq_col], errors='coerce').fillna(0)
+                            _pdf[pa_col] = pd.to_numeric(_pdf[pa_col], errors='coerce').fillna(0)
                             if pb_col in _pdf.columns:
                                 _pdf[pb_col] = pd.to_numeric(_pdf[pb_col], errors='coerce').fillna(0)
-
                             for _, _pr in _pdf.iterrows():
                                 opallet  = str(_pr.get(pp_col,  '')).strip()
                                 gpallet  = str(_pr.get(pg_col,  '')).strip()
@@ -1769,14 +1793,13 @@ if login_section():
                                 if cntry_p  in ('nan', 'None'): cntry_p  = ''
                                 entry = {
                                     'gen_pallet': gpallet, 'partial_qty': pqty,
-                                    'load_id': loadid_p,  'mpd_actual': aqty,
-                                    'balance_qty': bqty,  'invoice_number': inv_num,
+                                    'load_id': loadid_p, 'mpd_actual': aqty,
+                                    'balance_qty': bqty, 'invoice_number': inv_num,
                                     'grn_number': grn_num, 'orig_pallet': opallet,
                                     'country': cntry_p,
                                 }
                                 if opallet:
-                                    if opallet not in partial_map:
-                                        partial_map[opallet] = []
+                                    if opallet not in partial_map: partial_map[opallet] = []
                                     partial_map[opallet].append(entry)
                                 if gpallet and opallet:
                                     gen_to_orig[gpallet] = opallet
@@ -1784,63 +1807,22 @@ if login_section():
                                     _l2key = (gpallet, round(pqty, 6))
                                     gen_pallet_exact_map[_l2key] = entry
 
-                        # ── master_pick_data exact maps ──────────────────────────────────────
-                        # mpd_exact_map: (pallet, actual_qty) → list of mpd entry dicts
-                        mpd_exact_map     = {}
-                        mpd_pallet_rows   = {}
-                        if not mpd_df.empty:
-                            p_col  = mpd_col.get('pallet',           'Pallet')
-                            aq_col = mpd_col.get('actual qty',       'Actual Qty')
-                            cn_col = mpd_col.get('country name',     'Country Name')
-                            gl_col = mpd_col.get('generated load id','Generated Load ID')
-                            pq_col2= mpd_col.get('pick quantity',    'Pick Quantity')
-                            for _, _mrow in mpd_df.iterrows():
-                                _mp  = str(_mrow.get(p_col,  '')).strip()
-                                _mq  = pd.to_numeric(_mrow.get(aq_col, 0), errors='coerce')
-                                if pd.isna(_mq): _mq = 0.0
-                                _mq  = float(_mq)
-                                _mcn = str(_mrow.get(cn_col, '')).strip()
-                                _mgl = str(_mrow.get(gl_col, '')).strip()
-                                _mpq = pd.to_numeric(_mrow.get(pq_col2, _mq), errors='coerce')
-                                if pd.isna(_mpq): _mpq = _mq
-                                _mpq = float(_mpq)
-                                if _mp:
-                                    _key = (_mp, round(_mq, 6))
-                                    if _key not in mpd_exact_map:
-                                        mpd_exact_map[_key] = []
-                                    mpd_exact_map[_key].append({
-                                        'country': _mcn, 'load_id': _mgl,
-                                        'actual_qty': _mq, 'pick_qty': _mpq,
-                                    })
-                                    if _mp not in mpd_pallet_rows:
-                                        mpd_pallet_rows[_mp] = []
-                                    mpd_pallet_rows[_mp].append({
-                                        'country': _mcn, 'load_id': _mgl,
-                                        'actual_qty': _mq, 'pick_qty': _mpq,
-                                    })
+                        import re as _re
+                        _gen_pat = _re.compile(r'^(.+)-P(\d+)$')
+                        def _base_pallet(p):
+                            m = _gen_pat.match(str(p).strip())
+                            return m.group(1) if m else str(p).strip()
 
-                        # ── helpers ──────────────────────────────────────────────────────────
                         def _is_blank(val):
                             return not val or str(val).strip() in ('', 'nan', 'None')
-
-                        def _get_inv_field(inv_row, field):
-                            if field in inv_row.index:
-                                v = inv_row[field]
-                                return '' if str(v).strip() in ('', 'nan', 'None') else str(v).strip()
-                            fb = inv_col_map_r.get(field.strip().lower())
-                            if fb and fb in inv_row.index:
-                                v = inv_row[fb]
-                                return '' if str(v).strip() in ('', 'nan', 'None') else str(v).strip()
-                            return ''
 
                         def build_row(inv_row, override_pallet=None, override_actual_qty=None):
                             row = {}
                             for h in REPORT_HEADERS:
                                 if h == 'Pallet':
-                                    row[h] = override_pallet if override_pallet is not None else _get_inv_field(inv_row, 'Pallet')
+                                    row[h] = override_pallet if override_pallet is not None else (inv_row[_inv_pal_col] if _inv_pal_col in inv_row.index else '')
                                 elif h == 'Actual Qty':
-                                    row[h] = override_actual_qty if override_actual_qty is not None else (
-                                        pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
+                                    row[h] = override_actual_qty if override_actual_qty is not None else (inv_row[_inv_aq_col] if _inv_aq_col in inv_row.index else '')
                                 elif h == 'Client So 2':
                                     cs_col = inv_col_map_r.get('client so', 'Client So')
                                     row[h] = inv_row[cs_col] if cs_col in inv_row.index else ''
@@ -1853,292 +1835,310 @@ if login_section():
                                     row[h] = inv_row[fb] if fb and fb in inv_row.index else ''
                             return row
 
-                        def _resolve_meta(inv_row, orig_pallet, par_entry=None, gen_pallet=None):
-                            """Resolve Vendor Name, Invoice Number, Grn Number, COO for a row."""
-                            vname = _get_inv_field(inv_row, 'Vendor Name')
-                            if _is_blank(vname):
-                                vname = (partial_vendor_map_fmt.get(orig_pallet, '') or
-                                         (partial_vendor_map_fmt.get(gen_pallet, '') if gen_pallet else '') or
-                                         (par_entry.get('vendor_name', '') if par_entry else ''))
-                            inv_n = _get_inv_field(inv_row, 'Invoice Number')
-                            if _is_blank(inv_n):
-                                inv_n = (pallet_invoice_map_fmt.get(orig_pallet, '') or
-                                         (par_entry.get('invoice_number', '') if par_entry else '') or
-                                         (inv_invoice_map_fmt.get(gen_pallet, '') if gen_pallet else ''))
-                            grn_n = _get_inv_field(inv_row, 'Grn Number')
-                            if _is_blank(grn_n):
-                                grn_n = (pallet_grn_map_fmt.get(orig_pallet, '') or
-                                         (par_entry.get('grn_number', '') if par_entry else '') or
-                                         (inv_grn_map_fmt.get(gen_pallet, '') if gen_pallet else ''))
-                            coo = vendor_country_map.get(vname.lower(), '') if vname else ''
-                            return vname, inv_n, grn_n, coo
+                        def fill_row_from_partial(row, pallet_key=None, gen_pallet_key=None, partial_entry=None):
+                            if _is_blank(row.get('Invoice Number')):
+                                if partial_entry and not _is_blank(partial_entry.get('invoice_number', '')):
+                                    row['Invoice Number'] = partial_entry['invoice_number']
+                                elif gen_pallet_key and not _is_blank(inv_invoice_map_fmt.get(gen_pallet_key, '')):
+                                    row['Invoice Number'] = inv_invoice_map_fmt[gen_pallet_key]
+                                elif pallet_key and not _is_blank(pallet_invoice_map_fmt.get(pallet_key, '')):
+                                    row['Invoice Number'] = pallet_invoice_map_fmt[pallet_key]
+                            if _is_blank(row.get('Grn Number')):
+                                if partial_entry and not _is_blank(partial_entry.get('grn_number', '')):
+                                    row['Grn Number'] = partial_entry['grn_number']
+                                elif gen_pallet_key and not _is_blank(inv_grn_map_fmt.get(gen_pallet_key, '')):
+                                    row['Grn Number'] = inv_grn_map_fmt[gen_pallet_key]
+                                elif pallet_key and not _is_blank(pallet_grn_map_fmt.get(pallet_key, '')):
+                                    row['Grn Number'] = pallet_grn_map_fmt[pallet_key]
+                            return row
 
-                        def fill_from_oh_master(row, pallet_key):
+                        def fill_row_from_oh_master(row, pallet_key):
                             oh_data = oh_master_lookup.get(str(pallet_key).lower(), {})
                             if not oh_data:
                                 return row
                             for col in OH_FILL_COLS:
                                 if _is_blank(row.get(col)) and not _is_blank(oh_data.get(col, '')):
                                     row[col] = oh_data[col]
-                            # Re-resolve COO after vendor fill
-                            vn2 = str(row.get('Vendor Name', '')).strip()
-                            if vn2 and not _is_blank(vn2):
-                                row['COO'] = vendor_country_map.get(vn2.lower(), row.get('COO', ''))
                             return row
 
-                        # ── Split inventory by Pick Id ───────────────────────────────────────
-                        # Pick Id ≠ 0 → already picked rows (Logic 1 & 2)
-                        # Pick Id = 0  → not yet picked rows (Logic 3 & 4)
-                        def _pick_id_is_zero(inv_row):
-                            pid = str(inv_row.get(_inv_pid_col, '0')).strip()
-                            try:
-                                return float(pid) == 0
-                            except (ValueError, TypeError):
-                                return pid in ('', '0', 'nan', 'None', '0.0')
+                        # ══════════════════════════════════════════════════════════════════
+                        # Split inv_data: picked (Pick Id filled) vs not picked (Pick Id=0)
+                        # ══════════════════════════════════════════════════════════════════
+                        def _pick_id_filled(val):
+                            v = str(val).strip()
+                            return v not in ('', '0', 'nan', 'None', '0.0')
+
+                        if _inv_pid_col in inv_data.columns:
+                            inv_picked   = inv_data[inv_data[_inv_pid_col].apply(_pick_id_filled)].copy()
+                            inv_unpicked = inv_data[~inv_data[_inv_pid_col].apply(_pick_id_filled)].copy()
+                        else:
+                            # Pick Id column නැත්නම් all rows unpicked ලෙස treat
+                            inv_picked   = pd.DataFrame(columns=inv_data.columns)
+                            inv_unpicked = inv_data.copy()
+                            st.warning("⚠️ 'Pick Id' column inventory file හි නෑ — all rows unpicked ලෙස process කරයි")
 
                         fmt_rows = []
+                        l1_unmatched = []   # Logic 1 unmatch report
+                        l3_unmatched = []   # Logic 3/4 unmatch report
+                        logic1_matched_idx = set()
+                        logic2_matched_idx = set()
+                        logic3_matched_pallets = set()
 
-                        # track matched inv row indices to avoid re-processing
-                        l1_matched = set()   # Logic 1 matched inv row indices
-                        l2_matched = set()   # Logic 2 matched inv row indices
-                        l3_matched = set()   # Logic 3 matched orig pallets (string)
-
-                        # ── Unmatched report rows (for Logic 1/2 unmatched report) ──────────
-                        l1_unmatched_rows = []  # {Pallet, Actual Qty, Pick Id, Reason}
-                        l3_unmatched_rows = []  # {Pallet, Actual Qty, Reason}
-
-                        # ════════════════════════════════════════════════════════════════════
-                        # LOGIC 1: Pick Id ≠ 0
-                        #   inv Pallet + Actual Qty exact match with master_pick_data
-                        #   pallet + actual_qty → Pick_Report update (Actual Qty + Pick Quantity)
-                        #   Matched pallets do NOT go to Logic 2+
-                        # ════════════════════════════════════════════════════════════════════
-                        for _inv_idx, inv_row in inv_data.iterrows():
-                            if _pick_id_is_zero(inv_row):
-                                continue  # Logic 1 only handles non-zero Pick Id rows
-
+                        # ════════════════════════════════════════════════════════════════
+                        # LOGIC 1: Pick Id filled → mpd pallet + actual_qty exact match
+                        #          → Pick Quantity = Actual Qty
+                        # ════════════════════════════════════════════════════════════════
+                        for _inv_idx, inv_row in inv_picked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
-                            inv_actual_qty = float(pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
-                            is_damaged     = orig_pallet in damage_pallets
+                            inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
+                            if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
+                            inv_actual_qty = float(inv_actual_qty)
 
                             _l1key = (orig_pallet, round(inv_actual_qty, 6))
                             if _l1key not in mpd_exact_map:
-                                # Logic 1 unmatched
-                                l1_unmatched_rows.append({
-                                    'Pallet': orig_pallet,
-                                    'Actual Qty': inv_actual_qty,
-                                    'Pick Id': str(inv_row.get(_inv_pid_col, '')).strip(),
-                                    'Reason': 'No exact match in master_pick_data (Pallet+Actual Qty)',
-                                })
                                 continue
 
-                            l1_matched.add(_inv_idx)
+                            logic1_matched_idx.add(_inv_idx)
+                            vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
+                            if not vendor_name_row: vendor_name_row = partial_vendor_map_fmt.get(orig_pallet, '')
+                            vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
+                            invoice_number_row = str(inv_row.get('Invoice Number', '')).strip() if 'Invoice Number' in inv_row.index else ''
+                            if not invoice_number_row or invoice_number_row in ('nan', 'None'):
+                                invoice_number_row = pallet_invoice_map_fmt.get(orig_pallet, '')
+                            grn_number_row = str(inv_row.get('Grn Number', '')).strip() if 'Grn Number' in inv_row.index else ''
+                            if not grn_number_row or grn_number_row in ('nan', 'None'):
+                                grn_number_row = pallet_grn_map_fmt.get(orig_pallet, '')
 
-                            vname, inv_n, grn_n, coo = _resolve_meta(inv_row, orig_pallet)
                             _mpd_entry = mpd_exact_map[_l1key][0]
-
                             row = build_row(inv_row)
                             row['Pick Quantity']       = inv_actual_qty
                             row['Allocated']           = ''
                             row['Destination Country'] = _mpd_entry.get('country', '')
                             row['Order NO']            = _mpd_entry.get('load_id', '')
-                            for rmk in damage_remarks:
-                                row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                            row['ATS']        = ''
-                            row['Vendor Name'] = vname
-                            row['Invoice Number'] = inv_n
-                            row['Grn Number']     = grn_n
-                            row['COO']            = coo
-                            row = fill_from_oh_master(row, orig_pallet)
-                            fmt_rows.append(row)
-
-                        # ════════════════════════════════════════════════════════════════════
-                        # LOGIC 2: Pick Id ≠ 0 — Logic 1 unmatched
-                        #   inv Pallet == gen_pallet_id AND inv Actual Qty == partial_qty
-                        #   → exact match → Pick_Report update (Actual Qty + Pick Quantity)
-                        #   Matched pallets do NOT go further
-                        # ════════════════════════════════════════════════════════════════════
-                        for _inv_idx, inv_row in inv_data.iterrows():
-                            if _pick_id_is_zero(inv_row):
-                                continue  # Logic 2 only handles non-zero Pick Id rows
-                            if _inv_idx in l1_matched:
-                                continue  # already handled by Logic 1
-
-                            orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
-                            inv_actual_qty = float(pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
-
-                            _l2key = (orig_pallet, round(inv_actual_qty, 6))
-                            if _l2key not in gen_pallet_exact_map:
-                                continue  # Not matched by Logic 2 either — stays in l1_unmatched
-
-                            l2_matched.add(_inv_idx)
-                            # Remove from l1_unmatched since Logic 2 matched it
-                            l1_unmatched_rows = [r for r in l1_unmatched_rows if not (
-                                r['Pallet'] == orig_pallet and r['Actual Qty'] == inv_actual_qty)]
-
-                            par_entry = gen_pallet_exact_map[_l2key]
-                            real_orig = par_entry.get('orig_pallet', orig_pallet)
-                            vname, inv_n, grn_n, coo = _resolve_meta(inv_row, real_orig, par_entry, orig_pallet)
-
-                            _mpd_meta = mpd_pallet_rows.get(real_orig, [])
-                            _country  = (_mpd_meta[0].get('country', '') if _mpd_meta else '') or par_entry.get('country', '')
-                            _load_id  = par_entry.get('load_id', '')
-
-                            row = build_row(inv_row)
-                            row['Pick Quantity']       = inv_actual_qty
-                            row['Allocated']           = ''
-                            row['Destination Country'] = _country
-                            row['Order NO']            = _load_id
-                            for rmk in damage_remarks:
-                                row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                             row['ATS']            = ''
-                            row['Vendor Name']    = vname
-                            row['Invoice Number'] = inv_n
-                            row['Grn Number']     = grn_n
-                            row['COO']            = coo
-                            row = fill_from_oh_master(row, real_orig)
+                            row['Vendor Name']    = vendor_name_row
+                            row['COO']            = vendor_country_row
+                            row['Invoice Number'] = invoice_number_row
+                            row['Grn Number']     = grn_number_row
+                            row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                            row = fill_row_from_oh_master(row, orig_pallet)
                             fmt_rows.append(row)
 
-                        # ════════════════════════════════════════════════════════════════════
-                        # LOGIC 3: Pick Id = 0
-                        #   inv Pallet + Actual Qty exact match with master_pick_data
-                        #   → Actual Qty update + Allocated column update
-                        #   Matched rows (by inv row index) do NOT go to Logic 4
-                        # ════════════════════════════════════════════════════════════════════
-                        l3_matched_idx = set()  # track inv row indices matched by Logic 3
-
-                        for _inv_idx, inv_row in inv_data.iterrows():
-                            if not _pick_id_is_zero(inv_row):
-                                continue  # Logic 3 only handles zero Pick Id rows
-
+                        # Logic 1 unmatch report (Pick Id filled ඒත් mpd match නෑ)
+                        for _inv_idx, inv_row in inv_picked.iterrows():
+                            if _inv_idx in logic1_matched_idx:
+                                continue
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = float(pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
+                            _l2key = (orig_pallet, round(inv_actual_qty, 6))
+                            if _l2key in gen_pallet_exact_map:
+                                # Logic 2: gen_pallet_id + partial_qty exact match
+                                logic2_matched_idx.add(_inv_idx)
+                                par_entry  = gen_pallet_exact_map[_l2key]
+                                real_orig  = par_entry.get('orig_pallet', orig_pallet)
+                                vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
+                                if not vendor_name_row: vendor_name_row = partial_vendor_map_fmt.get(real_orig, '') or partial_vendor_map_fmt.get(orig_pallet, '')
+                                vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
+                                invoice_number_row = str(inv_row.get('Invoice Number', '')).strip() if 'Invoice Number' in inv_row.index else ''
+                                if not invoice_number_row or invoice_number_row in ('nan', 'None'):
+                                    invoice_number_row = par_entry.get('invoice_number', '') or inv_invoice_map_fmt.get(orig_pallet, '') or pallet_invoice_map_fmt.get(real_orig, '')
+                                grn_number_row = str(inv_row.get('Grn Number', '')).strip() if 'Grn Number' in inv_row.index else ''
+                                if not grn_number_row or grn_number_row in ('nan', 'None'):
+                                    grn_number_row = par_entry.get('grn_number', '') or inv_grn_map_fmt.get(orig_pallet, '') or pallet_grn_map_fmt.get(real_orig, '')
+                                _mpd_meta2 = mpd_pallet_rows.get(real_orig, [])
+                                _country2  = (_mpd_meta2[0].get('country', '') if _mpd_meta2 else '') or par_entry.get('country', '')
+                                _load_id2  = par_entry.get('load_id', '')
+                                row = build_row(inv_row)
+                                row['Pick Quantity']       = inv_actual_qty
+                                row['Allocated']           = ''
+                                row['Destination Country'] = _country2
+                                row['Order NO']            = _load_id2
+                                for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                row['ATS']            = ''
+                                row['Vendor Name']    = vendor_name_row
+                                row['COO']            = vendor_country_row
+                                row['Invoice Number'] = invoice_number_row
+                                row['Grn Number']     = grn_number_row
+                                row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet, partial_entry=par_entry)
+                                row = fill_row_from_oh_master(row, real_orig)
+                                fmt_rows.append(row)
+                            else:
+                                # Unmatched picked row
+                                l1_unmatched.append({
+                                    'Pallet':       str(inv_row.get(_inv_pal_col, '')).strip(),
+                                    'Actual Qty':   inv_actual_qty,
+                                    'Pick Id':      str(inv_row.get(_inv_pid_col, '')).strip(),
+                                    'Style':        str(inv_row.get('Style', '')).strip(),
+                                    'Color':        str(inv_row.get('Color', '')).strip(),
+                                    'Size':         str(inv_row.get('Size', '')).strip(),
+                                    'Reason':       '❌ No MPD / Partial match',
+                                })
+
+                        # ════════════════════════════════════════════════════════════════
+                        # LOGIC 3: Pick Id = 0 → mpd pallet + actual_qty exact match
+                        #          → Allocated = Actual Qty
+                        # ════════════════════════════════════════════════════════════════
+                        for _inv_idx, inv_row in inv_unpicked.iterrows():
+                            orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
+                            inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
+                            if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
+                            inv_actual_qty = float(inv_actual_qty)
 
                             _l3key = (orig_pallet, round(inv_actual_qty, 6))
                             if _l3key not in mpd_exact_map:
-                                continue  # not matched — goes to Logic 4
+                                continue
 
-                            l3_matched_idx.add(_inv_idx)
-                            l3_matched.add(orig_pallet + '|' + str(round(inv_actual_qty, 6)))
+                            logic3_matched_pallets.add(orig_pallet)
+                            vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
+                            if not vendor_name_row: vendor_name_row = partial_vendor_map_fmt.get(orig_pallet, '')
+                            vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
+                            invoice_number_row = str(inv_row.get('Invoice Number', '')).strip() if 'Invoice Number' in inv_row.index else ''
+                            if not invoice_number_row or invoice_number_row in ('nan', 'None'):
+                                invoice_number_row = pallet_invoice_map_fmt.get(orig_pallet, '')
+                            grn_number_row = str(inv_row.get('Grn Number', '')).strip() if 'Grn Number' in inv_row.index else ''
+                            if not grn_number_row or grn_number_row in ('nan', 'None'):
+                                grn_number_row = pallet_grn_map_fmt.get(orig_pallet, '')
 
-                            vname, inv_n, grn_n, coo = _resolve_meta(inv_row, orig_pallet)
-                            _mpd_entry = mpd_exact_map[_l3key][0]
-
+                            _mpd_entry3 = mpd_exact_map[_l3key][0]
                             row = build_row(inv_row)
                             row['Pick Quantity']       = ''
                             row['Allocated']           = inv_actual_qty
-                            row['Destination Country'] = _mpd_entry.get('country', '')
-                            row['Order NO']            = _mpd_entry.get('load_id', '')
-                            for rmk in damage_remarks:
-                                row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                            row['Destination Country'] = _mpd_entry3.get('country', '')
+                            row['Order NO']            = _mpd_entry3.get('load_id', '')
+                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                             row['ATS']            = ''
-                            row['Vendor Name']    = vname
-                            row['Invoice Number'] = inv_n
-                            row['Grn Number']     = grn_n
-                            row['COO']            = coo
-                            row = fill_from_oh_master(row, orig_pallet)
+                            row['Vendor Name']    = vendor_name_row
+                            row['COO']            = vendor_country_row
+                            row['Invoice Number'] = invoice_number_row
+                            row['Grn Number']     = grn_number_row
+                            row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                            row = fill_row_from_oh_master(row, orig_pallet)
                             fmt_rows.append(row)
 
-                        # ════════════════════════════════════════════════════════════════════
-                        # LOGIC 4: Pick Id = 0 — Logic 3 unmatched
-                        #   inv Pallet match with master_partial_data pallet
-                        #   → expand one line per gen_pallet_id; Pallet = gen_pallet_id, Actual Qty = partial_qty
-                        #   balance row: Actual Qty = inv_actual_qty - sum(partial_qty)
-                        #   Unmatched → report
-                        # ════════════════════════════════════════════════════════════════════
-                        for _inv_idx, inv_row in inv_data.iterrows():
-                            if not _pick_id_is_zero(inv_row):
-                                continue  # Logic 4 only handles zero Pick Id rows
-
-                            if _inv_idx in l3_matched_idx:
-                                continue  # already handled by Logic 3
-
+                        # ════════════════════════════════════════════════════════════════
+                        # LOGIC 4: Pick Id=0, not L3 matched → partial_map pallet match
+                        #          → expand gen_pallet lines (Allocated) + balance ATS row
+                        # ════════════════════════════════════════════════════════════════
+                        logic4_matched_pallets = set()
+                        for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
-                            inv_actual_qty = float(pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
+                            inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
+                            if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
+                            inv_actual_qty = float(inv_actual_qty)
+                            is_damaged     = orig_pallet in damage_pallets
 
-                            is_damaged = orig_pallet in damage_pallets
-                            partials   = partial_map.get(orig_pallet, [])
-
-                            if not partials:
-                                # Truly unmatched — report
-                                l3_unmatched_rows.append({
-                                    'Pallet':      orig_pallet,
-                                    'Actual Qty':  inv_actual_qty,
-                                    'Pick Id':     '0',
-                                    'Reason':      'No match in master_pick_data or master_partial_data',
-                                })
-                                # Add as ATS row if not damaged
-                                vname, inv_n, grn_n, coo = _resolve_meta(inv_row, orig_pallet)
-                                row = build_row(inv_row)
-                                row['Pick Quantity']       = ''
-                                row['Allocated']           = ''
-                                row['Destination Country'] = ''
-                                row['Order NO']            = ''
-                                for rmk in damage_remarks:
-                                    row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
-                                row['ATS']            = round(inv_actual_qty, 3) if (not is_damaged and inv_actual_qty > 0) else ''
-                                row['Vendor Name']    = vname
-                                row['Invoice Number'] = inv_n
-                                row['Grn Number']     = grn_n
-                                row['COO']            = coo
-                                row = fill_from_oh_master(row, orig_pallet)
-                                fmt_rows.append(row)
+                            if orig_pallet in logic3_matched_pallets:
                                 continue
 
-                            # Has partials — expand lines
-                            vname, inv_n, grn_n, coo = _resolve_meta(inv_row, orig_pallet)
-                            _mpd_meta = mpd_pallet_rows.get(orig_pallet, [])
-                            _country_fallback = _mpd_meta[0].get('country', '') if _mpd_meta else ''
+                            partials = partial_map.get(orig_pallet, [])
+                            if not partials:
+                                continue
+
+                            logic4_matched_pallets.add(orig_pallet)
+                            vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
+                            if not vendor_name_row: vendor_name_row = partial_vendor_map_fmt.get(orig_pallet, '')
+                            vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
+                            invoice_number_row = str(inv_row.get('Invoice Number', '')).strip() if 'Invoice Number' in inv_row.index else ''
+                            if not invoice_number_row or invoice_number_row in ('nan', 'None'):
+                                invoice_number_row = pallet_invoice_map_fmt.get(orig_pallet, '')
+                            grn_number_row = str(inv_row.get('Grn Number', '')).strip() if 'Grn Number' in inv_row.index else ''
+                            if not grn_number_row or grn_number_row in ('nan', 'None'):
+                                grn_number_row = pallet_grn_map_fmt.get(orig_pallet, '')
+
                             total_partial_qty = sum(p['partial_qty'] for p in partials)
+                            _mpd_meta4 = mpd_pallet_rows.get(orig_pallet, [])
+                            _country4_fb = _mpd_meta4[0].get('country', '') if _mpd_meta4 else ''
 
                             for par_entry in partials:
-                                gp  = par_entry['gen_pallet']
-                                pqt = par_entry['partial_qty']
-                                _country = par_entry.get('country', '') or _country_fallback
+                                gp   = par_entry['gen_pallet']
+                                pqt  = par_entry['partial_qty']
+                                _country4 = par_entry.get('country', '') or _country4_fb
                                 row = build_row(inv_row, override_pallet=gp, override_actual_qty=pqt)
                                 row['Pick Quantity']       = ''
                                 row['Allocated']           = pqt
-                                row['Destination Country'] = _country
+                                row['Destination Country'] = _country4
                                 row['Order NO']            = par_entry['load_id']
-                                for rmk in damage_remarks:
-                                    row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 row['ATS']            = ''
-                                row['Vendor Name']    = vname
-                                row['Invoice Number'] = par_entry.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, '') or inv_n
-                                row['Grn Number']     = par_entry.get('grn_number', '') or inv_grn_map_fmt.get(gp, '') or grn_n
-                                row['COO']            = coo
-                                row = fill_from_oh_master(row, orig_pallet)
+                                row['Vendor Name']    = vendor_name_row
+                                row['COO']            = vendor_country_row
+                                row['Invoice Number'] = par_entry.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, '') or invoice_number_row
+                                row['Grn Number']     = par_entry.get('grn_number', '') or inv_grn_map_fmt.get(gp, '') or grn_number_row
+                                row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp, partial_entry=par_entry)
+                                row = fill_row_from_oh_master(row, orig_pallet)
                                 fmt_rows.append(row)
 
-                            # Balance row: inv_actual_qty - sum(partial_qty)
+                            # Balance row → ATS
                             balance_qty = round(inv_actual_qty - total_partial_qty, 6)
                             if balance_qty > 0.01 and not is_damaged:
-                                bal_row = build_row(inv_row, override_pallet=orig_pallet,
-                                                    override_actual_qty=round(balance_qty, 3))
+                                bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=round(balance_qty, 3))
                                 bal_row['Pick Quantity']       = ''
                                 bal_row['Allocated']           = ''
                                 bal_row['Destination Country'] = ''
                                 bal_row['Order NO']            = ''
-                                for rmk in damage_remarks:
-                                    bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                                for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 bal_row['ATS']            = round(balance_qty, 3)
-                                bal_row['Vendor Name']    = vname
-                                bal_row['Invoice Number'] = inv_n
-                                bal_row['Grn Number']     = grn_n
-                                bal_row['COO']            = coo
-                                bal_row = fill_from_oh_master(bal_row, orig_pallet)
+                                bal_row['Vendor Name']    = vendor_name_row
+                                bal_row['COO']            = vendor_country_row
+                                bal_row['Invoice Number'] = invoice_number_row
+                                bal_row['Grn Number']     = grn_number_row
+                                bal_row = fill_row_from_partial(bal_row, pallet_key=orig_pallet)
+                                bal_row = fill_row_from_oh_master(bal_row, orig_pallet)
                                 fmt_rows.append(bal_row)
 
-                        # ════════════════════════════════════════════════════════════════════
-                        # LOGIC 5: Damage — details code eka thibena widihaTama tibanna
-                        # damage_remarks columns already filled via dmg_pallet_remark_qty in all logics above
-                        # ════════════════════════════════════════════════════════════════════
-                        # (Damage is applied inline to every row via dmg_pallet_remark_qty lookups above)
+                        # ════════════════════════════════════════════════════════════════
+                        # LOGIC 5: Remaining unpicked rows not matched → ATS
+                        # ════════════════════════════════════════════════════════════════
+                        for _inv_idx, inv_row in inv_unpicked.iterrows():
+                            orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
+                            inv_actual_qty = pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce')
+                            if pd.isna(inv_actual_qty): inv_actual_qty = 0.0
+                            inv_actual_qty = float(inv_actual_qty)
+                            is_damaged     = orig_pallet in damage_pallets
 
-                        # ── Build fmt_df ─────────────────────────────────────────────────────
+                            if orig_pallet in logic3_matched_pallets or orig_pallet in logic4_matched_pallets:
+                                continue
+
+                            vendor_name_row = str(inv_row.get('Vendor Name', '')).strip() if 'Vendor Name' in inv_row.index else ''
+                            if not vendor_name_row: vendor_name_row = partial_vendor_map_fmt.get(orig_pallet, '')
+                            vendor_country_row = vendor_country_map.get(vendor_name_row.lower(), '') if vendor_name_row else ''
+                            invoice_number_row = str(inv_row.get('Invoice Number', '')).strip() if 'Invoice Number' in inv_row.index else ''
+                            if not invoice_number_row or invoice_number_row in ('nan', 'None'):
+                                invoice_number_row = pallet_invoice_map_fmt.get(orig_pallet, '')
+                            grn_number_row = str(inv_row.get('Grn Number', '')).strip() if 'Grn Number' in inv_row.index else ''
+                            if not grn_number_row or grn_number_row in ('nan', 'None'):
+                                grn_number_row = pallet_grn_map_fmt.get(orig_pallet, '')
+
+                            row = build_row(inv_row)
+                            row['Pick Quantity']       = ''
+                            row['Allocated']           = ''
+                            row['Destination Country'] = ''
+                            row['Order NO']            = ''
+                            for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
+                            row['ATS']            = round(inv_actual_qty, 3) if (not is_damaged and inv_actual_qty > 0) else ''
+                            row['Vendor Name']    = vendor_name_row
+                            row['COO']            = vendor_country_row
+                            row['Invoice Number'] = invoice_number_row
+                            row['Grn Number']     = grn_number_row
+                            row = fill_row_from_partial(row, pallet_key=orig_pallet)
+                            row = fill_row_from_oh_master(row, orig_pallet)
+                            fmt_rows.append(row)
+
+                            # L3/L4 unmatched report
+                            l3_unmatched.append({
+                                'Pallet':     orig_pallet,
+                                'Actual Qty': inv_actual_qty,
+                                'Style':      str(inv_row.get('Style', '')).strip(),
+                                'Color':      str(inv_row.get('Color', '')).strip(),
+                                'Size':       str(inv_row.get('Size', '')).strip(),
+                                'Reason':     '❌ No MPD / Partial match (ATS)',
+                            })
+
+                        # ── Build fmt_df ───────────────────────────────────────────────────
                         _extra_cols = ['Pick Quantity', 'Allocated', 'Destination Country', 'Order NO'] + damage_remarks + ['ATS', 'Vendor Name', 'COO']
                         final_cols  = REPORT_HEADERS + [c for c in _extra_cols if c not in REPORT_HEADERS]
-                        # Ensure Invoice Number and Grn Number are in final_cols after Vendor Name
+                        # Add Invoice Number / Grn Number if not already in final_cols
                         for _fc in ['Invoice Number', 'Grn Number']:
                             if _fc not in final_cols:
                                 final_cols.append(_fc)
@@ -2148,162 +2148,251 @@ if login_section():
                             fmt_df['Pallet'].astype(str).str.strip().replace({'nan': '', 'None': ''}) != ''
                         ].reset_index(drop=True)
 
-                        # ── Duplicate removal ────────────────────────────────────────────────
-                        dup_key_cols = ['Pallet', 'Pick Quantity', 'Allocated', 'Destination Country',
-                                        'Order NO', 'Style', 'Color', 'Size']
-                        _dup_present = [c for c in dup_key_cols if c in fmt_df.columns]
-                        if _dup_present:
-                            fmt_df['_dup_key'] = fmt_df[_dup_present].astype(str).agg('|'.join, axis=1)
-                            _dup_mask  = fmt_df.duplicated(subset='_dup_key', keep='first')
-                            _dup_count = _dup_mask.sum()
-                            fmt_df     = fmt_df[~_dup_mask].reset_index(drop=True)
-                            fmt_df.drop(columns=['_dup_key'], inplace=True, errors='ignore')
-                            if _dup_count > 0:
-                                st.warning(f"⚠️ Duplicate rows removed: **{_dup_count}**")
-                            else:
-                                st.success("✅ No duplicate rows found.")
+                        # ════════════════════════════════════════════════════════════════
+                        # LOGIC 6: Duplicate Pallet merge
+                        # If Pick Qty == Allocated AND Destination Country + Order NO same
+                        # → delete Allocated row, merge qty into Pick row
+                        # ════════════════════════════════════════════════════════════════
+                        _dup_pallets = fmt_df[fmt_df.duplicated(subset='Pallet', keep=False)]['Pallet'].unique()
+                        _rows_to_drop = []
+                        for _dp in _dup_pallets:
+                            _dp_mask = fmt_df['Pallet'].astype(str).str.strip() == str(_dp).strip()
+                            _dp_rows = fmt_df[_dp_mask]
+                            for _i, _ri in _dp_rows.iterrows():
+                                _pick_v = pd.to_numeric(_ri.get('Pick Quantity', 0), errors='coerce') or 0
+                                _alloc_v= pd.to_numeric(_ri.get('Allocated',     0), errors='coerce') or 0
+                                _ats_v  = pd.to_numeric(_ri.get('ATS',           0), errors='coerce') or 0
+                                if _pick_v == 0 and _alloc_v > 0 and _ats_v == 0:
+                                    # This is an Allocated row — find matching Pick row
+                                    _country_a = str(_ri.get('Destination Country', '')).strip()
+                                    _order_a   = str(_ri.get('Order NO', '')).strip()
+                                    for _j, _rj in _dp_rows.iterrows():
+                                        if _i == _j: continue
+                                        _pick_j = pd.to_numeric(_rj.get('Pick Quantity', 0), errors='coerce') or 0
+                                        _country_p = str(_rj.get('Destination Country', '')).strip()
+                                        _order_p   = str(_rj.get('Order NO', '')).strip()
+                                        if _pick_j == _alloc_v and _country_p == _country_a and _order_p == _order_a:
+                                            # Find matching gen_pallet from partial_map
+                                            _base_p = _base_pallet(str(_dp))
+                                            _part_entries_p = partial_map.get(_base_p, []) or partial_map.get(str(_dp), [])
+                                            _orig_from_gen = gen_to_orig.get(str(_dp), _base_p)
+                                            _part_orig = partial_map.get(_orig_from_gen, [])
+                                            # Sum all qty columns into Pick row
+                                            for _qcol in ['Pick Quantity', 'Allocated', 'ATS', 'QC Repair', 'QC Reject'] + damage_remarks:
+                                                if _qcol in fmt_df.columns:
+                                                    _pv = pd.to_numeric(fmt_df.at[_j, _qcol], errors='coerce') or 0
+                                                    _av = pd.to_numeric(fmt_df.at[_i, _qcol], errors='coerce') or 0
+                                                    fmt_df.at[_j, _qcol] = _pv + _av
+                                            # Update Actual Qty on Pick row
+                                            _act_j = pd.to_numeric(fmt_df.at[_j, 'Actual Qty'], errors='coerce') or 0
+                                            _act_i = pd.to_numeric(fmt_df.at[_i, 'Actual Qty'], errors='coerce') or 0
+                                            fmt_df.at[_j, 'Actual Qty'] = _act_j + _act_i
+                                            _rows_to_drop.append(_i)
+                                            break
 
-                        # ── Additional: Blank fill from old_history_master ───────────────────
-                        import re as _re
-                        _gen_pat = _re.compile(r'^(.+)-P(\d+)$')
-                        def _base_pallet(p):
-                            m = _gen_pat.match(str(p).strip())
-                            return m.group(1) if m else str(p).strip()
+                        if _rows_to_drop:
+                            fmt_df = fmt_df.drop(index=list(set(_rows_to_drop))).reset_index(drop=True)
+                            st.info(f"🔗 Logic 6: **{len(set(_rows_to_drop))}** Allocated duplicate rows merged into Pick rows")
 
-                        for _idx, _rrow in fmt_df.iterrows():
-                            _pkey = str(_rrow.get('Pallet', '')).strip()
-                            _base = _base_pallet(_pkey)
-                            # Vendor Name
-                            if _is_blank(_rrow.get('Vendor Name', '')):
-                                _fb_vn = (partial_vendor_map_fmt.get(_pkey, '') or
-                                          partial_vendor_map_fmt.get(_base, '') or
-                                          oh_master_lookup.get(_pkey.lower(), {}).get('Vendor Name', '') or
-                                          oh_master_lookup.get(_base.lower(), {}).get('Vendor Name', ''))
-                                if _fb_vn:
-                                    fmt_df.at[_idx, 'Vendor Name'] = _fb_vn
-                                    fmt_df.at[_idx, 'COO'] = vendor_country_map.get(_fb_vn.lower(), fmt_df.at[_idx, 'COO'] if 'COO' in fmt_df.columns else '')
+                        # ── Additional: OH master fill + Order NO fill ─────────────────────
+                        for idx, r_row in fmt_df.iterrows():
+                            pkey = str(r_row.get('Pallet', '')).strip()
+                            base = _base_pallet(pkey)
+                            part_entries = partial_map.get(base, []) or partial_map.get(pkey, [])
+
+                            vn = str(fmt_df.at[idx, 'Vendor Name']).strip()
+                            if not vn or vn in ('nan', 'None', ''):
+                                fb_vn = (partial_vendor_map_fmt.get(pkey, '') or partial_vendor_map_fmt.get(base, ''))
+                                if not fb_vn:
+                                    for pe in part_entries:
+                                        gp = pe.get('gen_pallet', '')
+                                        fb_vn = partial_vendor_map_fmt.get(gp, '')
+                                        if fb_vn: break
+                                if not fb_vn:
+                                    fb_vn = oh_master_lookup.get(pkey.lower(), {}).get('Vendor Name', '') or \
+                                            oh_master_lookup.get(base.lower(), {}).get('Vendor Name', '')
+                                if fb_vn:
+                                    fmt_df.at[idx, 'Vendor Name'] = fb_vn
+                                    fmt_df.at[idx, 'COO'] = vendor_country_map.get(fb_vn.lower(), '')
                             else:
-                                _vn2 = str(_rrow.get('Vendor Name', '')).strip()
-                                if _is_blank(_rrow.get('COO', '')):
-                                    fmt_df.at[_idx, 'COO'] = vendor_country_map.get(_vn2.lower(), '')
-                            # Invoice Number
-                            if _is_blank(_rrow.get('Invoice Number', '')):
-                                _fb_inv = (pallet_invoice_map_fmt.get(_pkey, '') or
-                                           pallet_invoice_map_fmt.get(_base, '') or
-                                           oh_master_lookup.get(_pkey.lower(), {}).get('Invoice Number', '') or
-                                           oh_master_lookup.get(_base.lower(), {}).get('Invoice Number', ''))
-                                if _fb_inv:
-                                    fmt_df.at[_idx, 'Invoice Number'] = _fb_inv
-                            # Grn Number
-                            if _is_blank(_rrow.get('Grn Number', '')):
-                                _fb_grn = (pallet_grn_map_fmt.get(_pkey, '') or
-                                           pallet_grn_map_fmt.get(_base, '') or
-                                           oh_master_lookup.get(_pkey.lower(), {}).get('Grn Number', '') or
-                                           oh_master_lookup.get(_base.lower(), {}).get('Grn Number', ''))
-                                if _fb_grn:
-                                    fmt_df.at[_idx, 'Grn Number'] = _fb_grn
-                            # Other OH fill cols
+                                vc = str(fmt_df.at[idx, 'COO']).strip()
+                                if not vc or vc in ('nan', 'None', ''):
+                                    fmt_df.at[idx, 'COO'] = vendor_country_map.get(vn.lower(), '')
+
+                            inv_n = str(fmt_df.at[idx, 'Invoice Number']).strip()
+                            if not inv_n or inv_n in ('nan', 'None', ''):
+                                fb_inv = (pallet_invoice_map_fmt.get(pkey, '') or pallet_invoice_map_fmt.get(base, ''))
+                                if not fb_inv:
+                                    for pe in part_entries:
+                                        gp = pe.get('gen_pallet', '')
+                                        fb_inv = (pe.get('invoice_number', '') or inv_invoice_map_fmt.get(gp, ''))
+                                        if fb_inv: break
+                                if not fb_inv:
+                                    fb_inv = oh_master_lookup.get(pkey.lower(), {}).get('Invoice Number', '') or \
+                                             oh_master_lookup.get(base.lower(), {}).get('Invoice Number', '')
+                                if fb_inv:
+                                    fmt_df.at[idx, 'Invoice Number'] = fb_inv
+
+                            grn_n = str(fmt_df.at[idx, 'Grn Number']).strip()
+                            if not grn_n or grn_n in ('nan', 'None', ''):
+                                fb_grn = (pallet_grn_map_fmt.get(pkey, '') or pallet_grn_map_fmt.get(base, ''))
+                                if not fb_grn:
+                                    for pe in part_entries:
+                                        gp = pe.get('gen_pallet', '')
+                                        fb_grn = (pe.get('grn_number', '') or inv_grn_map_fmt.get(gp, ''))
+                                        if fb_grn: break
+                                if not fb_grn:
+                                    fb_grn = oh_master_lookup.get(pkey.lower(), {}).get('Grn Number', '') or \
+                                             oh_master_lookup.get(base.lower(), {}).get('Grn Number', '')
+                                if fb_grn:
+                                    fmt_df.at[idx, 'Grn Number'] = fb_grn
+
+                            # Order NO from oh_master if blank
+                            ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
+                            if not ord_n or ord_n in ('nan', 'None', ''):
+                                fb_ord = oh_master_lookup.get(pkey.lower(), {}).get('Order NO', '') or \
+                                         oh_master_lookup.get(base.lower(), {}).get('Order NO', '')
+                                if fb_ord:
+                                    fmt_df.at[idx, 'Order NO'] = fb_ord
+
                             for _oh_col in OH_FILL_COLS:
                                 if _oh_col in ('Vendor Name', 'Invoice Number', 'Grn Number'):
                                     continue
-                                if _oh_col in fmt_df.columns and _is_blank(fmt_df.at[_idx, _oh_col]):
-                                    _oh_val = (oh_master_lookup.get(_pkey.lower(), {}).get(_oh_col, '') or
-                                               oh_master_lookup.get(_base.lower(), {}).get(_oh_col, ''))
-                                    if _oh_val:
-                                        fmt_df.at[_idx, _oh_col] = _oh_val
+                                _cur_val = str(fmt_df.at[idx, _oh_col]).strip() if _oh_col in fmt_df.columns else ''
+                                if not _cur_val or _cur_val in ('nan', 'None', ''):
+                                    _oh_val = (oh_master_lookup.get(pkey.lower(), {}).get(_oh_col, '') or
+                                               oh_master_lookup.get(base.lower(), {}).get(_oh_col, ''))
+                                    if _oh_val and _oh_col in fmt_df.columns:
+                                        fmt_df.at[idx, _oh_col] = _oh_val
 
-                        # ── Auto-fix: ATS = Actual Qty - Pick - Allocated - Damage ───────────
+                        # ── ATS auto-fix: Actual Qty = Pick + Allocated + Damage + ATS ──────
                         _autofix_count = 0
                         for _af_idx, _af_row in fmt_df.iterrows():
-                            _af_act  = float(pd.to_numeric(_af_row.get('Actual Qty',    0), errors='coerce') or 0)
-                            _af_pick = float(pd.to_numeric(_af_row.get('Pick Quantity', 0), errors='coerce') or 0)
-                            _af_alloc= float(pd.to_numeric(_af_row.get('Allocated',     0), errors='coerce') or 0)
-                            _af_dmg  = sum(float(pd.to_numeric(_af_row.get(_rmk, 0), errors='coerce') or 0)
-                                           for _rmk in damage_remarks)
-                            _af_ats  = float(pd.to_numeric(_af_row.get('ATS', 0), errors='coerce') or 0)
-                            _af_acc  = round(_af_pick + _af_alloc + _af_dmg + _af_ats, 3)
-                            _af_diff = round(_af_act - _af_acc, 3)
+                            _af_act   = float(pd.to_numeric(_af_row.get('Actual Qty',    0), errors='coerce') or 0)
+                            _af_pick  = float(pd.to_numeric(_af_row.get('Pick Quantity', 0), errors='coerce') or 0)
+                            _af_alloc = float(pd.to_numeric(_af_row.get('Allocated',     0), errors='coerce') or 0)
+                            _af_dmg   = sum(
+                                (lambda v: float(v) if pd.notna(v) else 0.0)(pd.to_numeric(_af_row.get(_rmk, 0), errors='coerce'))
+                                for _rmk in damage_remarks
+                            )
+                            _af_ats   = float(pd.to_numeric(_af_row.get('ATS', 0), errors='coerce') or 0)
+                            _af_acc   = round(_af_pick + _af_alloc + _af_dmg + _af_ats, 3)
+                            _af_diff  = round(_af_act - _af_acc, 3)
                             if abs(_af_diff) > 0.01:
                                 _new_ats = max(0.0, round(_af_act - _af_pick - _af_alloc - _af_dmg, 3))
                                 fmt_df.at[_af_idx, 'ATS'] = _new_ats
                                 _autofix_count += 1
                         if _autofix_count > 0:
-                            st.info(f"🔧 Auto-Fix: **{_autofix_count}** rows — ATS adjusted (Actual Qty = Pick + Allocated + Damage + ATS)")
+                            st.info(f"🔧 Auto-Fix: **{_autofix_count}** rows — ATS adjusted so Actual Qty = Pick + Allocated + Damage + ATS")
 
-                        # ── Summary metrics ──────────────────────────────────────────────────
-                        inv_total_qty  = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
-                        rpt_total_qty  = pd.to_numeric(fmt_df['Actual Qty'],  errors='coerce').fillna(0).sum()
-                        qty_match      = abs(inv_total_qty - rpt_total_qty) < 0.01
-                        total_pick_qty = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0).sum()
-                        total_alloc_qty= pd.to_numeric(fmt_df['Allocated'],     errors='coerce').fillna(0).sum()
-                        total_ats_qty  = pd.to_numeric(fmt_df['ATS'],           errors='coerce').fillna(0).sum()
-                        total_dmg_qty  = sum(pd.to_numeric(fmt_df[r], errors='coerce').fillna(0).sum() for r in damage_remarks)
-                        total_lines    = len(fmt_df)
+                        # ── Inventory vs Report qty check ───────────────────────────────────
+                        inv_total_qty = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0).sum()
+                        rpt_total_qty = pd.to_numeric(fmt_df['Actual Qty'], errors='coerce').fillna(0).sum()
+                        qty_match     = abs(inv_total_qty - rpt_total_qty) < 0.01
+
+                        # ── Metrics ─────────────────────────────────────────────────────────
+                        total_pick_qty  = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0).sum()
+                        total_alloc_qty = pd.to_numeric(fmt_df['Allocated'],     errors='coerce').fillna(0).sum()
+                        total_ats_qty   = pd.to_numeric(fmt_df['ATS'],           errors='coerce').fillna(0).sum()
+                        total_dmg_qty   = sum(pd.to_numeric(fmt_df[r], errors='coerce').fillna(0).sum() for r in damage_remarks)
+                        accounted       = total_pick_qty + total_alloc_qty + total_dmg_qty + total_ats_qty
+                        total_lines     = len(fmt_df)
+                        partial_lines   = len([r for r in fmt_df['Pallet'].astype(str) if '-P' in r])
+
+                        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+                        sc1.metric("Total Lines",    total_lines)
+                        sc2.metric("Pick Qty",       int(total_pick_qty))
+                        sc3.metric("Allocated Qty",  int(total_alloc_qty))
+                        sc4.metric("ATS Qty",        int(total_ats_qty))
+                        sc5.metric("Damage Qty",     int(total_dmg_qty))
 
                         if qty_match:
-                            st.success(f"✅ Actual Qty Match — Inventory: **{int(inv_total_qty)}** = Report: **{int(rpt_total_qty)}**")
+                            st.success(f"✅ Qty Match: Inv({int(inv_total_qty)}) = Report({int(rpt_total_qty)})")
                         else:
-                            st.error(f"⚠️ Actual Qty Mismatch — Inventory: **{int(inv_total_qty)}** ≠ Report: **{int(rpt_total_qty)}**")
+                            st.warning(f"⚠️ Qty Mismatch: Inv({int(inv_total_qty)}) ≠ Report({int(rpt_total_qty)}) | Diff={int(inv_total_qty-rpt_total_qty)}")
 
-                        st.markdown("#### 📊 Report Summary")
-                        _sc1, _sc2, _sc3, _sc4, _sc5 = st.columns(5)
-                        _sc1.metric("Total Lines",    total_lines)
-                        _sc2.metric("Pick Qty",       int(total_pick_qty))
-                        _sc3.metric("Allocated Qty",  int(total_alloc_qty))
-                        _sc4.metric("ATS Qty",        int(total_ats_qty))
-                        _sc5.metric("Damage Qty",     int(total_dmg_qty))
-
-                        accounted = total_pick_qty + total_alloc_qty + total_ats_qty + total_dmg_qty
                         if abs(inv_total_qty - accounted) < 0.01:
-                            st.success(f"✅ Reconciled: Pick({int(total_pick_qty)}) + Allocated({int(total_alloc_qty)}) + ATS({int(total_ats_qty)}) + Damage({int(total_dmg_qty)}) = {int(accounted)}")
+                            st.success(f"✅ Qty Reconciled: Pick({int(total_pick_qty)}) + Alloc({int(total_alloc_qty)}) + ATS({int(total_ats_qty)}) + Damage({int(total_dmg_qty)}) = {int(accounted)}")
                         else:
-                            st.warning(f"⚠️ Unaccounted Qty: {int(inv_total_qty - accounted)}")
+                            st.warning(f"⚠️ Unaccounted: {int(inv_total_qty - accounted)} | Pick+Alloc+ATS+Dmg={int(accounted)} vs Inv={int(inv_total_qty)}")
 
-                        # ── Logic 1/2 unmatched report ───────────────────────────────────────
-                        if l1_unmatched_rows:
-                            st.markdown("#### ⚠️ Logic 1/2 Unmatched (Pick Id ≠ 0) — No Match in master_pick_data or master_partial_data")
-                            st.dataframe(pd.DataFrame(l1_unmatched_rows).astype(str), use_container_width=True)
-
-                        # ── Logic 3/4 unmatched report ───────────────────────────────────────
-                        if l3_unmatched_rows:
-                            st.markdown("#### ⚠️ Logic 4 Unmatched (Pick Id = 0) — No Match in master_pick_data or master_partial_data")
-                            st.dataframe(pd.DataFrame(l3_unmatched_rows).astype(str), use_container_width=True)
-
-                        st.dataframe(fmt_df.astype(str), use_container_width=True)
-
-                        # ── Reconcile report: Actual Qty = Pick Quantity + Allocated + Damage + ATS ──
-                        recon_rows = []
-                        for _ri2, _rrow2 in fmt_df.iterrows():
-                            _pal2  = str(_rrow2.get('Pallet', '')).strip()
-                            _act2  = float(pd.to_numeric(_rrow2.get('Actual Qty',    0), errors='coerce') or 0)
-                            _pick2 = float(pd.to_numeric(_rrow2.get('Pick Quantity', 0), errors='coerce') or 0)
-                            _alc2  = float(pd.to_numeric(_rrow2.get('Allocated',     0), errors='coerce') or 0)
-                            _dmg2  = sum(float(pd.to_numeric(_rrow2.get(_rmk, 0), errors='coerce') or 0) for _rmk in damage_remarks)
-                            _ats2  = float(pd.to_numeric(_rrow2.get('ATS', 0), errors='coerce') or 0)
-                            _acc2  = round(_pick2 + _alc2 + _dmg2 + _ats2, 3)
-                            _diff2 = round(_act2 - _acc2, 3)
-                            if abs(_diff2) > 0.01:
-                                recon_rows.append({
-                                    'Pallet':          _pal2,
-                                    'Actual Qty':      _act2,
-                                    'Pick Quantity':   _pick2,
-                                    'Allocated':       _alc2,
-                                    'Damage Qty':      _dmg2,
-                                    'ATS':             _ats2,
-                                    'Total Accounted': _acc2,
-                                    'Difference':      _diff2,
-                                    'Status':          '❌ Mismatch',
+                        # ── Mismatch pallets (inventory Actual Qty vs report Actual Qty) ────
+                        mismatch_pallets = []
+                        inv_pallets_set = set(inv_data[_inv_pal_col].astype(str).str.strip())
+                        _inv_pals_raw   = inv_data[_inv_pal_col].astype(str).str.strip()
+                        _inv_qtys       = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                        inv_pal_qty_map = {}
+                        for _p, _q in zip(_inv_pals_raw, _inv_qtys):
+                            inv_pal_qty_map[_p] = inv_pal_qty_map.get(_p, 0) + _q
+                        rpt_pal_qty_map = {}
+                        for _, _rr in fmt_df.iterrows():
+                            _rp = str(_rr.get('Pallet', '')).strip()
+                            _rq = pd.to_numeric(_rr.get('Actual Qty', 0), errors='coerce') or 0
+                            rpt_pal_qty_map[_rp] = rpt_pal_qty_map.get(_rp, 0) + _rq
+                        for _ip, _iq in inv_pal_qty_map.items():
+                            _rq2 = rpt_pal_qty_map.get(_ip, 0)
+                            _diff_mq = round(_iq - _rq2, 2)
+                            if abs(_diff_mq) > 0.01:
+                                mismatch_pallets.append({
+                                    'Pallet':               _ip,
+                                    'Raw Pallet':           _ip,
+                                    'Inventory Actual Qty': _iq,
+                                    'Report Actual Qty':    _rq2,
+                                    'Difference':           _diff_mq,
                                 })
+
+                        # ── Reconciliation report ─────────────────────────────────────────
+                        recon_rows = []
+                        tally_fail_rows = []
+                        for idx, r_row in fmt_df.iterrows():
+                            pal      = str(r_row.get('Pallet', '')).strip()
+                            act_q    = float(pd.to_numeric(r_row.get('Actual Qty',    0), errors='coerce') or 0)
+                            pick_q   = float(pd.to_numeric(r_row.get('Pick Quantity', 0), errors='coerce') or 0)
+                            alloc_q  = float(pd.to_numeric(r_row.get('Allocated',     0), errors='coerce') or 0)
+                            ats_q    = float(pd.to_numeric(r_row.get('ATS',           0), errors='coerce') or 0)
+                            dmg_q    = sum(
+                                (lambda v: float(v) if pd.notna(v) else 0.0)(pd.to_numeric(r_row.get(rmk, 0), errors='coerce'))
+                                for rmk in damage_remarks
+                            )
+                            total_acc = round(pick_q + alloc_q + dmg_q + ats_q, 3)
+                            diff      = round(act_q - total_acc, 2)
+                            if abs(diff) > 0.01:
+                                recon_rows.append({
+                                    'Pallet':          pal,
+                                    'Actual Qty':      act_q,
+                                    'Pick Quantity':   pick_q,
+                                    'Allocated':       alloc_q,
+                                    'Damage Qty':      dmg_q,
+                                    'ATS':             ats_q,
+                                    'Total Accounted': total_acc,
+                                    'Difference':      diff,
+                                    'Vendor Name':     str(r_row.get('Vendor Name', '')),
+                                    'Invoice Number':  str(r_row.get('Invoice Number', '')),
+                                    'Status':          '⚠️ Unaccounted',
+                                })
+                                tally_fail_rows.append(recon_rows[-1])
+
                         recon_df = pd.DataFrame(recon_rows)
+                        tally_df = pd.DataFrame(tally_fail_rows)
                         if not recon_df.empty:
                             st.warning(f"⚠️ Reconciliation Issues: **{len(recon_df)}** rows — Actual Qty ≠ Pick + Allocated + Damage + ATS")
                             st.dataframe(recon_df.astype(str), use_container_width=True)
 
-                        # ── Total row ────────────────────────────────────────────────────────
+                        # ── Unmatched reports ─────────────────────────────────────────────
+                        if l1_unmatched:
+                            with st.expander(f"⚠️ Logic 1/2 Unmatched (Picked, no MPD match): {len(l1_unmatched)} rows", expanded=False):
+                                st.dataframe(pd.DataFrame(l1_unmatched).astype(str), use_container_width=True)
+                        if l3_unmatched:
+                            with st.expander(f"⚠️ Logic 3/4 Unmatched (ATS): {len(l3_unmatched)} rows", expanded=False):
+                                st.dataframe(pd.DataFrame(l3_unmatched).astype(str), use_container_width=True)
+
+                        # ── Preview ───────────────────────────────────────────────────────
+                        st.dataframe(fmt_df.astype(str), use_container_width=True)
+
+                        # ── Total row ─────────────────────────────────────────────────────
                         total_row = {}
-                        _num_sum_cols = ['Actual Qty', 'Pick Quantity', 'Allocated', 'ATS'] + damage_remarks
                         for _col in final_cols:
-                            if _col in _num_sum_cols:
+                            if _col in ['Actual Qty', 'Pick Quantity', 'Allocated', 'ATS'] + damage_remarks:
                                 total_row[_col] = pd.to_numeric(fmt_df[_col], errors='coerce').fillna(0).sum()
                             elif _col == 'Vendor Name':
                                 total_row[_col] = 'TOTAL'
@@ -2311,15 +2400,14 @@ if login_section():
                                 total_row[_col] = ''
                         fmt_df_with_total = pd.concat([fmt_df, pd.DataFrame([total_row])], ignore_index=True)
 
-                        # ── Excel export ─────────────────────────────────────────────────────
                         out_fmt = io.BytesIO()
                         with pd.ExcelWriter(out_fmt, engine='xlsxwriter') as writer:
                             fmt_df_with_total.to_excel(writer, sheet_name='Pick_Report', index=False)
                             wb = writer.book
                             ws_fmt = writer.sheets['Pick_Report']
 
-                            # ── Summary sheet ─────────────────────────────────────────────────
-                            ws_summ = wb.add_worksheet('Summary')
+                            # Summary sheet
+                            ws_summ_sheet = wb.add_worksheet('Summary')
                             bold    = wb.add_format({'bold': True, 'font_size': 11})
                             val_fmt = wb.add_format({'font_size': 11, 'num_format': '#,##0'})
                             ok_fmt  = wb.add_format({'bold': True, 'font_color': '#27ae60', 'font_size': 11})
@@ -2328,110 +2416,120 @@ if login_section():
                                 ('Inventory Total Actual Qty', int(inv_total_qty)),
                                 ('Report Total Actual Qty',    int(rpt_total_qty)),
                                 ('Qty Match', 'YES ✅' if qty_match else 'NO ⚠️'), ('', ''),
-                                ('Pick Quantity',    int(total_pick_qty)),
+                                ('Pick Quantity',   int(total_pick_qty)),
                                 ('Allocated Qty',   int(total_alloc_qty)),
                                 ('ATS Quantity',    int(total_ats_qty)),
                                 ('Damage Quantity', int(total_dmg_qty)),
                                 ('Total Accounted', int(accounted)),
                                 ('Unaccounted',     int(inv_total_qty - accounted)), ('', ''),
-                                ('Total Report Lines',        total_lines),
-                                ('Logic 1/2 Unmatched Lines', len(l1_unmatched_rows)),
-                                ('Logic 3/4 Unmatched Lines', len(l3_unmatched_rows)),
+                                ('Total Report Lines', total_lines),
+                                ('Partial Lines',      partial_lines), ('', ''),
+                                ('Qty Mismatch Pallets',  len(mismatch_pallets)),
+                                ('Tally Fail Lines',      len(tally_fail_rows)),
                             ]
-                            ws_summ.set_column(0, 0, 30); ws_summ.set_column(1, 1, 18)
-                            for _ri3, (_lbl, _val) in enumerate(summary_rows_xl):
-                                ws_summ.write(_ri3, 0, _lbl, bold)
-                                if 'Unmatched' in _lbl:
-                                    _uf = err_fmt if (isinstance(_val, int) and _val > 0) else ok_fmt
-                                    ws_summ.write(_ri3, 1, _val, _uf)
-                                elif isinstance(_val, int):
-                                    ws_summ.write(_ri3, 1, _val, val_fmt)
-                                elif 'YES' in str(_val):
-                                    ws_summ.write(_ri3, 1, _val, ok_fmt)
-                                elif 'NO'  in str(_val):
-                                    ws_summ.write(_ri3, 1, _val, err_fmt)
-                                else:
-                                    ws_summ.write(_ri3, 1, _val)
+                            ws_summ_sheet.set_column(0, 0, 28); ws_summ_sheet.set_column(1, 1, 18)
+                            for ri, (label, value) in enumerate(summary_rows_xl):
+                                ws_summ_sheet.write(ri, 0, label, bold)
+                                if label in ('Qty Mismatch Pallets', 'Tally Fail Lines'):
+                                    use_fmt2 = err_fmt if (isinstance(value, int) and value > 0) else ok_fmt
+                                    ws_summ_sheet.write(ri, 1, value, use_fmt2)
+                                elif isinstance(value, int): ws_summ_sheet.write(ri, 1, value, val_fmt)
+                                elif 'YES' in str(value): ws_summ_sheet.write(ri, 1, value, ok_fmt)
+                                elif 'NO'  in str(value): ws_summ_sheet.write(ri, 1, value, err_fmt)
+                                else: ws_summ_sheet.write(ri, 1, value)
 
-                            # ── Reconcile_Report sheet ────────────────────────────────────────
-                            recon_sheet = wb.add_worksheet('Reconcile_Report')
-                            _rh_fmt = wb.add_format({'bold': True, 'bg_color': '#f39c12', 'font_color': '#fff', 'border': 1, 'font_size': 10})
-                            _rr_fmt = wb.add_format({'border': 1, 'font_size': 10})
-                            _rb_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e74c3c', 'bold': True})
-                            _ok_msg = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
+                            # Qty_Mismatch sheet
+                            mm_sheet    = wb.add_worksheet('Qty_Mismatch')
+                            mm_hdr_fmt  = wb.add_format({'bold': True, 'bg_color': '#e74c3c', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                            mm_ok_fmt   = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
+                            mm_row_fmt  = wb.add_format({'border': 1, 'font_size': 10})
+                            mm_neg_fmt  = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e74c3c', 'bold': True})
+                            if mismatch_pallets:
+                                mm_df2 = pd.DataFrame(mismatch_pallets)
+                                for ci, col in enumerate(mm_df2.columns):
+                                    mm_sheet.write(0, ci, col, mm_hdr_fmt)
+                                    mm_sheet.set_column(ci, ci, 22)
+                                for ri2, row2 in mm_df2.iterrows():
+                                    for ci2, val2 in enumerate(row2):
+                                        use_fmt3 = mm_neg_fmt if (mm_df2.columns[ci2] == 'Difference' and float(val2 or 0) != 0) else mm_row_fmt
+                                        mm_sheet.write(ri2 + 1, ci2, val2, use_fmt3)
+                            else:
+                                mm_sheet.write(0, 0, '✅ No Qty Mismatches Found', mm_ok_fmt)
+                                mm_sheet.set_column(0, 0, 35)
+
+                            # Reconciliation_Report sheet
                             if not recon_df.empty:
-                                for _ci4, _cn4 in enumerate(recon_df.columns):
-                                    recon_sheet.write(0, _ci4, _cn4, _rh_fmt)
-                                    recon_sheet.set_column(_ci4, _ci4, 20)
-                                for _ri4, _row4 in recon_df.iterrows():
-                                    for _ci4, _val4 in enumerate(_row4):
-                                        _ufmt4 = _rb_fmt if recon_df.columns[_ci4] == 'Difference' else _rr_fmt
-                                        recon_sheet.write(_ri4 + 1, _ci4, str(_val4), _ufmt4)
-                            else:
-                                recon_sheet.write(0, 0, '✅ All Lines Reconciled — Actual Qty = Pick + Allocated + Damage + ATS', _ok_msg)
-                                recon_sheet.set_column(0, 0, 60)
+                                recon_sheet    = wb.add_worksheet('Reconciliation_Report')
+                                recon_hdr_fmt  = wb.add_format({'bold': True, 'bg_color': '#f39c12', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                                recon_row_fmt  = wb.add_format({'border': 1, 'font_size': 10})
+                                recon_warn_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e74c3c', 'bold': True})
+                                for ci, col in enumerate(recon_df.columns):
+                                    recon_sheet.write(0, ci, col, recon_hdr_fmt)
+                                    recon_sheet.set_column(ci, ci, 20)
+                                for ri2, row2 in recon_df.iterrows():
+                                    for ci2, val2 in enumerate(row2):
+                                        use_fmt4 = recon_warn_fmt if recon_df.columns[ci2] == 'Difference' else recon_row_fmt
+                                        recon_sheet.write(ri2 + 1, ci2, str(val2), use_fmt4)
 
-                            # ── Unmatched_Report sheet ────────────────────────────────────────
-                            _all_unmatched = l1_unmatched_rows + l3_unmatched_rows
-                            um_sheet = wb.add_worksheet('Unmatched_Report')
-                            _um_hdr  = wb.add_format({'bold': True, 'bg_color': '#e74c3c', 'font_color': '#fff', 'border': 1, 'font_size': 10})
-                            _um_row  = wb.add_format({'border': 1, 'font_size': 10})
-                            _um_ok   = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
-                            if _all_unmatched:
-                                _um_df = pd.DataFrame(_all_unmatched)
-                                for _ci5, _cn5 in enumerate(_um_df.columns):
-                                    um_sheet.write(0, _ci5, _cn5, _um_hdr)
-                                    um_sheet.set_column(_ci5, _ci5, 22)
-                                for _ri5, _row5 in _um_df.iterrows():
-                                    for _ci5, _val5 in enumerate(_row5):
-                                        um_sheet.write(_ri5 + 1, _ci5, str(_val5), _um_row)
+                            # Tally_Fail_Report sheet
+                            tally_sheet   = wb.add_worksheet('Tally_Fail_Report')
+                            tally_hdr_fmt = wb.add_format({'bold': True, 'bg_color': '#8e44ad', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                            tally_ok_fmt2 = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
+                            tally_row_fmt = wb.add_format({'border': 1, 'font_size': 10})
+                            tally_bad_fmt = wb.add_format({'border': 1, 'font_size': 10, 'font_color': '#e74c3c', 'bold': True, 'bg_color': '#fff0f0'})
+                            if not tally_df.empty:
+                                for ci, col in enumerate(tally_df.columns):
+                                    tally_sheet.write(0, ci, col, tally_hdr_fmt)
+                                    tally_sheet.set_column(ci, ci, 18)
+                                for ri2, row2 in tally_df.iterrows():
+                                    for ci2, val2 in enumerate(row2):
+                                        use_fmt5 = tally_bad_fmt if tally_df.columns[ci2] == 'Difference' else tally_row_fmt
+                                        tally_sheet.write(ri2 + 1, ci2, str(val2), use_fmt5)
+                                st.warning(f"⚠️ Tally Fail: **{len(tally_df)}** rows — Actual Qty ≠ Pick + Allocated + Damage + ATS")
                             else:
-                                um_sheet.write(0, 0, '✅ No Unmatched Pallets', _um_ok)
-                                um_sheet.set_column(0, 0, 35)
+                                tally_sheet.write(0, 0, '✅ All Lines Tallied', tally_ok_fmt2)
+                                tally_sheet.set_column(0, 0, 45)
 
-                            # ── Pick_Report sheet formatting ──────────────────────────────────
+                            # Pick_Report sheet formatting
                             hdr_fmt  = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#ffffff', 'border': 1, 'font_size': 10})
                             pick_fmt = wb.add_format({'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10})
-                            alloc_fmt= wb.add_format({'bg_color': '#FFF3E0', 'border': 1, 'font_size': 10})
+                            alloc_fmt= wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
                             dmg_fmt  = wb.add_format({'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10})
                             ats_fmt  = wb.add_format({'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True})
-                            coo_fmt  = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
+                            vnd_fmt  = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
                             norm_fmt = wb.add_format({'border': 1, 'font_size': 10})
-                            total_num_fmt = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
-                            total_str_fmt = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
-
-                            for _ci6, _cn6 in enumerate(final_cols):
-                                ws_fmt.write(0, _ci6, _cn6, hdr_fmt)
-                                ws_fmt.set_column(_ci6, _ci6, 15)
-                                for _ri6 in range(1, len(fmt_df) + 1):
-                                    _val6 = str(fmt_df_with_total.iloc[_ri6 - 1][_cn6])
-                                    if _cn6 in ('Pick Quantity', 'Destination Country', 'Order NO'):
-                                        ws_fmt.write(_ri6, _ci6, _val6, pick_fmt)
-                                    elif _cn6 == 'Allocated':
-                                        ws_fmt.write(_ri6, _ci6, _val6, alloc_fmt)
-                                    elif _cn6 in damage_remarks:
-                                        ws_fmt.write(_ri6, _ci6, _val6, dmg_fmt)
-                                    elif _cn6 == 'ATS':
-                                        ws_fmt.write(_ri6, _ci6, _val6, ats_fmt)
-                                    elif _cn6 in ('COO',):
-                                        ws_fmt.write(_ri6, _ci6, _val6, coo_fmt)
+                            for ci, col_name in enumerate(final_cols):
+                                ws_fmt.write(0, ci, col_name, hdr_fmt)
+                                ws_fmt.set_column(ci, ci, 15)
+                                for ri in range(1, len(fmt_df) + 1):
+                                    val = str(fmt_df_with_total.iloc[ri - 1][col_name])
+                                    if col_name in ['Pick Quantity', 'Destination Country', 'Order NO']:
+                                        ws_fmt.write(ri, ci, val, pick_fmt)
+                                    elif col_name == 'Allocated':
+                                        ws_fmt.write(ri, ci, val, alloc_fmt)
+                                    elif col_name in damage_remarks:
+                                        ws_fmt.write(ri, ci, val, dmg_fmt)
+                                    elif col_name == 'ATS':
+                                        ws_fmt.write(ri, ci, val, ats_fmt)
+                                    elif col_name in ['Vendor Name', 'COO']:
+                                        ws_fmt.write(ri, ci, val, vnd_fmt)
                                     else:
-                                        ws_fmt.write(_ri6, _ci6, _val6, norm_fmt)
-
-                            _total_xl_row = len(fmt_df) + 1
-                            for _ci6, _cn6 in enumerate(final_cols):
-                                _tv = fmt_df_with_total.iloc[-1][_cn6]
+                                        ws_fmt.write(ri, ci, val, norm_fmt)
+                            total_row_idx = len(fmt_df) + 1
+                            total_xl_num  = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
+                            total_xl_str  = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
+                            for ci, col_name in enumerate(final_cols):
+                                val = fmt_df_with_total.iloc[-1][col_name]
                                 try:
-                                    ws_fmt.write(_total_xl_row, _ci6, float(_tv) if _tv != '' else '', total_num_fmt)
+                                    ws_fmt.write(total_row_idx, ci, float(val) if val != '' else '', total_xl_num)
                                 except:
-                                    ws_fmt.write(_total_xl_row, _ci6, str(_tv), total_str_fmt)
+                                    ws_fmt.write(total_row_idx, ci, str(val), total_xl_str)
                             ws_fmt.freeze_panes(1, 0)
 
                         st.download_button("⬇️ Download Formatted Pick Report", data=out_fmt.getvalue(),
                             file_name=f"Pick_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                             mime="application/vnd.ms-excel", use_container_width=True)
                         show_confetti()
-
 
 
     # ==========================================================================
