@@ -993,10 +993,13 @@ if login_section():
                     so_counts   = {}
                     new_hist_entries = []
 
-                    if not hist_df.empty and 'SO Number' in hist_df.columns and 'Generated Load ID' in hist_df.columns:
-                        for so in hist_df['SO Number'].astype(str).unique():
-                            so_history = hist_df[hist_df['SO Number'].astype(str) == so]
-                            so_counts[so] = len(so_history['Generated Load ID'].dropna().unique())
+                    if not hist_df.empty and 'SO Number' in hist_df.columns and 'Generated Load ID' in hist_df.columns and 'SHIP MODE' in hist_df.columns:
+                        for _, hist_row in hist_df.iterrows():
+                            so = str(hist_row.get('SO Number', '')).strip()
+                            ship_m = str(hist_row.get('SHIP MODE', '')).strip().upper()
+                            ship_p = {'SEA': 'S', 'AIR': 'A'}.get(ship_m, ship_m[:3] if ship_m else 'X')
+                            so_ship_k = f"{so}_{ship_p}"
+                            so_counts[so_ship_k] = so_counts.get(so_ship_k, 0) + 1
 
                     existing_load_ids = set()
                     if not hist_df.empty and 'Generated Load ID' in hist_df.columns:
@@ -1004,14 +1007,19 @@ if login_section():
 
                     for group, data in req.groupby('Group'):
                         so_num    = data['SO Number'].iloc[0]
-                        base_count = so_counts.get(so_num, 0)
+                        ship_mode_val = str(data['SHIP MODE: (SEA/AIR)'].iloc[0]).strip().upper()
+                        # ── Ship Mode prefix: SEA → S, AIR → A, others → first 3 chars ──
+                        ship_prefix = {'SEA': 'S', 'AIR': 'A'}.get(ship_mode_val, ship_mode_val[:3] if ship_mode_val else 'X')
+                        # ── Track count per SO + Ship Mode combination ──
+                        so_ship_key = f"{so_num}_{ship_prefix}"
+                        base_count  = so_counts.get(so_ship_key, 0)
                         count = base_count
                         while True:
                             count += 1
-                            candidate_lid = f"SO-{so_num}-{count:03d}"
+                            candidate_lid = f"SO-{so_num}-{ship_prefix}-{count:03d}"
                             if candidate_lid not in existing_load_ids:
                                 break
-                        so_counts[so_num] = count
+                        so_counts[so_ship_key] = count
                         existing_load_ids.add(candidate_lid)
                         load_id_map[group] = candidate_lid
 
@@ -1538,7 +1546,7 @@ if login_section():
                             st.warning("Report generate කිරීම අසාර්ථක විය.")
 
             with tab_formatted:
-                st.caption("Pick Id → Logic 1/2 (picked) | Pick Id=0 → Logic 3/4 (allocated) | Logic 5 (ATS) | Damage preserved")
+                st.caption("L1: Pick Id filled → MPD (pallet+qty) exact match → Pick Qty update | L2: L1 unmatch → Partial (gen_pallet_id+partial_qty) exact match → Pick Qty update → delete from partial → archive | L3: Pick Id=0 → MPD exact match → Allocated update [remark=Partial → route to L4] | L4: L3 unmatch → Partial pallet match (excl. L1/L2/L3 used gen_pallets) → Allocated + ATS balance | L5: Remaining → ATS | Damage preserved")
 
                 # ── CSV Fallback Upload Section ──────────────────────────────────────────
                 with st.expander("📂 CSV Data Override (Optional — Supabase connect නොවේ නම් CSV upload කරන්න)", expanded=False):
@@ -1622,7 +1630,9 @@ if login_section():
 
                         mpd_col = {str(c).strip().lower(): str(c).strip() for c in (mpd_df.columns if not mpd_df.empty else [])}
 
-                        # ── old_history_master lookup ──────────────────────────────────────
+                        # ── old_history_master / old_history / master_partial_data lookup ───
+                        # Priority: master_pick_data → old_history_master → old_history → master_partial_data
+                        # (Logic.txt Additional: blank fill sequence)
                         OH_FILL_COLS = ['Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
                                         'Client So', 'Supplier Hu', 'Supplier', 'Lot Number',
                                         'Style', 'Color', 'Size', 'Client So 2']
@@ -1634,26 +1644,53 @@ if login_section():
                             'Style': 'style', 'Color': 'color', 'Size': 'size',
                             'Client So 2': 'client_so_2',
                         }
+
+                        # ── Source 1: old_history_master (primary pallet reference) ──────────
                         oh_master_lookup = {}
                         try:
-                            _oh_df = DBManager.read_table("load_history")
-                            if not _oh_df.empty and 'Pallet' in _oh_df.columns:
-                                for _, _oh_r in _oh_df.iterrows():
-                                    _oh_pal = str(_oh_r.get('Pallet', '')).strip().lower()
+                            _oh_master_df = DBManager.read_table("old_history_master")
+                            if not _oh_master_df.empty:
+                                # Rename db columns back to app names
+                                _ohm_col_map_rev = {v: k for k, v in OH_COL_DB_MAP.items()}
+                                _oh_master_df_r = _oh_master_df.rename(columns=_ohm_col_map_rev)
+                                for _, _oh_r in _oh_master_df_r.iterrows():
+                                    _oh_pal = str(_oh_r.get('Pallet', _oh_r.get('pallet', ''))).strip().lower()
                                     if _oh_pal:
                                         _oh_entry = {}
                                         for _col_d in OH_FILL_COLS:
                                             _v = str(_oh_r.get(_col_d, '')).strip()
                                             if _v and _v not in ('nan', 'None'):
                                                 _oh_entry[_col_d] = _v
-                                        # Order NO from load_history
-                                        _ord = str(_oh_r.get('Generated Load ID', '')).strip()
-                                        if _ord and _ord not in ('nan', 'None'):
-                                            _oh_entry['Order NO'] = _ord
                                         if _oh_entry:
                                             oh_master_lookup[_oh_pal] = _oh_entry
                         except Exception:
                             pass
+
+                        # ── Source 2: old_history table (fallback) ───────────────────────────
+                        oh_history_lookup = {}
+                        try:
+                            _oh_hist_df = DBManager.read_table("old_history")
+                            if not _oh_hist_df.empty:
+                                _ohhc = {str(c).strip().lower(): str(c).strip() for c in _oh_hist_df.columns}
+                                for _, _oh_r in _oh_hist_df.iterrows():
+                                    _oh_pal = str(_oh_r.get(_ohhc.get('pallet','pallet'), '')).strip().lower()
+                                    if _oh_pal:
+                                        _oh_entry = {}
+                                        for _col_d in OH_FILL_COLS:
+                                            _db_k = OH_COL_DB_MAP.get(_col_d, _col_d.lower().replace(' ','_'))
+                                            _v = str(_oh_r.get(_ohhc.get(_db_k, _col_d), '')).strip()
+                                            if _v and _v not in ('nan', 'None'):
+                                                _oh_entry[_col_d] = _v
+                                        _ord = str(_oh_r.get(_ohhc.get('generated_load_id', 'generated_load_id'), '')).strip()
+                                        if _ord and _ord not in ('nan', 'None'):
+                                            _oh_entry['Order NO'] = _ord
+                                        if _oh_entry and _oh_pal not in oh_history_lookup:
+                                            oh_history_lookup[_oh_pal] = _oh_entry
+                        except Exception:
+                            pass
+
+                        # ── Source 3: master_partial_data (last fallback by pallet or gen_pallet_id) ──
+                        # Built later after partial_map is constructed (see fill_row_from_oh_master helper)
 
                         # ── vendor_country_map ──────────────────────────────────────────────
                         def _get_vendor_country_map_from_df(vdf):
@@ -1709,13 +1746,15 @@ if login_section():
                             inv_invoice_map_fmt, inv_grn_map_fmt, partial_vendor_map_fmt, pallet_invoice_map_fmt, pallet_grn_map_fmt = get_partial_lookup_maps()
 
                         # ── MPD exact map: {(pallet, actual_qty): [entries]} ───────────────
-                        mpd_exact_map  = {}   # (pallet, qty) → [entries]
-                        mpd_pallet_rows = {}  # pallet → [entries]
+                        mpd_exact_map        = {}   # (pallet, qty) → [entries]
+                        mpd_pallet_rows      = {}   # pallet → [entries]
+                        mpd_partial_pallets  = set() # pallets where remark='Partial' in MPD (→ route to Logic 4)
                         if not mpd_df.empty:
                             p_col  = mpd_col.get('pallet',             'Pallet')
                             aq_col = mpd_col.get('actual qty',         'Actual Qty')
                             cn_col = mpd_col.get('country name',       'Country Name')
                             gl_col = mpd_col.get('generated load id',  'Generated Load ID')
+                            rk_col = mpd_col.get('remark',             'Remark')
                             for _, _mrow in mpd_df.iterrows():
                                 _mp  = str(_mrow.get(p_col,  '')).strip()
                                 _mq  = pd.to_numeric(_mrow.get(aq_col, 0), errors='coerce')
@@ -1723,14 +1762,18 @@ if login_section():
                                 _mq  = float(_mq)
                                 _mcn = str(_mrow.get(cn_col, '')).strip()
                                 _mgl = str(_mrow.get(gl_col, '')).strip()
+                                _mrk = str(_mrow.get(rk_col, '')).strip().lower()
                                 if _mp:
                                     _key = (_mp, round(_mq, 6))
                                     if _key not in mpd_exact_map:
                                         mpd_exact_map[_key] = []
-                                    mpd_exact_map[_key].append({'country': _mcn, 'load_id': _mgl, 'actual_qty': _mq})
+                                    mpd_exact_map[_key].append({'country': _mcn, 'load_id': _mgl, 'actual_qty': _mq, 'remark': _mrk})
                                     if _mp not in mpd_pallet_rows:
                                         mpd_pallet_rows[_mp] = []
-                                    mpd_pallet_rows[_mp].append({'country': _mcn, 'load_id': _mgl, 'actual_qty': _mq})
+                                    mpd_pallet_rows[_mp].append({'country': _mcn, 'load_id': _mgl, 'actual_qty': _mq, 'remark': _mrk})
+                                    # Logic 3 → Logic 4 routing: if remark='partial', mark this pallet
+                                    if _mrk == 'partial':
+                                        mpd_partial_pallets.add(_mp)
 
                         # ── Damage setup ─────────────────────────────────────────────────
                         dmg_df = _damage_df_fmt
@@ -1847,11 +1890,41 @@ if login_section():
                             return row
 
                         def fill_row_from_oh_master(row, pallet_key):
-                            oh_data = oh_master_lookup.get(str(pallet_key).lower(), {})
-                            if not oh_data: return row
+                            """Blank fill sequence per Logic.txt Additional:
+                            1. master_pick_data (already done before calling this)
+                            2. old_history_master → oh_master_lookup
+                            3. old_history       → oh_history_lookup
+                            4. master_partial_data (pallet or gen_pallet_id) → partial_map / gen_to_orig
+                            """
+                            _pkey_low = str(pallet_key).lower()
+                            _base_low = _base_pallet(pallet_key).lower()
+
+                            # Source 2: old_history_master
+                            oh_data = oh_master_lookup.get(_pkey_low) or oh_master_lookup.get(_base_low, {})
                             for col in OH_FILL_COLS:
-                                if _is_blank(row.get(col)) and not _is_blank(oh_data.get(col,'')):
+                                if _is_blank(row.get(col)) and not _is_blank(oh_data.get(col, '')):
                                     row[col] = oh_data[col]
+
+                            # Source 3: old_history
+                            oh_hist = oh_history_lookup.get(_pkey_low) or oh_history_lookup.get(_base_low, {})
+                            for col in OH_FILL_COLS:
+                                if _is_blank(row.get(col)) and not _is_blank(oh_hist.get(col, '')):
+                                    row[col] = oh_hist[col]
+                            # Order NO from old_history if still blank
+                            if _is_blank(row.get('Order NO')) and not _is_blank(oh_hist.get('Order NO', '')):
+                                row['Order NO'] = oh_hist['Order NO']
+
+                            # Source 4: master_partial_data (pallet or gen_pallet_id)
+                            _part_src = pallet_key  # could be orig pallet or gen_pallet_id
+                            _part_entries = partial_map.get(str(_part_src).strip()) or \
+                                            partial_map.get(_base_pallet(str(_part_src).strip()), [])
+                            for pe in _part_entries:
+                                if not _part_entries:
+                                    break
+                                if _is_blank(row.get('Invoice Number')) and not _is_blank(pe.get('invoice_number', '')):
+                                    row['Invoice Number'] = pe['invoice_number']
+                                if _is_blank(row.get('Grn Number')) and not _is_blank(pe.get('grn_number', '')):
+                                    row['Grn Number'] = pe['grn_number']
                             return row
 
                         def _get_vendor_info(inv_row, pallet_key):
@@ -1891,8 +1964,11 @@ if login_section():
                         logic4_matched_pallets = set()
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 1: Pick Id filled → MPD pallet + actual_qty exact match
-                        #          → Pick Quantity = Actual Qty
+                        # LOGIC 1: Pick Id column check → value filled (e.g. 73500258) = picked,
+                        #          value 0 = not picked.
+                        #          Picked rows: Pallet + Actual Qty → master_pick_data exact match
+                        #          → Pick_Report: other data update + Actual Qty & Pick Quantity update
+                        #          → Exact matched Pallets → NOT passed to next logics
                         # ════════════════════════════════════════════════════════════════
                         l1_matched_idx = set()
                         for _inv_idx, inv_row in inv_picked.iterrows():
@@ -1921,11 +1997,16 @@ if login_section():
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 2: L1 unmatch → gen_pallet_id + partial_qty exact match
-                        #          → Pick Quantity = Actual Qty
-                        #          → L1/L2 unmatched → report
+                        # LOGIC 2: Logic 1 unmatch →
+                        #          master_partial_data gen_pallet_id + partial_qty exact match
+                        #          → Pick_Report: data update + Actual Qty & Pick Quantity update
+                        #          → After update: matched line deleted from master_partial_data
+                        #            and moved to old_history DB (per Logic.txt Logic 2)
+                        #          → Exact matched Pallets → NOT passed to next logics
+                        #          → L1 + L2 both unmatched Pallets → Unmatched Report generated
                         # ════════════════════════════════════════════════════════════════
                         l2_matched_idx = set()
+                        l2_gen_pallets_to_archive = []   # (gen_pallet_id, partial_qty) entries matched by L2
                         for _inv_idx, inv_row in inv_picked.iterrows():
                             if _inv_idx in l1_matched_idx:
                                 continue
@@ -1938,6 +2019,12 @@ if login_section():
                                 par_entry  = gen_pallet_exact_map[_l2key]
                                 real_orig  = par_entry.get('orig_pallet', orig_pallet)
                                 l1_l2_matched_pallets.add(real_orig)
+                                # Track for post-loop delete + archive
+                                l2_gen_pallets_to_archive.append({
+                                    'gen_pallet_id': orig_pallet,
+                                    'partial_qty':   inv_actual_qty,
+                                    'par_entry':     par_entry,
+                                })
                                 vn, vc, inv_n, grn_n = _get_vendor_info(inv_row, real_orig)
                                 if not vn: vn = partial_vendor_map_fmt.get(orig_pallet, '')
                                 if not inv_n: inv_n = par_entry.get('invoice_number','') or inv_invoice_map_fmt.get(orig_pallet,'')
@@ -1970,9 +2057,82 @@ if login_section():
                                     'Reason':     '❌ No MPD / Partial match',
                                 })
 
+                        # ── Logic 2 Post-loop: Delete matched lines from master_partial_data
+                        #    and archive to logic2_matched_partial_history (new DB per Logic.txt) ──
+                        if l2_gen_pallets_to_archive:
+                            try:
+                                sb_l2 = get_supabase_client()
+                                _l2_deleted_count  = 0
+                                _l2_archived_count = 0
+                                _report_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                                for _l2_item in l2_gen_pallets_to_archive:
+                                    _gp_id  = _l2_item['gen_pallet_id']
+                                    _pe     = _l2_item['par_entry']
+                                    _orig_p = _pe.get('orig_pallet', '')
+
+                                    # 1. Delete from master_partial_data by gen_pallet_id
+                                    try:
+                                        _del_res = sb_l2.table('master_partial_data').delete()\
+                                            .eq('gen_pallet_id', _gp_id).execute()
+                                        _l2_deleted_count += len(_del_res.data) if _del_res.data else 1
+                                    except Exception as _del_err:
+                                        st.warning(f"⚠️ L2 delete error (gen_pallet_id={_gp_id}): {_del_err}")
+
+                                    # 2. Archive to logic2_matched_partial_history (new dedicated table)
+                                    try:
+                                        _arch_row = {
+                                            'archived_by':         current_user,
+                                            'archive_reason':      'Logic2_Matched',
+                                            'report_generated_at': _report_ts,
+                                            # Identity
+                                            'batch_id':            _pe.get('batch_id',    None) or None,
+                                            'so_number':           _pe.get('so_number',   None) or None,
+                                            'load_id':             _pe.get('load_id',     None) or None,
+                                            'country_name':        _pe.get('country',     None) or None,
+                                            # Pallet
+                                            'pallet':              _orig_p or None,
+                                            'gen_pallet_id':       _gp_id  or None,
+                                            'supplier':            _pe.get('supplier',    None) or None,
+                                            # Qty
+                                            'actual_qty':          _pe.get('mpd_actual',  None),
+                                            'partial_qty':         _l2_item['partial_qty'],
+                                            'balance_qty':         _pe.get('balance_qty', None),
+                                            # Item details
+                                            'location_id':         _pe.get('location_id', None) or None,
+                                            'lot_number':          _pe.get('lot_number',  None) or None,
+                                            'color':               _pe.get('color',       None) or None,
+                                            'size':                _pe.get('size',        None) or None,
+                                            'style':               _pe.get('style',       None) or None,
+                                            'customer_po_number':  _pe.get('customer_po_number', None) or None,
+                                            # Vendor/docs
+                                            'vendor_name':         _pe.get('vendor_name',     None) or None,
+                                            'invoice_number':      _pe.get('invoice_number',   None) or None,
+                                            'grn_number':          _pe.get('grn_number',       None) or None,
+                                            # Inventory snapshot
+                                            'inv_pallet':          _gp_id,   # gen_pallet_id = inventory pallet in L2
+                                            'inv_actual_qty':      _l2_item['partial_qty'],
+                                        }
+                                        # Remove None string values
+                                        _arch_row = {k: (None if str(v).strip() in ('nan','None','') else v)
+                                                     for k, v in _arch_row.items()}
+                                        sb_l2.table('logic2_matched_partial_history').insert(_arch_row).execute()
+                                        _l2_archived_count += 1
+                                    except Exception as _arch_err:
+                                        st.warning(f"⚠️ L2 archive error (gen_pallet_id={_gp_id}): {_arch_err}")
+
+                                DBManager.invalidate('master_partial_data')
+                                if _l2_deleted_count > 0 or _l2_archived_count > 0:
+                                    st.info(f"🗂️ Logic 2: **{_l2_deleted_count}** partial lines deleted from master_partial_data → **{_l2_archived_count}** archived to logic2_matched_partial_history")
+                            except Exception as _l2_post_err:
+                                st.warning(f"⚠️ Logic 2 post-process error: {_l2_post_err}")
+
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 3: Pick Id = 0 → MPD pallet + actual_qty exact match
-                        #          → Allocated = Actual Qty
+                        # LOGIC 3: Pick Id = 0 rows →
+                        #          Inventory Pallet + Actual Qty → master_pick_data exact match
+                        #          → Pick_Report: other data update + Actual Qty & Allocated (new col) update
+                        #          → IMPORTANT: if master_pick_data remark = 'Partial' → route to Logic 4
+                        #          → Exact matched Pallets (non-Partial) → NOT passed to next logics
                         # ════════════════════════════════════════════════════════════════
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -1980,9 +2140,13 @@ if login_section():
                             _l3key = (orig_pallet, round(inv_actual_qty, 6))
                             if _l3key not in mpd_exact_map:
                                 continue
+                            # ── Logic 3 → Logic 4 routing: remark='Partial' check ──
+                            _mpd_e3 = mpd_exact_map[_l3key][0]
+                            if _mpd_e3.get('remark', '').lower() == 'partial' or orig_pallet in mpd_partial_pallets:
+                                # Remark = Partial → send to Logic 4 (do NOT add to logic3_matched_pallets)
+                                continue
                             logic3_matched_pallets.add(orig_pallet)
                             vn, vc, inv_n, grn_n = _get_vendor_info(inv_row, orig_pallet)
-                            _mpd_e3 = mpd_exact_map[_l3key][0]
                             row = build_row(inv_row)
                             row['Pick Quantity']       = ''
                             row['Allocated']           = inv_actual_qty
@@ -1999,11 +2163,20 @@ if login_section():
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 4: L3 unmatch → partial_map pallet exact match
-                        #          → EXCLUDE gen_pallet_ids already used by L1/L2
-                        #          → remaining gen_pallet lines → Allocated
-                        #          → balance = Actual Qty - sum(partial_qty) → ATS row
-                        #          → unmatch → report
+                        # LOGIC 4: Logic 3 unmatch →
+                        #          master_partial_data pallet exact match
+                        #          → Exclude gen_pallet_ids already matched by Logic 1/2/3 (already ok)
+                        #          → Remaining gen_pallet_ids: count = lines to create
+                        #            Each line: Pallet = gen_pallet_id, Actual Qty = partial_qty
+                        #            (EX: pallet has 2 gen_pallet_ids, 1 captured by L1/L2/L3
+                        #             → use only remaining 1 gen_pallet_id)
+                        #          → sum(partial_qty of remaining gen_pallet_ids):
+                        #            If sum < inventory Actual Qty:
+                        #              balance = Actual Qty - sum → update Actual Qty & ATS
+                        #            If sum == inventory Actual Qty:
+                        #              Pallet = gen_pallet_id, Actual Qty = partial_qty (no balance row)
+                        #          → Unmatch remaining Pallets → Unmatched Report generated
+                        #          → Other remaining → Actual Qty & ATS update
                         # ════════════════════════════════════════════════════════════════
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -2070,7 +2243,7 @@ if login_section():
 
                         # ════════════════════════════════════════════════════════════════
                         # LOGIC 5: Remaining unpicked (L3/L4 unmatch) → ATS
-                        #          (Damage logic preserved as-is)
+                        #          Damage details: code එකේ තියෙන විදිහටම preserve කෙරේ
                         # ════════════════════════════════════════════════════════════════
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -2118,7 +2291,9 @@ if login_section():
                             fmt_df['Pallet'].astype(str).str.strip().replace({'nan':'','None':''}) != ''
                         ].reset_index(drop=True)
 
-                        # ── Additional: Blank fill from OH master + COO re-lookup ──────────
+                        # ── Additional: Blank fill from OH master + old_history + partial + COO re-lookup ──
+                        # Per Logic.txt Additional: fill order = master_pick_data (done) →
+                        #   old_history_master → old_history → master_partial_data0 (pallet or gen_pallet_id)
                         for idx, r_row in fmt_df.iterrows():
                             pkey = str(r_row.get('Pallet', '')).strip()
                             base = _base_pallet(pkey)
@@ -2132,8 +2307,13 @@ if login_section():
                                         fb_vn = partial_vendor_map_fmt.get(pe.get('gen_pallet',''), '')
                                         if fb_vn: break
                                 if not fb_vn:
+                                    # old_history_master
                                     fb_vn = oh_master_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
                                             oh_master_lookup.get(base.lower(),{}).get('Vendor Name','')
+                                if not fb_vn:
+                                    # old_history
+                                    fb_vn = oh_history_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
+                                            oh_history_lookup.get(base.lower(),{}).get('Vendor Name','')
                                 if fb_vn:
                                     fmt_df.at[idx, 'Vendor Name'] = fb_vn
                                     fmt_df.at[idx, 'COO'] = vendor_country_map.get(fb_vn.lower(), '')
@@ -2153,23 +2333,42 @@ if login_section():
                                             fb = pe.get(_ek2,'') or _map2.get(pe.get('gen_pallet',''),'')
                                             if fb: break
                                     if not fb:
+                                        # old_history_master
                                         fb = oh_master_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
                                              oh_master_lookup.get(base.lower(),{}).get(_fc2,'')
+                                    if not fb:
+                                        # old_history
+                                        fb = oh_history_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
+                                             oh_history_lookup.get(base.lower(),{}).get(_fc2,'')
                                     if fb: fmt_df.at[idx, _fc2] = fb
 
-                            # Order NO from oh_master if blank
+                            # Order NO from old_history_master → old_history if blank
                             ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
                             if not ord_n or ord_n in ('nan','None',''):
                                 fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
                                          oh_master_lookup.get(base.lower(),{}).get('Order NO','')
+                                if not fb_ord:
+                                    fb_ord = oh_history_lookup.get(pkey.lower(),{}).get('Order NO','') or \
+                                             oh_history_lookup.get(base.lower(),{}).get('Order NO','')
                                 if fb_ord: fmt_df.at[idx, 'Order NO'] = fb_ord
 
                             for _oh_col in OH_FILL_COLS:
                                 if _oh_col in ('Vendor Name','Invoice Number','Grn Number'): continue
                                 _cur2 = str(fmt_df.at[idx, _oh_col]).strip() if _oh_col in fmt_df.columns else ''
                                 if not _cur2 or _cur2 in ('nan','None',''):
+                                    # old_history_master first
                                     _oh_v = oh_master_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
                                             oh_master_lookup.get(base.lower(),{}).get(_oh_col,'')
+                                    if not _oh_v:
+                                        # old_history second
+                                        _oh_v = oh_history_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
+                                                oh_history_lookup.get(base.lower(),{}).get(_oh_col,'')
+                                    if not _oh_v:
+                                        # master_partial_data third (pallet or gen_pallet_id)
+                                        for pe in part_entries:
+                                            _pe_v = str(pe.get(_oh_col.lower().replace(' ','_'), '')).strip()
+                                            if _pe_v and _pe_v not in ('nan','None',''):
+                                                _oh_v = _pe_v; break
                                     if _oh_v and _oh_col in fmt_df.columns:
                                         fmt_df.at[idx, _oh_col] = _oh_v
 
@@ -2672,6 +2871,52 @@ if login_section():
                 st.warning(f"⚠️ Archive to old_history failed: {_arch_err}")
                 return 0
 
+        def _cancel_load_history_picks(deleted_pick_df, deleted_partial_df):
+            """Per Logic.txt Revert/Delete: after archiving to old_history, find matching
+            load_history rows by Generated Load ID and set pick_status = 'Cancelled'."""
+            try:
+                # Collect all Generated Load IDs from deleted rows
+                cancelled_load_ids = set()
+                if deleted_pick_df is not None and not deleted_pick_df.empty:
+                    for col in ['Generated Load ID', 'Load Id', 'load_id']:
+                        if col in deleted_pick_df.columns:
+                            cancelled_load_ids.update(
+                                deleted_pick_df[col].dropna().astype(str).str.strip().tolist()
+                            )
+                            break
+                if deleted_partial_df is not None and not deleted_partial_df.empty:
+                    for col in ['Load ID', 'load_id']:
+                        if col in deleted_partial_df.columns:
+                            cancelled_load_ids.update(
+                                deleted_partial_df[col].dropna().astype(str).str.strip().tolist()
+                            )
+                            break
+                cancelled_load_ids.discard('')
+                cancelled_load_ids.discard('nan')
+                cancelled_load_ids.discard('None')
+
+                if not cancelled_load_ids:
+                    return 0
+
+                sb_c = get_supabase_client()
+                _cancelled_count = 0
+                for _lid_c in cancelled_load_ids:
+                    try:
+                        _res_c = sb_c.table('load_history')\
+                            .update({'pick_status': 'Cancelled'})\
+                            .eq('generated_load_id', _lid_c)\
+                            .execute()
+                        _cancelled_count += len(_res_c.data) if _res_c.data else 0
+                    except Exception:
+                        pass
+                if _cancelled_count > 0:
+                    DBManager.invalidate('load_history')
+                    st.info(f"🚫 load_history: **{_cancelled_count}** entries marked as **Cancelled** (Load IDs: {', '.join(list(cancelled_load_ids)[:3])}{'...' if len(cancelled_load_ids) > 3 else ''})")
+                return _cancelled_count
+            except Exception as _cl_err:
+                st.warning(f"⚠️ Cancel load_history status failed: {_cl_err}")
+                return 0
+
         with del_tab1:
             st.info("Load ID, Pallet සහ Actual Qty අඩංගු Excel/CSV file upload කිරීමෙන් Master_Pick_Data **සහ Master_Partial_Data** හි matching records delete කර **old_history** table update වේ.")
             del_file = st.file_uploader("Upload Data to Delete", type=['csv', 'xlsx'], key="del_file_uploader")
@@ -2730,6 +2975,7 @@ if login_section():
                         archived = _archive_to_old_history(deleted_pick_rows, deleted_partial_rows, reason="File Upload Delete")
                         if archived > 0:
                             st.info(f"📁 {archived} rows archived to old_history.")
+                        _cancel_load_history_picks(deleted_pick_rows, deleted_partial_rows)
                         show_confetti()
 
         with del_tab2:
@@ -2789,6 +3035,7 @@ if login_section():
                         archived2 = _archive_to_old_history(deleted_pick_rows2, deleted_partial_rows2, reason=f"Delete by Load ID: {ids_str}")
                         if archived2 > 0:
                             st.info(f"📁 {archived2} rows archived to old_history.")
+                        _cancel_load_history_picks(deleted_pick_rows2, deleted_partial_rows2)
                         show_confetti()
 
         with del_tab3:
@@ -2836,6 +3083,7 @@ if login_section():
                             archived3 = _archive_to_old_history(deleted_batch_pick_rows, deleted_batch_partial_rows, reason=f"Delete by Batch ID: {del_batch_id}")
                             if archived3 > 0:
                                 st.info(f"📁 {archived3} rows archived to old_history.")
+                            _cancel_load_history_picks(deleted_batch_pick_rows, deleted_batch_partial_rows)
                             show_confetti()
                 else:
                     st.info("No Batch IDs found in Master_Pick_Data.")
@@ -2908,6 +3156,7 @@ if login_section():
                             archived4 = _archive_to_old_history(del_pallet_pick_rows, del_pallet_partial_rows, reason=f"Delete by Pallet: {del_pallet}")
                             if archived4 > 0:
                                 results.append(f"old_history: {archived4} archived")
+                            _cancel_load_history_picks(del_pallet_pick_rows, del_pallet_partial_rows)
                             st.success(f"✅ Pallet **{del_pallet}** deleted — {' | '.join(results)}")
                             show_confetti()
             else:
