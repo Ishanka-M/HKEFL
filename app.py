@@ -1689,7 +1689,67 @@ if login_section():
                         except Exception:
                             pass
 
-                        # ── Source 3: master_partial_data (last fallback by pallet or gen_pallet_id) ──
+                        # ── Source 3: logic2_matched_partial_history (pallet or gen_pallet_id) ──
+                        # Per Logic.txt Additional: blank fill sequence step 6
+                        l2_matched_hist_lookup = {}   # keyed by pallet (lower) or gen_pallet_id (lower)
+                        try:
+                            _l2mph_df = DBManager.read_table("logic2_matched_partial_history")
+                            if not _l2mph_df.empty:
+                                _l2mph_c = {str(c).strip().lower(): str(c).strip() for c in _l2mph_df.columns}
+                                _FILL_DB_KEYS = {
+                                    'Vendor Name':    'vendor_name',    'Invoice Number': 'invoice_number',
+                                    'Fifo Date':      'fifo_date',       'Grn Number':     'grn_number',
+                                    'Client So':      'client_so',       'Supplier Hu':    'supplier_hu',
+                                    'Supplier':       'supplier',        'Lot Number':     'lot_number',
+                                    'Style':          'style',           'Color':          'color',
+                                    'Size':           'size',            'Client So 2':    'client_so_2',
+                                }
+                                for _, _r in _l2mph_df.iterrows():
+                                    _pal_keys = []
+                                    _raw_p = str(_r.get(_l2mph_c.get('pallet','pallet'), '')).strip().lower()
+                                    _raw_gp = str(_r.get(_l2mph_c.get('gen_pallet_id','gen_pallet_id'), '')).strip().lower()
+                                    if _raw_p and _raw_p not in ('nan','none',''): _pal_keys.append(_raw_p)
+                                    if _raw_gp and _raw_gp not in ('nan','none',''): _pal_keys.append(_raw_gp)
+                                    if not _pal_keys: continue
+                                    _entry = {}
+                                    for _col_d, _db_k in _FILL_DB_KEYS.items():
+                                        _v = str(_r.get(_l2mph_c.get(_db_k, _db_k), '')).strip()
+                                        if _v and _v not in ('nan', 'None'): _entry[_col_d] = _v
+                                    _ord2 = str(_r.get(_l2mph_c.get('load_id','load_id'), '')).strip()
+                                    if _ord2 and _ord2 not in ('nan','None',''): _entry['Order NO'] = _ord2
+                                    for _pk in _pal_keys:
+                                        if _pk not in l2_matched_hist_lookup:
+                                            l2_matched_hist_lookup[_pk] = _entry
+                        except Exception:
+                            pass
+
+                        # ── Source 4: logic2_history (pallet or gen_pallet_id) ──────────────
+                        # Per Logic.txt Additional: blank fill sequence step 7
+                        l2_history_lookup = {}   # keyed by pallet (lower) or gen_pallet_id (lower)
+                        try:
+                            _l2h_df = DBManager.read_table("logic2_history")
+                            if not _l2h_df.empty:
+                                _l2h_c = {str(c).strip().lower(): str(c).strip() for c in _l2h_df.columns}
+                                for _, _r in _l2h_df.iterrows():
+                                    _pal_keys2 = []
+                                    _raw_p2  = str(_r.get(_l2h_c.get('pallet','pallet'), '')).strip().lower()
+                                    _raw_gp2 = str(_r.get(_l2h_c.get('gen_pallet_id','gen_pallet_id'), '')).strip().lower()
+                                    if _raw_p2  and _raw_p2  not in ('nan','none',''): _pal_keys2.append(_raw_p2)
+                                    if _raw_gp2 and _raw_gp2 not in ('nan','none',''): _pal_keys2.append(_raw_gp2)
+                                    if not _pal_keys2: continue
+                                    _entry2 = {}
+                                    for _col_d, _db_k in _FILL_DB_KEYS.items():
+                                        _v2 = str(_r.get(_l2h_c.get(_db_k, _db_k), '')).strip()
+                                        if _v2 and _v2 not in ('nan', 'None'): _entry2[_col_d] = _v2
+                                    _ord3 = str(_r.get(_l2h_c.get('load_id','load_id'), '')).strip()
+                                    if _ord3 and _ord3 not in ('nan','None',''): _entry2['Order NO'] = _ord3
+                                    for _pk2 in _pal_keys2:
+                                        if _pk2 not in l2_history_lookup:
+                                            l2_history_lookup[_pk2] = _entry2
+                        except Exception:
+                            pass
+
+                        # ── Source 5: master_partial_data (last fallback by pallet or gen_pallet_id) ──
                         # Built later after partial_map is constructed (see fill_row_from_oh_master helper)
 
                         # ── vendor_country_map ──────────────────────────────────────────────
@@ -1894,27 +1954,47 @@ if login_section():
                             1. master_pick_data (already done before calling this)
                             2. old_history_master → oh_master_lookup
                             3. old_history       → oh_history_lookup
-                            4. master_partial_data (pallet or gen_pallet_id) → partial_map / gen_to_orig
+                            4. old_history_master (2nd pass) → oh_master_lookup
+                            5. old_history (2nd pass)       → oh_history_lookup
+                            6. logic2_matched_partial_history (pallet or gen_pallet_id) → l2_matched_hist_lookup
+                            7. logic2_history (pallet or gen_pallet_id) → l2_history_lookup
+                            8. master_partial_data (pallet or gen_pallet_id) → partial_map / gen_to_orig
                             """
                             _pkey_low = str(pallet_key).lower()
                             _base_low = _base_pallet(pallet_key).lower()
 
-                            # Source 2: old_history_master
+                            def _fill_from_src(src_data):
+                                for col in OH_FILL_COLS:
+                                    if _is_blank(row.get(col)) and not _is_blank(src_data.get(col, '')):
+                                        row[col] = src_data[col]
+                                if _is_blank(row.get('Order NO')) and not _is_blank(src_data.get('Order NO', '')):
+                                    row['Order NO'] = src_data['Order NO']
+
+                            # Source 2: old_history_master (1st pass)
                             oh_data = oh_master_lookup.get(_pkey_low) or oh_master_lookup.get(_base_low, {})
-                            for col in OH_FILL_COLS:
-                                if _is_blank(row.get(col)) and not _is_blank(oh_data.get(col, '')):
-                                    row[col] = oh_data[col]
+                            _fill_from_src(oh_data)
 
-                            # Source 3: old_history
+                            # Source 3: old_history (1st pass)
                             oh_hist = oh_history_lookup.get(_pkey_low) or oh_history_lookup.get(_base_low, {})
-                            for col in OH_FILL_COLS:
-                                if _is_blank(row.get(col)) and not _is_blank(oh_hist.get(col, '')):
-                                    row[col] = oh_hist[col]
-                            # Order NO from old_history if still blank
-                            if _is_blank(row.get('Order NO')) and not _is_blank(oh_hist.get('Order NO', '')):
-                                row['Order NO'] = oh_hist['Order NO']
+                            _fill_from_src(oh_hist)
 
-                            # Source 4: master_partial_data (pallet or gen_pallet_id)
+                            # Source 4: old_history_master (2nd pass — Logic.txt repeats this)
+                            oh_data2 = oh_master_lookup.get(_pkey_low) or oh_master_lookup.get(_base_low, {})
+                            _fill_from_src(oh_data2)
+
+                            # Source 5: old_history (2nd pass — Logic.txt repeats this)
+                            oh_hist2 = oh_history_lookup.get(_pkey_low) or oh_history_lookup.get(_base_low, {})
+                            _fill_from_src(oh_hist2)
+
+                            # Source 6: logic2_matched_partial_history (pallet or gen_pallet_id)
+                            l2m_data = l2_matched_hist_lookup.get(_pkey_low) or l2_matched_hist_lookup.get(_base_low, {})
+                            _fill_from_src(l2m_data)
+
+                            # Source 7: logic2_history (pallet or gen_pallet_id)
+                            l2h_data = l2_history_lookup.get(_pkey_low) or l2_history_lookup.get(_base_low, {})
+                            _fill_from_src(l2h_data)
+
+                            # Source 8: master_partial_data (pallet or gen_pallet_id)
                             _part_src = pallet_key  # could be orig pallet or gen_pallet_id
                             _part_entries = partial_map.get(str(_part_src).strip()) or \
                                             partial_map.get(_base_pallet(str(_part_src).strip()), [])
@@ -2291,9 +2371,12 @@ if login_section():
                             fmt_df['Pallet'].astype(str).str.strip().replace({'nan':'','None':''}) != ''
                         ].reset_index(drop=True)
 
-                        # ── Additional: Blank fill from OH master + old_history + partial + COO re-lookup ──
+                        # ── Additional: Blank fill from OH master + old_history + L2 histories + partial + COO re-lookup ──
                         # Per Logic.txt Additional: fill order = master_pick_data (done) →
-                        #   old_history_master → old_history → master_partial_data0 (pallet or gen_pallet_id)
+                        #   old_history_master → old_history → old_history_master (2nd) → old_history (2nd) →
+                        #   logic2_matched_partial_history (pallet or gen_pallet_id) →
+                        #   logic2_history (pallet or gen_pallet_id) →
+                        #   master_partial_data (pallet or gen_pallet_id)
                         for idx, r_row in fmt_df.iterrows():
                             pkey = str(r_row.get('Pallet', '')).strip()
                             base = _base_pallet(pkey)
@@ -2307,13 +2390,29 @@ if login_section():
                                         fb_vn = partial_vendor_map_fmt.get(pe.get('gen_pallet',''), '')
                                         if fb_vn: break
                                 if not fb_vn:
-                                    # old_history_master
+                                    # old_history_master (1st pass)
                                     fb_vn = oh_master_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
                                             oh_master_lookup.get(base.lower(),{}).get('Vendor Name','')
                                 if not fb_vn:
-                                    # old_history
+                                    # old_history (1st pass)
                                     fb_vn = oh_history_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
                                             oh_history_lookup.get(base.lower(),{}).get('Vendor Name','')
+                                if not fb_vn:
+                                    # old_history_master (2nd pass)
+                                    fb_vn = oh_master_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
+                                            oh_master_lookup.get(base.lower(),{}).get('Vendor Name','')
+                                if not fb_vn:
+                                    # old_history (2nd pass)
+                                    fb_vn = oh_history_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
+                                            oh_history_lookup.get(base.lower(),{}).get('Vendor Name','')
+                                if not fb_vn:
+                                    # logic2_matched_partial_history (pallet or gen_pallet_id)
+                                    fb_vn = l2_matched_hist_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
+                                            l2_matched_hist_lookup.get(base.lower(),{}).get('Vendor Name','')
+                                if not fb_vn:
+                                    # logic2_history (pallet or gen_pallet_id)
+                                    fb_vn = l2_history_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
+                                            l2_history_lookup.get(base.lower(),{}).get('Vendor Name','')
                                 if fb_vn:
                                     fmt_df.at[idx, 'Vendor Name'] = fb_vn
                                     fmt_df.at[idx, 'COO'] = vendor_country_map.get(fb_vn.lower(), '')
@@ -2333,36 +2432,86 @@ if login_section():
                                             fb = pe.get(_ek2,'') or _map2.get(pe.get('gen_pallet',''),'')
                                             if fb: break
                                     if not fb:
-                                        # old_history_master
+                                        # old_history_master (1st pass)
                                         fb = oh_master_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
                                              oh_master_lookup.get(base.lower(),{}).get(_fc2,'')
                                     if not fb:
-                                        # old_history
+                                        # old_history (1st pass)
                                         fb = oh_history_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
                                              oh_history_lookup.get(base.lower(),{}).get(_fc2,'')
+                                    if not fb:
+                                        # old_history_master (2nd pass)
+                                        fb = oh_master_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
+                                             oh_master_lookup.get(base.lower(),{}).get(_fc2,'')
+                                    if not fb:
+                                        # old_history (2nd pass)
+                                        fb = oh_history_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
+                                             oh_history_lookup.get(base.lower(),{}).get(_fc2,'')
+                                    if not fb:
+                                        # logic2_matched_partial_history (pallet or gen_pallet_id)
+                                        fb = l2_matched_hist_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
+                                             l2_matched_hist_lookup.get(base.lower(),{}).get(_fc2,'')
+                                    if not fb:
+                                        # logic2_history (pallet or gen_pallet_id)
+                                        fb = l2_history_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
+                                             l2_history_lookup.get(base.lower(),{}).get(_fc2,'')
                                     if fb: fmt_df.at[idx, _fc2] = fb
 
-                            # Order NO from old_history_master → old_history if blank
+                            # Order NO from old_history_master → old_history → l2 histories if blank
                             ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
                             if not ord_n or ord_n in ('nan','None',''):
+                                # old_history_master (1st pass)
                                 fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
                                          oh_master_lookup.get(base.lower(),{}).get('Order NO','')
                                 if not fb_ord:
+                                    # old_history (1st pass)
                                     fb_ord = oh_history_lookup.get(pkey.lower(),{}).get('Order NO','') or \
                                              oh_history_lookup.get(base.lower(),{}).get('Order NO','')
+                                if not fb_ord:
+                                    # old_history_master (2nd pass)
+                                    fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
+                                             oh_master_lookup.get(base.lower(),{}).get('Order NO','')
+                                if not fb_ord:
+                                    # old_history (2nd pass)
+                                    fb_ord = oh_history_lookup.get(pkey.lower(),{}).get('Order NO','') or \
+                                             oh_history_lookup.get(base.lower(),{}).get('Order NO','')
+                                if not fb_ord:
+                                    # logic2_matched_partial_history
+                                    fb_ord = l2_matched_hist_lookup.get(pkey.lower(),{}).get('Order NO','') or \
+                                             l2_matched_hist_lookup.get(base.lower(),{}).get('Order NO','')
+                                if not fb_ord:
+                                    # logic2_history
+                                    fb_ord = l2_history_lookup.get(pkey.lower(),{}).get('Order NO','') or \
+                                             l2_history_lookup.get(base.lower(),{}).get('Order NO','')
                                 if fb_ord: fmt_df.at[idx, 'Order NO'] = fb_ord
 
                             for _oh_col in OH_FILL_COLS:
                                 if _oh_col in ('Vendor Name','Invoice Number','Grn Number'): continue
                                 _cur2 = str(fmt_df.at[idx, _oh_col]).strip() if _oh_col in fmt_df.columns else ''
                                 if not _cur2 or _cur2 in ('nan','None',''):
-                                    # old_history_master first
+                                    # old_history_master (1st pass)
                                     _oh_v = oh_master_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
                                             oh_master_lookup.get(base.lower(),{}).get(_oh_col,'')
                                     if not _oh_v:
-                                        # old_history second
+                                        # old_history (1st pass)
                                         _oh_v = oh_history_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
                                                 oh_history_lookup.get(base.lower(),{}).get(_oh_col,'')
+                                    if not _oh_v:
+                                        # old_history_master (2nd pass)
+                                        _oh_v = oh_master_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
+                                                oh_master_lookup.get(base.lower(),{}).get(_oh_col,'')
+                                    if not _oh_v:
+                                        # old_history (2nd pass)
+                                        _oh_v = oh_history_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
+                                                oh_history_lookup.get(base.lower(),{}).get(_oh_col,'')
+                                    if not _oh_v:
+                                        # logic2_matched_partial_history (pallet or gen_pallet_id)
+                                        _oh_v = l2_matched_hist_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
+                                                l2_matched_hist_lookup.get(base.lower(),{}).get(_oh_col,'')
+                                    if not _oh_v:
+                                        # logic2_history (pallet or gen_pallet_id)
+                                        _oh_v = l2_history_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
+                                                l2_history_lookup.get(base.lower(),{}).get(_oh_col,'')
                                     if not _oh_v:
                                         # master_partial_data third (pallet or gen_pallet_id)
                                         for pe in part_entries:
