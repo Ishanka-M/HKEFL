@@ -993,13 +993,10 @@ if login_section():
                     so_counts   = {}
                     new_hist_entries = []
 
-                    if not hist_df.empty and 'SO Number' in hist_df.columns and 'Generated Load ID' in hist_df.columns and 'SHIP MODE' in hist_df.columns:
-                        for _, hist_row in hist_df.iterrows():
-                            so = str(hist_row.get('SO Number', '')).strip()
-                            ship_m = str(hist_row.get('SHIP MODE', '')).strip().upper()
-                            ship_p = {'SEA': 'S', 'AIR': 'A'}.get(ship_m, ship_m[:3] if ship_m else 'X')
-                            so_ship_k = f"{so}_{ship_p}"
-                            so_counts[so_ship_k] = so_counts.get(so_ship_k, 0) + 1
+                    if not hist_df.empty and 'SO Number' in hist_df.columns and 'Generated Load ID' in hist_df.columns:
+                        for so in hist_df['SO Number'].astype(str).unique():
+                            so_history = hist_df[hist_df['SO Number'].astype(str) == so]
+                            so_counts[so] = len(so_history['Generated Load ID'].dropna().unique())
 
                     existing_load_ids = set()
                     if not hist_df.empty and 'Generated Load ID' in hist_df.columns:
@@ -1007,19 +1004,14 @@ if login_section():
 
                     for group, data in req.groupby('Group'):
                         so_num    = data['SO Number'].iloc[0]
-                        ship_mode_val = str(data['SHIP MODE: (SEA/AIR)'].iloc[0]).strip().upper()
-                        # ── Ship Mode prefix: SEA → S, AIR → A, others → first 3 chars ──
-                        ship_prefix = {'SEA': 'S', 'AIR': 'A'}.get(ship_mode_val, ship_mode_val[:3] if ship_mode_val else 'X')
-                        # ── Track count per SO + Ship Mode combination ──
-                        so_ship_key = f"{so_num}_{ship_prefix}"
-                        base_count  = so_counts.get(so_ship_key, 0)
+                        base_count = so_counts.get(so_num, 0)
                         count = base_count
                         while True:
                             count += 1
-                            candidate_lid = f"SO-{so_num}-{ship_prefix}-{count:03d}"
+                            candidate_lid = f"SO-{so_num}-{count:03d}"
                             if candidate_lid not in existing_load_ids:
                                 break
-                        so_counts[so_ship_key] = count
+                        so_counts[so_num] = count
                         existing_load_ids.add(candidate_lid)
                         load_id_map[group] = candidate_lid
 
@@ -1546,7 +1538,7 @@ if login_section():
                             st.warning("Report generate කිරීම අසාර්ථක විය.")
 
             with tab_formatted:
-                st.caption("L1: Pick Id filled → MPD exact match → Pick Qty | L2: L1 unmatch → Partial gen_pallet exact match → Pick Qty | L3: Pick Id=0 → MPD exact match → Allocated | L4: L3 unmatch → Partial pallet match (excl. L1/L2/L3 used gen_pallets) → Allocated + ATS balance | L5: Remaining → ATS | Damage preserved")
+                st.caption("Pick Id → Logic 1/2 (picked) | Pick Id=0 → Logic 3/4 (allocated) | Logic 5 (ATS) | Damage preserved")
 
                 # ── CSV Fallback Upload Section ──────────────────────────────────────────
                 with st.expander("📂 CSV Data Override (Optional — Supabase connect නොවේ නම් CSV upload කරන්න)", expanded=False):
@@ -1899,11 +1891,8 @@ if login_section():
                         logic4_matched_pallets = set()
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 1: Pick Id column check → value filled (e.g. 73500258) = picked,
-                        #          value 0 = not picked.
-                        #          Picked rows: Pallet + Actual Qty → master_pick_data exact match
-                        #          → Pick_Report: other data update + Actual Qty & Pick Quantity update
-                        #          → Exact matched Pallets → NOT passed to next logics
+                        # LOGIC 1: Pick Id filled → MPD pallet + actual_qty exact match
+                        #          → Pick Quantity = Actual Qty
                         # ════════════════════════════════════════════════════════════════
                         l1_matched_idx = set()
                         for _inv_idx, inv_row in inv_picked.iterrows():
@@ -1932,13 +1921,9 @@ if login_section():
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 2: Logic 1 unmatch →
-                        #          master_partial_data gen_pallet_id + partial_qty exact match
-                        #          → Pick_Report: data update + Actual Qty & Pick Quantity update
-                        #          → After update: matched line deleted from master_partial_data
-                        #            and moved to old_history DB
-                        #          → Exact matched Pallets → NOT passed to next logics
-                        #          → L1 + L2 both unmatched Pallets → Unmatched Report generated
+                        # LOGIC 2: L1 unmatch → gen_pallet_id + partial_qty exact match
+                        #          → Pick Quantity = Actual Qty
+                        #          → L1/L2 unmatched → report
                         # ════════════════════════════════════════════════════════════════
                         l2_matched_idx = set()
                         for _inv_idx, inv_row in inv_picked.iterrows():
@@ -1986,10 +1971,8 @@ if login_section():
                                 })
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 3: Pick Id = 0 rows →
-                        #          Inventory Pallet + Actual Qty → master_pick_data exact match
-                        #          → Pick_Report: other data update + Actual Qty & Allocated (new col) update
-                        #          → Exact matched Pallets → NOT passed to next logics
+                        # LOGIC 3: Pick Id = 0 → MPD pallet + actual_qty exact match
+                        #          → Allocated = Actual Qty
                         # ════════════════════════════════════════════════════════════════
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -2016,20 +1999,11 @@ if login_section():
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
-                        # LOGIC 4: Logic 3 unmatch →
-                        #          master_partial_data pallet exact match
-                        #          → Exclude gen_pallet_ids already matched by Logic 1/2/3 (already ok)
-                        #          → Remaining gen_pallet_ids: count = lines to create
-                        #            Each line: Pallet = gen_pallet_id, Actual Qty = partial_qty
-                        #            (EX: pallet has 2 gen_pallet_ids, 1 captured by L1/L2/L3
-                        #             → use only remaining 1 gen_pallet_id)
-                        #          → sum(partial_qty of remaining gen_pallet_ids):
-                        #            If sum < inventory Actual Qty:
-                        #              balance = Actual Qty - sum → update Actual Qty & ATS
-                        #            If sum == inventory Actual Qty:
-                        #              Pallet = gen_pallet_id, Actual Qty = partial_qty (no balance row)
-                        #          → Unmatch remaining Pallets → Unmatched Report generated
-                        #          → Other remaining → Actual Qty & ATS update
+                        # LOGIC 4: L3 unmatch → partial_map pallet exact match
+                        #          → EXCLUDE gen_pallet_ids already used by L1/L2
+                        #          → remaining gen_pallet lines → Allocated
+                        #          → balance = Actual Qty - sum(partial_qty) → ATS row
+                        #          → unmatch → report
                         # ════════════════════════════════════════════════════════════════
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
@@ -2096,7 +2070,7 @@ if login_section():
 
                         # ════════════════════════════════════════════════════════════════
                         # LOGIC 5: Remaining unpicked (L3/L4 unmatch) → ATS
-                        #          Damage details: code එකේ තියෙන විදිහටම preserve කෙරේ
+                        #          (Damage logic preserved as-is)
                         # ════════════════════════════════════════════════════════════════
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
