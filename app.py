@@ -174,7 +174,7 @@ class DBManager:
     _COL_MAP = {
         "master_pick_data":    PICK_COL_MAP,
         "master_partial_data": PARTIAL_COL_MAP,
-        "logic2_history":      PARTIAL_COL_MAP, 
+        "logic2_history":      PARTIAL_COL_MAP, # NEW mapping for logic2 DB
         "load_history":        HISTORY_COL_MAP,
         "summary_data":        SUMMARY_COL_MAP,
         "damage_items":        DAMAGE_COL_MAP,
@@ -184,7 +184,7 @@ class DBManager:
     _COL_MAP_REV = {
         "master_pick_data":    PICK_COL_MAP_REV,
         "master_partial_data": PARTIAL_COL_MAP_REV,
-        "logic2_history":      PARTIAL_COL_MAP_REV, 
+        "logic2_history":      PARTIAL_COL_MAP_REV, # NEW map rev
         "load_history":        HISTORY_COL_MAP_REV,
         "summary_data":        SUMMARY_COL_MAP_REV,
         "damage_items":        DAMAGE_COL_MAP_REV,
@@ -1842,7 +1842,7 @@ if login_section():
 
                         l1_l2_matched_pallets = set()
                         l1_l2_matched_gen_pallets = set()
-                        logic2_matched_gen_pallets_for_db = set() 
+                        logic2_matched_gen_pallets_for_db = set() # DB Delete සඳහා
                         logic3_matched_pallets = set()
                         logic4_matched_pallets = set()
 
@@ -1884,7 +1884,7 @@ if login_section():
                             if _l2key in gen_pallet_exact_map:
                                 l2_matched_idx.add(_inv_idx)
                                 l1_l2_matched_gen_pallets.add(orig_pallet)
-                                logic2_matched_gen_pallets_for_db.add(orig_pallet) 
+                                logic2_matched_gen_pallets_for_db.add(orig_pallet) # For DB migration
                                 par_entry  = gen_pallet_exact_map[_l2key]
                                 real_orig  = par_entry.get('orig_pallet', orig_pallet)
                                 l1_l2_matched_pallets.add(real_orig)
@@ -1928,8 +1928,9 @@ if login_section():
                                 continue
                                 
                             _mpd_e3 = mpd_exact_map[_l3key][0]
+                            # NEW: Partial Check
                             if str(_mpd_e3.get('remark', '')).strip().lower() == 'partial':
-                                continue 
+                                continue # Bypass Logic 3, proceeds to Logic 4
 
                             logic3_matched_pallets.add(orig_pallet)
                             vn, vc, inv_n, grn_n = _get_vendor_info(inv_row, orig_pallet)
@@ -2056,91 +2057,58 @@ if login_section():
                             fmt_df['Pallet'].astype(str).str.strip().replace({'nan':'','None':''}) != ''
                         ].reset_index(drop=True)
 
-                        # ── Multi-level Fallback Lookup Setup ────────────────────────────
-                        FILL_COLS_REQ = ['Vendor Name', 'Invoice Number', 'Fifo Date', 'Grn Number',
-                                         'Client So', 'Pallet', 'Supplier Hu', 'Supplier', 'Lot Number',
-                                         'Style', 'Color', 'Size', 'Client So 2', 'Inventory Type']
-
-                        try: df_mpd_fb = DBManager.read_table("master_pick_data")
-                        except: df_mpd_fb = pd.DataFrame()
-                        try: df_ohm_fb = DBManager.read_table("old_history_master")
-                        except: df_ohm_fb = pd.DataFrame()
-                        try: df_oh_fb = DBManager.read_table("old_history")
-                        except: df_oh_fb = pd.DataFrame()
-                        try: df_mpart_fb = DBManager.read_table("master_partial_data")
-                        except: df_mpart_fb = pd.DataFrame()
-
-                        def _build_fb_lookup(df, key_col1, key_col2=None):
-                            lookup = {}
-                            if df is None or df.empty: return lookup
-                            c_map = {str(c).strip().lower(): c for c in df.columns}
-                            k1_col = c_map.get(key_col1.lower())
-                            k2_col = c_map.get(key_col2.lower()) if key_col2 else None
-
-                            for _, r in df.iterrows():
-                                entry = {}
-                                for fc in FILL_COLS_REQ:
-                                    c = c_map.get(fc.lower())
-                                    if c and c in r:
-                                        val = str(r[c]).strip()
-                                        if val and val not in ('nan', 'None'):
-                                            entry[fc] = val
-                                if not entry: continue
-                                if k1_col:
-                                    k1 = str(r[k1_col]).strip().lower()
-                                    if k1:
-                                        if k1 not in lookup: lookup[k1] = {}
-                                        for fc, v in entry.items():
-                                            if fc not in lookup[k1]: lookup[k1][fc] = v
-                                if k2_col:
-                                    k2 = str(r[k2_col]).strip().lower()
-                                    if k2:
-                                        if k2 not in lookup: lookup[k2] = {}
-                                        for fc, v in entry.items():
-                                            if fc not in lookup[k2]: lookup[k2][fc] = v
-                            return lookup
-
-                        lookup_mpd   = _build_fb_lookup(df_mpd_fb, 'Pallet')
-                        lookup_ohm   = _build_fb_lookup(df_ohm_fb, 'Pallet')
-                        lookup_oh    = _build_fb_lookup(df_oh_fb, 'Pallet')
-                        lookup_mpart = _build_fb_lookup(df_mpart_fb, 'Pallet', 'Gen Pallet ID')
-
-                        def _get_fb_val(pallet_key, base_key, col):
-                            for k in [pallet_key.lower(), base_key.lower()]:
-                                if not k: continue
-                                if k in lookup_mpd and col in lookup_mpd[k]: return lookup_mpd[k][col]
-                                if k in lookup_ohm and col in lookup_ohm[k]: return lookup_ohm[k][col]
-                                if k in lookup_oh and col in lookup_oh[k]: return lookup_oh[k][col]
-                                if k in lookup_mpart and col in lookup_mpart[k]: return lookup_mpart[k][col]
-                            return ''
-                        
-                        # ── Apply Fallback ────────────────────────────────────────────────
                         for idx, r_row in fmt_df.iterrows():
                             pkey = str(r_row.get('Pallet', '')).strip()
                             base = _base_pallet(pkey)
-                            
-                            for fc in FILL_COLS_REQ:
-                                if fc not in fmt_df.columns:
-                                    continue
-                                cur_val = str(fmt_df.at[idx, fc]).strip()
-                                if not cur_val or cur_val in ('nan', 'None'):
-                                    fb_val = _get_fb_val(pkey, base, fc)
-                                    if fb_val:
-                                        fmt_df.at[idx, fc] = fb_val
+                            part_entries = partial_map.get(base, []) or partial_map.get(pkey, [])
 
-                            # COO update based on Vendor Name
                             vn = str(fmt_df.at[idx, 'Vendor Name']).strip()
-                            cur_coo = str(fmt_df.at[idx, 'COO']).strip() if 'COO' in fmt_df.columns else ''
-                            if vn and vn not in ('nan', 'None', '') and (not cur_coo or cur_coo in ('nan', 'None', '')):
-                                fmt_df.at[idx, 'COO'] = vendor_country_map.get(vn.lower(), '')
+                            if not vn or vn in ('nan','None',''):
+                                fb_vn = partial_vendor_map_fmt.get(pkey,'') or partial_vendor_map_fmt.get(base,'')
+                                if not fb_vn:
+                                    for pe in part_entries:
+                                        fb_vn = partial_vendor_map_fmt.get(pe.get('gen_pallet',''), '')
+                                        if fb_vn: break
+                                if not fb_vn:
+                                    fb_vn = oh_master_lookup.get(pkey.lower(),{}).get('Vendor Name','') or \
+                                            oh_master_lookup.get(base.lower(),{}).get('Vendor Name','')
+                                if fb_vn:
+                                    fmt_df.at[idx, 'Vendor Name'] = fb_vn
+                                    fmt_df.at[idx, 'COO'] = vendor_country_map.get(fb_vn.lower(), '')
+                            else:
+                                if not str(fmt_df.at[idx,'COO']).strip() or str(fmt_df.at[idx,'COO']).strip() in ('nan','None',''):
+                                    fmt_df.at[idx, 'COO'] = vendor_country_map.get(vn.lower(), '')
 
-                            # Keep Order NO logic from before just to be safe
-                            if 'Order NO' in fmt_df.columns:
-                                ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
-                                if not ord_n or ord_n in ('nan','None',''):
-                                    fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
-                                             oh_master_lookup.get(base.lower(),{}).get('Order NO','')
-                                    if fb_ord: fmt_df.at[idx, 'Order NO'] = fb_ord
+                            for _fc2 in ['Invoice Number', 'Grn Number']:
+                                _cur = str(fmt_df.at[idx, _fc2]).strip()
+                                if not _cur or _cur in ('nan','None',''):
+                                    fb = (pallet_invoice_map_fmt if _fc2 == 'Invoice Number' else pallet_grn_map_fmt).get(pkey,'') or \
+                                         (pallet_invoice_map_fmt if _fc2 == 'Invoice Number' else pallet_grn_map_fmt).get(base,'')
+                                    if not fb:
+                                        _map2 = inv_invoice_map_fmt if _fc2 == 'Invoice Number' else inv_grn_map_fmt
+                                        _ek2  = 'invoice_number'    if _fc2 == 'Invoice Number' else 'grn_number'
+                                        for pe in part_entries:
+                                            fb = pe.get(_ek2,'') or _map2.get(pe.get('gen_pallet',''),'')
+                                            if fb: break
+                                    if not fb:
+                                        fb = oh_master_lookup.get(pkey.lower(),{}).get(_fc2,'') or \
+                                             oh_master_lookup.get(base.lower(),{}).get(_fc2,'')
+                                    if fb: fmt_df.at[idx, _fc2] = fb
+
+                            ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
+                            if not ord_n or ord_n in ('nan','None',''):
+                                fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
+                                         oh_master_lookup.get(base.lower(),{}).get('Order NO','')
+                                if fb_ord: fmt_df.at[idx, 'Order NO'] = fb_ord
+
+                            for _oh_col in OH_FILL_COLS:
+                                if _oh_col in ('Vendor Name','Invoice Number','Grn Number'): continue
+                                _cur2 = str(fmt_df.at[idx, _oh_col]).strip() if _oh_col in fmt_df.columns else ''
+                                if not _cur2 or _cur2 in ('nan','None',''):
+                                    _oh_v = oh_master_lookup.get(pkey.lower(),{}).get(_oh_col,'') or \
+                                            oh_master_lookup.get(base.lower(),{}).get(_oh_col,'')
+                                    if _oh_v and _oh_col in fmt_df.columns:
+                                        fmt_df.at[idx, _oh_col] = _oh_v
 
                         _autofix_count = 0
                         for _af_idx, _af_row in fmt_df.iterrows():
@@ -2373,6 +2341,7 @@ if login_section():
                                 except: ws_fmt.write(total_row_idx, ci, str(val), tot_str_xl)
                             ws_fmt.freeze_panes(1, 0)
 
+                        # --- LOGIC 2 DB UPDATE (DELETE & ARCHIVE) ---
                         if logic2_matched_gen_pallets_for_db:
                             mpart_db = DBManager.read_table("master_partial_data", force=True)
                             if not mpart_db.empty and 'Gen Pallet ID' in mpart_db.columns:
@@ -2562,6 +2531,7 @@ if login_section():
             "🗂️ Delete by Batch ID",   "📦 Delete by Pallet"
         ])
 
+        # ── Helper: archive deleted rows to old_history ────────────────────────
         def _archive_to_old_history(deleted_pick_df, deleted_partial_df, reason="Deleted"):
             OLD_HISTORY_COL_MAP = {
                 'Wh Id': 'wh_id', 'Client Code': 'client_code', 'Pallet': 'pallet',
@@ -2673,6 +2643,7 @@ if login_section():
                             else:
                                 st.warning("⚠️ Matching records not found in Master_Pick_Data.")
 
+                        # ── Also delete matching pallets from master_partial_data ──
                         del_pallets = set(del_df['PALLET'].astype(str).str.strip().tolist())
                         del_load_ids_file = set(del_df['LOAD ID'].astype(str).str.strip().tolist())
                         mpart_df = DBManager.read_table("master_partial_data")
@@ -2732,6 +2703,7 @@ if login_section():
                             deleted_pick2      = len(master_pick_df) - len(filtered)
                             DBManager._overwrite_table("master_pick_data", filtered)
 
+                        # ── Also delete from master_partial_data by Load ID ──
                         mpart_df2 = DBManager.read_table("master_partial_data", force=True)
                         deleted_partial_rows2 = pd.DataFrame()
                         if not mpart_df2.empty and 'Load ID' in mpart_df2.columns:
@@ -2773,6 +2745,7 @@ if login_section():
                                 deleted_batch            = len(mpd_latest) - len(filtered_batch)
                                 DBManager._overwrite_table("master_pick_data", filtered_batch)
 
+                            # ── Also delete from master_partial_data by Batch ID ──
                             mpart_df3 = DBManager.read_table("master_partial_data", force=True)
                             deleted_batch_partial_rows = pd.DataFrame()
                             if not mpart_df3.empty and 'Batch ID' in mpart_df3.columns:
