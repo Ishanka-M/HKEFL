@@ -1689,6 +1689,52 @@ if login_section():
                         except Exception:
                             pass
 
+                        # ── Country lookup maps: pallet/gen_pallet_id → country_name ─────────
+                        # Built from every available DB so Destination Country can be filled later
+                        country_lookup = {}   # key: pallet or gen_pallet_id (lower) → country string
+
+                        # From master_pick_data (pallet → country)
+                        if not mpd_df.empty:
+                            _mpd_cn = mpd_col.get('country name', 'Country Name')
+                            _mpd_pc = mpd_col.get('pallet', 'Pallet')
+                            for _, _mr in mpd_df.iterrows():
+                                _mp2  = str(_mr.get(_mpd_pc, '')).strip().lower()
+                                _mcn2 = str(_mr.get(_mpd_cn, '')).strip()
+                                if _mp2 and _mcn2 and _mcn2 not in ('nan','None',''):
+                                    if _mp2 not in country_lookup:
+                                        country_lookup[_mp2] = _mcn2
+
+                        # From old_history (pallet + gen_pallet_id → country_name)
+                        try:
+                            _oh2_df = DBManager.read_table("old_history")
+                            if not _oh2_df.empty:
+                                _oh2c = {str(c).strip().lower(): str(c).strip() for c in _oh2_df.columns}
+                                for _, _ohr2 in _oh2_df.iterrows():
+                                    for _ck in ['pallet', 'gen_pallet_id']:
+                                        _kv = str(_ohr2.get(_oh2c.get(_ck, _ck), '')).strip().lower()
+                                        if _kv and _kv not in ('nan','none',''):
+                                            _cv = str(_ohr2.get(_oh2c.get('country_name','country_name'), '')).strip()
+                                            if _cv and _cv not in ('nan','None','') and _kv not in country_lookup:
+                                                country_lookup[_kv] = _cv
+                        except Exception:
+                            pass
+
+                        # From load_history (generated_load_id → country — fallback via Order NO)
+                        load_id_country_map = {}
+                        try:
+                            _lh_df = DBManager.read_table("load_history")
+                            if not _lh_df.empty:
+                                _lhc = {str(c).strip().lower(): str(c).strip() for c in _lh_df.columns}
+                                _lh_lid_col = _lhc.get('generated load id', 'Generated Load ID')
+                                _lh_cnt_col = _lhc.get('country name', 'Country Name')
+                                for _, _lhr in _lh_df.iterrows():
+                                    _lid2 = str(_lhr.get(_lh_lid_col, '')).strip()
+                                    _lc2  = str(_lhr.get(_lh_cnt_col, '')).strip()
+                                    if _lid2 and _lc2 and _lc2 not in ('nan','None',''):
+                                        load_id_country_map[_lid2] = _lc2
+                        except Exception:
+                            pass
+
                         # ── Source 3: logic2_matched_partial_history (pallet or gen_pallet_id) ──
                         # Per Logic.txt Additional: blank fill sequence step 6
                         l2_matched_hist_lookup = {}   # keyed by pallet (lower) or gen_pallet_id (lower)
@@ -1720,6 +1766,10 @@ if login_section():
                                     for _pk in _pal_keys:
                                         if _pk not in l2_matched_hist_lookup:
                                             l2_matched_hist_lookup[_pk] = _entry
+                                        # Also populate country_lookup
+                                        _cn_l2m = str(_r.get(_l2mph_c.get('country_name','country_name'), '')).strip()
+                                        if _cn_l2m and _cn_l2m not in ('nan','None','') and _pk not in country_lookup:
+                                            country_lookup[_pk] = _cn_l2m
                         except Exception:
                             pass
 
@@ -1746,6 +1796,10 @@ if login_section():
                                     for _pk2 in _pal_keys2:
                                         if _pk2 not in l2_history_lookup:
                                             l2_history_lookup[_pk2] = _entry2
+                                        # Also populate country_lookup
+                                        _cn_l2h = str(_r.get(_l2h_c.get('country_name','country_name'), '')).strip()
+                                        if _cn_l2h and _cn_l2h not in ('nan','None','') and _pk2 not in country_lookup:
+                                            country_lookup[_pk2] = _cn_l2h
                         except Exception:
                             pass
 
@@ -1903,6 +1957,12 @@ if login_section():
                                 if gpallet:
                                     _l2key = (gpallet, round(pqty, 6))
                                     gen_pallet_exact_map[_l2key] = entry
+                                # Populate country_lookup from partial data
+                                if cntry_p and cntry_p not in ('nan','None',''):
+                                    if opallet and opallet.lower() not in country_lookup:
+                                        country_lookup[opallet.lower()] = cntry_p
+                                    if gpallet and gpallet.lower() not in country_lookup:
+                                        country_lookup[gpallet.lower()] = cntry_p
 
                         import re as _re
                         _gen_pat = _re.compile(r'^(.+)-P(\d+)$')
@@ -2520,6 +2580,34 @@ if login_section():
                                                 _oh_v = _pe_v; break
                                     if _oh_v and _oh_col in fmt_df.columns:
                                         fmt_df.at[idx, _oh_col] = _oh_v
+
+                        # ── Destination Country blank fill (any DB pallet/gen_pallet_id match) ──
+                        _dc_fixed = 0
+                        for _dc_idx, _dc_row in fmt_df.iterrows():
+                            _dc_val = str(_dc_row.get('Destination Country', '')).strip()
+                            if _dc_val and _dc_val not in ('nan', 'None', ''):
+                                continue  # already filled
+                            _dc_pkey = str(_dc_row.get('Pallet', '')).strip()
+                            _dc_base = _base_pallet(_dc_pkey)
+                            fb_dc = country_lookup.get(_dc_pkey.lower(), '') or \
+                                    country_lookup.get(_dc_base.lower(), '')
+                            if not fb_dc:
+                                # try gen_pallet_ids in partial entries for this pallet
+                                _dc_parts = partial_map.get(_dc_base, []) or partial_map.get(_dc_pkey, [])
+                                for _dpe in _dc_parts:
+                                    fb_dc = country_lookup.get(_dpe.get('gen_pallet','').lower(), '') or \
+                                            _dpe.get('country', '')
+                                    if fb_dc: break
+                            if not fb_dc:
+                                # fallback via Order NO → load_history country
+                                _dc_ord = str(_dc_row.get('Order NO', '')).strip()
+                                if _dc_ord and _dc_ord not in ('nan', 'None', ''):
+                                    fb_dc = load_id_country_map.get(_dc_ord, '')
+                            if fb_dc and fb_dc not in ('nan', 'None', ''):
+                                fmt_df.at[_dc_idx, 'Destination Country'] = fb_dc
+                                _dc_fixed += 1
+                        if _dc_fixed > 0:
+                            st.info(f"🌍 Destination Country: **{_dc_fixed}** blank rows filled from DB lookup")
 
                         # ── Auto-fix ATS: Actual Qty = Pick + Allocated + Damage + ATS ──────
                         _autofix_count = 0
