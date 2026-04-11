@@ -2055,7 +2055,7 @@ if login_section():
                                     row['Grn Number'] = pallet_grn_map_fmt[pallet_key]
                             return row
 
-                        def fill_row_from_oh_master(row, pallet_key):
+                        def fill_row_from_oh_master(row, pallet_key, is_pick_or_alloc=False):
                             """Blank fill sequence per Logic.txt Additional:
                             1. master_pick_data (already done before calling this)
                             2. old_history_master → oh_master_lookup
@@ -2065,6 +2065,7 @@ if login_section():
                             6. logic2_matched_partial_history (pallet or gen_pallet_id) → l2_matched_hist_lookup
                             7. logic2_history (pallet or gen_pallet_id) → l2_history_lookup
                             8. master_partial_data (pallet or gen_pallet_id) → partial_map / gen_to_orig
+                            NOTE: Order NO only filled if is_pick_or_alloc=True (Pick Qty or Allocated > 0)
                             """
                             _pkey_low = str(pallet_key).lower()
                             _base_low = _base_pallet(pallet_key).lower()
@@ -2073,8 +2074,10 @@ if login_section():
                                 for col in OH_FILL_COLS:
                                     if _is_blank(row.get(col)) and not _is_blank(src_data.get(col, '')):
                                         row[col] = src_data[col]
-                                if _is_blank(row.get('Order NO')) and not _is_blank(src_data.get('Order NO', '')):
-                                    row['Order NO'] = src_data['Order NO']
+                                # Order NO only for Pick / Allocated rows
+                                if is_pick_or_alloc:
+                                    if _is_blank(row.get('Order NO')) and not _is_blank(src_data.get('Order NO', '')):
+                                        row['Order NO'] = src_data['Order NO']
 
                             # Source 2: old_history_master (1st pass)
                             oh_data = oh_master_lookup.get(_pkey_low) or oh_master_lookup.get(_base_low, {})
@@ -2179,7 +2182,7 @@ if login_section():
                             row['Invoice Number'] = inv_n
                             row['Grn Number']     = grn_n
                             row = fill_row_from_partial(row, pallet_key=orig_pallet)
-                            row = fill_row_from_oh_master(row, orig_pallet)
+                            row = fill_row_from_oh_master(row, orig_pallet, is_pick_or_alloc=True)
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
@@ -2229,7 +2232,7 @@ if login_section():
                                 row['Invoice Number'] = inv_n
                                 row['Grn Number']     = grn_n
                                 row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet, partial_entry=par_entry)
-                                row = fill_row_from_oh_master(row, real_orig)
+                                row = fill_row_from_oh_master(row, real_orig, is_pick_or_alloc=True)
                                 fmt_rows.append(row)
                             else:
                                 # L1 + L2 both unmatched → L2B will attempt logic2_matched_partial_history match
@@ -2316,7 +2319,7 @@ if login_section():
                                 row['Invoice Number'] = inv_n
                                 row['Grn Number']     = grn_n
                                 row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet)
-                                row = fill_row_from_oh_master(row, real_orig)
+                                row = fill_row_from_oh_master(row, real_orig, is_pick_or_alloc=True)
                                 fmt_rows.append(row)
                                 l2b_matched_count += 1
                             else:
@@ -2441,7 +2444,7 @@ if login_section():
                             row['Invoice Number'] = inv_n
                             row['Grn Number']     = grn_n
                             row = fill_row_from_partial(row, pallet_key=orig_pallet)
-                            row = fill_row_from_oh_master(row, orig_pallet)
+                            row = fill_row_from_oh_master(row, orig_pallet, is_pick_or_alloc=True)
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
@@ -2505,7 +2508,7 @@ if login_section():
                                 row['Invoice Number'] = par_entry.get('invoice_number','') or inv_invoice_map_fmt.get(gp,'') or inv_n
                                 row['Grn Number']     = par_entry.get('grn_number','') or inv_grn_map_fmt.get(gp,'') or grn_n
                                 row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp, partial_entry=par_entry)
-                                row = fill_row_from_oh_master(row, orig_pallet)
+                                row = fill_row_from_oh_master(row, orig_pallet, is_pick_or_alloc=True)
                                 fmt_rows.append(row)
 
                             # Balance row → ATS
