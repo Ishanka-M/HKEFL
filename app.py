@@ -1281,129 +1281,88 @@ if login_section():
         # ── Dashboard CSS ──────────────────────────────────────────────────────
         st.markdown("""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-
-        .dash-header {
-            display:flex; align-items:center; justify-content:space-between;
-            border-bottom:2px solid #1a1a1a; padding-bottom:12px; margin-bottom:20px;
+        .dash-kpi-wrap {
+            display:flex; gap:12px; margin-bottom:18px; flex-wrap:wrap;
         }
-        .dash-title {
-            font-family:'DM Sans',sans-serif; font-size:22px; font-weight:700;
-            letter-spacing:2px; color:#1a1a1a; text-transform:uppercase;
+        .dash-kpi {
+            flex:1; min-width:140px;
+            background:#ffffff; border:1px solid #e8e8e8; border-radius:10px;
+            padding:14px 18px; position:relative; overflow:hidden;
         }
-        .dash-subtitle { font-size:11px; color:#999; letter-spacing:3px; margin-top:2px; }
-
-        /* ── KPI strip ── */
-        .kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:24px; }
-        .kpi-card {
-            background:#fff; border:1px solid #e8e8e8; border-radius:10px;
-            padding:16px 18px; position:relative; overflow:hidden;
-        }
-        .kpi-card::before {
+        .dash-kpi::after {
             content:''; position:absolute; top:0; left:0; right:0; height:3px;
+            background:var(--kpi-color,#1a1a1a); border-radius:10px 10px 0 0;
         }
-        .kpi-card.total::before  { background:#1a1a1a; }
-        .kpi-card.picks::before  { background:#2563eb; }
-        .kpi-card.pending::before { background:#f59e0b; }
-        .kpi-card.proc::before   { background:#10b981; }
-        .kpi-num {
-            font-family:'DM Mono',monospace; font-size:30px; font-weight:500;
-            color:#1a1a1a; line-height:1;
-        }
-        .kpi-label { font-family:'DM Sans',sans-serif; font-size:11px; color:#888;
-                     letter-spacing:1.5px; text-transform:uppercase; margin-top:6px; }
+        .dash-kpi-num { font-size:30px; font-weight:700; color:#1a1a1a; line-height:1.1; }
+        .dash-kpi-lbl { font-size:11px; color:#888; margin-top:4px; letter-spacing:.5px; }
 
-        /* ── Section label ── */
-        .section-label {
-            font-family:'DM Sans',sans-serif; font-size:10px; font-weight:700;
-            letter-spacing:3px; text-transform:uppercase; color:#888;
-            border-left:3px solid; padding-left:8px; margin:18px 0 10px;
+        /* ── per-card accent bar ── */
+        .card-wrap {
+            border:1px solid #e8e8e8; border-radius:10px;
+            overflow:hidden; margin-bottom:6px; background:#fff;
         }
+        .card-accent-top {
+            height:3px; width:100%;
+        }
+        .card-body {
+            padding:10px 14px 8px 14px;
+        }
+        .card-lid-line {
+            display:flex; align-items:center; gap:6px;
+            font-size:14px; font-weight:700; color:#1a1a1a;
+        }
+        .card-shortage {
+            font-size:10px; background:#fee2e2; color:#b91c1c;
+            padding:1px 7px; border-radius:20px; font-weight:600;
+        }
+        .card-progress-wrap {
+            height:4px; background:#f0f0f0; border-radius:2px; margin:6px 0 2px;
+        }
+        .card-progress-fill { height:4px; border-radius:2px; }
+        .card-progress-pct  { font-size:10px; color:#aaa; }
+        .card-meta {
+            display:flex; gap:0px; margin-top:8px; flex-wrap:wrap;
+        }
+        .card-meta-item {
+            flex:1; min-width:70px;
+            border-left:1px solid #f0f0f0; padding:0 10px;
+        }
+        .card-meta-item:first-child { border-left:none; padding-left:0; }
+        .card-meta-lbl { font-size:9px; color:#aaa; letter-spacing:1px; text-transform:uppercase; }
+        .card-meta-val { font-size:12px; font-weight:600; color:#1a1a1a; margin-top:1px; }
 
-        /* ── Load card ── */
-        .load-card {
-            background:#fff; border:1px solid #e8e8e8; border-radius:10px;
-            margin-bottom:10px; overflow:hidden;
-            transition: box-shadow .15s ease;
-        }
-        .load-card:hover { box-shadow: 0 4px 18px rgba(0,0,0,.07); }
-        .load-card-top {
-            display:grid;
-            grid-template-columns: 3px 200px 1fr 1fr 1fr 80px 80px;
-            align-items:stretch; min-height:72px;
-        }
-        .card-accent { width:3px; border-radius:0; }
-        .card-main {
-            padding:12px 14px; border-right:1px solid #f0f0f0;
-        }
-        .card-lid {
-            font-family:'DM Mono',monospace; font-size:13px; font-weight:500;
-            color:#1a1a1a; word-break:break-all;
-        }
-        .card-so { font-size:11px; color:#888; margin-top:2px; }
-        .card-bar-wrap {
-            height:3px; background:#f0f0f0; border-radius:2px; margin-top:8px;
-        }
-        .card-bar-fill { height:3px; border-radius:2px; }
-        .card-pct { font-family:'DM Mono',monospace; font-size:9px; color:#aaa; margin-top:2px; }
-
-        .card-cell {
-            padding:12px 10px; display:flex; flex-direction:column;
-            justify-content:center; border-right:1px solid #f0f0f0;
-        }
-        .cell-label { font-size:9px; color:#bbb; letter-spacing:1.5px;
-                      text-transform:uppercase; margin-bottom:3px; }
-        .cell-val   { font-family:'DM Sans',sans-serif; font-size:12px;
-                      font-weight:600; color:#1a1a1a; }
-
-        .card-qty-cell {
-            padding:12px 10px; display:flex; flex-direction:column;
-            justify-content:center; border-right:1px solid #f0f0f0;
-        }
-
-        /* status pill inside card */
-        .status-pill {
-            display:inline-block; font-family:'DM Sans',sans-serif;
-            font-size:10px; font-weight:700; letter-spacing:.5px;
-            padding:3px 10px; border-radius:20px; white-space:nowrap;
-        }
+        .sp { display:inline-block; font-size:10px; font-weight:700;
+              padding:2px 10px; border-radius:20px; white-space:nowrap; }
         .sp-pending    { background:#fef3c7; color:#92400e; }
         .sp-plpending  { background:#ffedd5; color:#9a3412; }
         .sp-processing { background:#dbeafe; color:#1e40af; }
         .sp-completed  { background:#dcfce7; color:#166534; }
         .sp-cancelled  { background:#fee2e2; color:#991b1b; }
 
-        /* shortage badge */
-        .shortage-badge {
-            display:inline-block; font-size:9px; background:#fee2e2;
-            color:#dc2626; padding:1px 6px; border-radius:4px; margin-left:6px;
-            font-weight:700; vertical-align:middle;
+        .card-update-bar {
+            background:#fafafa; border-top:1px solid #f0f0f0;
+            padding:6px 14px 8px 14px;
+        }
+        .card-update-lbl {
+            font-size:10px; color:#bbb; letter-spacing:1px;
+            text-transform:uppercase; margin-bottom:4px;
         }
 
-        /* ── load card bottom (status update bar) ── */
-        .card-bottom {
-            border-top:1px solid #f5f5f5; background:#fafafa;
-            padding:6px 14px; display:flex; align-items:center; gap:8px;
+        .sec-hdr {
+            font-size:11px; font-weight:700; letter-spacing:2px;
+            text-transform:uppercase; padding:4px 0 4px 10px;
+            border-left:3px solid; margin:16px 0 8px;
+            border-radius:0;
         }
-        .cb-label { font-size:10px; color:#aaa; letter-spacing:1px;
-                    text-transform:uppercase; white-space:nowrap; }
         </style>
         """, unsafe_allow_html=True)
 
         # ── Header ─────────────────────────────────────────────────────────────
-        hdr_c1, hdr_c2 = st.columns([5, 1])
-        with hdr_c1:
-            st.markdown("""
-            <div class="dash-header">
-                <div>
-                    <div class="dash-title">Load Tracking & Dashboard</div>
-                    <div class="dash-subtitle">HELEN KAMINSKI · PICK MANAGEMENT SYSTEM</div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-        with hdr_c2:
-            if st.button("🔄 Refresh", use_container_width=True):
-                DBManager.invalidate()
-                st.rerun()
+        _hc1, _hc2 = st.columns([5, 1])
+        _hc1.title("📊 Load Tracking & Dashboard")
+        if _hc2.button("🔄 Refresh", use_container_width=True, key="dash_refresh"):
+            DBManager.invalidate()
+            st.rerun()
 
         # ── Data load ──────────────────────────────────────────────────────────
         _batch  = DBManager.batch_read(["load_history", "summary_data", "master_pick_data"])
@@ -1416,26 +1375,22 @@ if login_section():
         pending_loads    = len(hist_df[hist_df['Pick Status'] == 'Pending'])    if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
         processing_loads = len(hist_df[hist_df['Pick Status'] == 'Processing']) if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
 
-        # ── KPI strip ──────────────────────────────────────────────────────────
-        st.markdown(f"""
-        <div class="kpi-grid">
-            <div class="kpi-card total">
-                <div class="kpi-num">{total_loads}</div>
-                <div class="kpi-label">Total Load IDs</div>
-            </div>
-            <div class="kpi-card picks">
-                <div class="kpi-num">{total_picks}</div>
-                <div class="kpi-label">Total Picks Made</div>
-            </div>
-            <div class="kpi-card pending">
-                <div class="kpi-num">{pending_loads}</div>
-                <div class="kpi-label">Pending Loads</div>
-            </div>
-            <div class="kpi-card proc">
-                <div class="kpi-num">{processing_loads}</div>
-                <div class="kpi-label">Processing Loads</div>
-            </div>
-        </div>""", unsafe_allow_html=True)
+        # ── KPI cards ──────────────────────────────────────────────────────────
+        km1, km2, km3, km4 = st.columns(4)
+        km1.markdown(f"""<div class="dash-kpi" style="--kpi-color:#1a1a1a">
+            <div class="dash-kpi-num">{total_loads}</div>
+            <div class="dash-kpi-lbl">Total Load IDs</div></div>""", unsafe_allow_html=True)
+        km2.markdown(f"""<div class="dash-kpi" style="--kpi-color:#2563eb">
+            <div class="dash-kpi-num">{total_picks}</div>
+            <div class="dash-kpi-lbl">Total Picks Made</div></div>""", unsafe_allow_html=True)
+        km3.markdown(f"""<div class="dash-kpi" style="--kpi-color:#f59e0b">
+            <div class="dash-kpi-num">{pending_loads}</div>
+            <div class="dash-kpi-lbl">Pending Loads</div></div>""", unsafe_allow_html=True)
+        km4.markdown(f"""<div class="dash-kpi" style="--kpi-color:#10b981">
+            <div class="dash-kpi-num">{processing_loads}</div>
+            <div class="dash-kpi-lbl">Processing Loads</div></div>""", unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
         if total_loads == 0:
             st.info("දැනට පද්ධතියේ කිසිදු දත්තයක් නොමැත. 'Picking Operations' මගින් දත්ත ඇතුලත් කරන්න.")
@@ -1448,37 +1403,38 @@ if login_section():
                 else:
                     load_ids = active_loads['Generated Load ID'].dropna().unique().tolist()
 
-                    # ── Filter bar ────────────────────────────────────────────
-                    f1, f2 = st.columns([2, 5])
-                    status_filter = f1.selectbox("Filter by Status:",
-                        ["All", "Pending", "PL Pending", "Processing"], key="dash_status_filter",
-                        label_visibility="collapsed")
+                    _sf1, _sf2 = st.columns([2, 5])
+                    status_filter = _sf1.selectbox(
+                        "Filter by Status:", ["All", "Pending", "PL Pending", "Processing"],
+                        key="dash_status_filter", label_visibility="collapsed"
+                    )
                     if status_filter != "All":
-                        filtered_active = active_loads[active_loads['Pick Status'].astype(str) == status_filter]
-                        load_ids = filtered_active['Generated Load ID'].dropna().unique().tolist()
+                        load_ids = active_loads[
+                            active_loads['Pick Status'].astype(str) == status_filter
+                        ]['Generated Load ID'].dropna().unique().tolist()
 
                     # ── Summary aggregation ───────────────────────────────────
                     summ_by_load = {}
                     if not summ_df.empty and 'Load ID' in summ_df.columns:
-                        for col in ['Variance', 'Requested', 'Picked']:
-                            summ_df[col] = pd.to_numeric(summ_df.get(col, 0), errors='coerce').fillna(0)
-                        for lid_s in summ_df['Load ID'].dropna().unique():
-                            rows = summ_df[summ_df['Load ID'].astype(str) == str(lid_s)]
-                            summ_by_load[str(lid_s)] = {
-                                'requested': rows['Requested'].sum(),
-                                'picked':    rows['Picked'].sum(),
-                                'variance':  rows['Variance'].sum(),
+                        for _sc in ['Variance', 'Requested', 'Picked']:
+                            summ_df[_sc] = pd.to_numeric(summ_df.get(_sc, 0), errors='coerce').fillna(0)
+                        for _ls in summ_df['Load ID'].dropna().unique():
+                            _lr = summ_df[summ_df['Load ID'].astype(str) == str(_ls)]
+                            summ_by_load[str(_ls)] = {
+                                'requested': _lr['Requested'].sum(),
+                                'picked':    _lr['Picked'].sum(),
+                                'variance':  _lr['Variance'].sum(),
                             }
 
                     zero_pick_ids, shortage_ids, full_pick_ids = [], [], []
                     for lid in load_ids:
-                        s = summ_by_load.get(str(lid), {})
-                        req_q    = s.get('requested', 0)
-                        picked_q = s.get('picked', 0)
-                        var_q    = s.get('variance', 0)
-                        if picked_q == 0 and req_q > 0: zero_pick_ids.append(lid)
-                        elif var_q > 0:                 shortage_ids.append(lid)
-                        else:                           full_pick_ids.append(lid)
+                        _s  = summ_by_load.get(str(lid), {})
+                        _rq = _s.get('requested', 0)
+                        _pq = _s.get('picked',    0)
+                        _vq = _s.get('variance',  0)
+                        if _pq == 0 and _rq > 0: zero_pick_ids.append(lid)
+                        elif _vq > 0:            shortage_ids.append(lid)
+                        else:                    full_pick_ids.append(lid)
 
                     STATUS_OPTIONS = ["Pending", "PL Pending", "Processing", "Completed", "Cancelled"]
 
@@ -1486,129 +1442,131 @@ if login_section():
                     pick_counts_by_lid = {}
                     pick_qty_by_lid    = {}
                     if not pick_df.empty:
-                        load_id_col_pick = next((c for c in pick_df.columns if str(c).strip().lower() in ('load id', 'loadid', 'load_id')), None)
-                        actual_col_pick  = next((c for c in pick_df.columns if str(c).strip().lower() == 'actual qty'), None)
-                        if load_id_col_pick:
-                            _lid_series = pick_df[load_id_col_pick].astype(str).str.strip()
-                            pick_counts_by_lid = _lid_series.value_counts().to_dict()
-                            if actual_col_pick:
-                                _qty_grp = pick_df.groupby(_lid_series)[actual_col_pick].apply(
-                                    lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum())
-                                pick_qty_by_lid = _qty_grp.to_dict()
+                        _lc = next((c for c in pick_df.columns if str(c).strip().lower() in ('load id','loadid','load_id')), None)
+                        _ac = next((c for c in pick_df.columns if str(c).strip().lower() == 'actual qty'), None)
+                        if _lc:
+                            _ls2 = pick_df[_lc].astype(str).str.strip()
+                            pick_counts_by_lid = _ls2.value_counts().to_dict()
+                            if _ac:
+                                pick_qty_by_lid = pick_df.groupby(_ls2)[_ac].apply(
+                                    lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
+                                ).to_dict()
 
-                    # ── Status pill CSS class helper ──────────────────────────
-                    def _status_cls(st_val):
-                        return {
-                            'Pending': 'sp-pending', 'PL Pending': 'sp-plpending',
-                            'Processing': 'sp-processing', 'Completed': 'sp-completed',
-                            'Cancelled': 'sp-cancelled',
-                        }.get(st_val, 'sp-pending')
-
-                    def _accent_color(group):
-                        return {'not_picked': '#ef4444', 'shortage': '#f59e0b', 'full': '#10b981'}.get(group, '#1a1a1a')
+                    def _sp_cls(s):
+                        return {'Pending':'sp-pending','PL Pending':'sp-plpending',
+                                'Processing':'sp-processing','Completed':'sp-completed',
+                                'Cancelled':'sp-cancelled'}.get(s,'sp-pending')
 
                     # ── Card renderer ─────────────────────────────────────────
-                    def render_load_cards(id_list, group_key, section_title, section_color):
+                    def render_cards(id_list, accent, section_emoji, section_label):
                         st.markdown(
-                            f'<div class="section-label" style="border-color:{section_color};">'
-                            f'{section_title}</div>',
+                            f'<div class="sec-hdr" style="border-color:{accent};color:{accent};">'
+                            f'{section_emoji} {section_label}</div>',
                             unsafe_allow_html=True
                         )
                         for lid in id_list:
-                            load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
-                            status       = str(load_row.get('Pick Status', 'Pending'))
-                            so_num       = str(load_row.get('SO Number', '—'))
-                            country      = str(load_row.get('Country Name', '—'))
-                            ship         = str(load_row.get('SHIP MODE', '—'))
-                            date_raw     = str(load_row.get('Date', '—'))[:10]
-                            lid_key      = str(lid).strip()
-                            pick_count   = pick_counts_by_lid.get(lid_key, 0)
-                            pick_qty_val = int(pick_qty_by_lid.get(lid_key, 0))
-                            s            = summ_by_load.get(str(lid), {})
-                            variance     = s.get('variance', 0)
-                            requested    = s.get('requested', 0)
-                            picked_q     = s.get('picked', 0)
-                            fill_pct     = min(int((picked_q / requested * 100)) if requested > 0 else 0, 100)
-                            s_cls        = _status_cls(status)
+                            _row       = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
+                            status     = str(_row.get('Pick Status',    'Pending'))
+                            so_num     = str(_row.get('SO Number',      '—'))
+                            country    = str(_row.get('Country Name',   '—'))
+                            ship       = str(_row.get('SHIP MODE',      '—'))
+                            date_val   = str(_row.get('Date',           '—'))[:10]
+                            lid_key    = str(lid).strip()
+                            lines_cnt  = pick_counts_by_lid.get(lid_key, 0)
+                            qty_val    = int(pick_qty_by_lid.get(lid_key, 0))
+                            _sv        = summ_by_load.get(str(lid), {})
+                            variance   = _sv.get('variance',  0)
+                            requested  = _sv.get('requested', 0)
+                            picked_q   = _sv.get('picked',    0)
+                            fill_pct   = min(int(picked_q / requested * 100) if requested > 0 else 0, 100)
+                            sp_cls     = _sp_cls(status)
                             shortage_html = (
-                                f'<span class="shortage-badge">⚠ -{int(variance)}</span>'
+                                f'<span class="card-shortage">⚠ -{int(variance)}</span>'
                             ) if variance > 0 else ''
 
-                            # ── Card HTML (info portion — no widgets) ──────────
+                            # ── Card HTML (pure display — no Streamlit widgets) ─
                             st.markdown(f"""
-<div class="load-card">
-  <div class="load-card-top">
-    <div class="card-accent" style="background:{section_color};"></div>
-    <div class="card-main">
-      <div class="card-lid">{lid}{shortage_html}</div>
-      <div class="card-so">SO: {so_num}</div>
-      <div class="card-bar-wrap">
-        <div class="card-bar-fill" style="width:{fill_pct}%;background:{section_color};"></div>
+<div class="card-wrap">
+  <div class="card-accent-top" style="background:{accent};"></div>
+  <div class="card-body">
+    <div class="card-lid-line">
+      <span>{lid}</span>{shortage_html}
+      <span class="sp {sp_cls}" style="margin-left:auto;">{status}</span>
+    </div>
+    <div class="card-progress-wrap">
+      <div class="card-progress-fill" style="width:{fill_pct}%;background:{accent};"></div>
+    </div>
+    <div class="card-progress-pct">{fill_pct}% picked</div>
+    <div class="card-meta">
+      <div class="card-meta-item">
+        <div class="card-meta-lbl">SO Number</div>
+        <div class="card-meta-val">{so_num}</div>
       </div>
-      <div class="card-pct">{fill_pct}% picked</div>
-    </div>
-    <div class="card-cell">
-      <div class="cell-label">Country</div>
-      <div class="cell-val">{country}</div>
-    </div>
-    <div class="card-cell">
-      <div class="cell-label">Ship Mode</div>
-      <div class="cell-val">{ship}</div>
-    </div>
-    <div class="card-cell">
-      <div class="cell-label">Date</div>
-      <div class="cell-val">{date_raw}</div>
-    </div>
-    <div class="card-qty-cell" style="border-right:1px solid #f0f0f0;">
-      <div class="cell-label">Lines</div>
-      <div class="cell-val">{pick_count}</div>
-      <div class="cell-label" style="margin-top:6px;">Qty</div>
-      <div class="cell-val">{pick_qty_val:,}</div>
-    </div>
-    <div class="card-cell" style="padding-left:14px;border-right:none;">
-      <div class="cell-label">Status</div>
-      <span class="status-pill {s_cls}">{status}</span>
+      <div class="card-meta-item">
+        <div class="card-meta-lbl">Country</div>
+        <div class="card-meta-val">{country}</div>
+      </div>
+      <div class="card-meta-item">
+        <div class="card-meta-lbl">Ship Mode</div>
+        <div class="card-meta-val">{ship}</div>
+      </div>
+      <div class="card-meta-item">
+        <div class="card-meta-lbl">Date</div>
+        <div class="card-meta-val">{date_val}</div>
+      </div>
+      <div class="card-meta-item">
+        <div class="card-meta-lbl">Lines</div>
+        <div class="card-meta-val">{lines_cnt}</div>
+      </div>
+      <div class="card-meta-item">
+        <div class="card-meta-lbl">Pick Qty</div>
+        <div class="card-meta-val">{qty_val:,}</div>
+      </div>
     </div>
   </div>
-  <div class="card-bottom">
-    <span class="cb-label">Update Status →</span>
+  <div class="card-update-bar">
+    <div class="card-update-lbl">Update Status</div>
   </div>
 </div>""", unsafe_allow_html=True)
 
-                            # ── Inline status update (below card bottom bar) ───
-                            _u1, _u2, _u3 = st.columns([4, 1, 3])
+                            # ── Status update — Streamlit widgets immediately
+                            # after the card HTML (visually inside the update bar)
+                            _c1, _c2, _c3 = st.columns([4, 1, 3])
                             safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                            new_st = _u1.selectbox(
-                                "Status", STATUS_OPTIONS, index=safe_idx,
+                            new_st = _c1.selectbox(
+                                "status", STATUS_OPTIONS, index=safe_idx,
                                 key=f"st_{lid}", label_visibility="collapsed"
                             )
-                            if _u2.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
+                            if _c2.button("💾", key=f"upd_{lid}", use_container_width=True,
+                                          help="Save status"):
                                 try:
-                                    ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
+                                    ok = DBManager.update_cell(
+                                        "load_history", "Generated Load ID",
+                                        str(lid), "Pick Status", new_st
+                                    )
                                     if ok and new_st == "Cancelled":
                                         mpd = DBManager.read_table("master_pick_data")
-                                        lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
-                                        if not mpd.empty and lid_col:
-                                            filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
-                                            DBManager._overwrite_table("master_pick_data", filtered_mpd)
-                                        _u3.error(f"🚫 {lid} → Cancelled · Pick data deleted")
+                                        _lc2 = next((c for c in mpd.columns
+                                                     if str(c).strip().lower() == 'load id'), None)
+                                        if not mpd.empty and _lc2:
+                                            DBManager._overwrite_table(
+                                                "master_pick_data",
+                                                mpd[mpd[_lc2].astype(str).str.strip() != str(lid).strip()]
+                                            )
+                                        _c3.error(f"🚫 {lid} Cancelled · pick records deleted")
                                     elif ok:
-                                        _u3.success(f"✅ {lid} → {new_st}")
+                                        _c3.success(f"✅ {lid} → {new_st}")
                                     st.rerun()
-                                except Exception as ex:
-                                    _u3.error(f"Update error: {ex}")
-                            st.markdown("<div style='margin-bottom:4px'></div>", unsafe_allow_html=True)
+                                except Exception as _ex:
+                                    _c3.error(f"Error: {_ex}")
 
-                    # ── Render grouped sections ───────────────────────────────
+                    # ── Render sections ───────────────────────────────────────
                     if zero_pick_ids:
-                        render_load_cards(zero_pick_ids, 'not_picked',
-                                          '🔴 NOT YET PICKED', '#ef4444')
+                        render_cards(zero_pick_ids, '#ef4444', '🔴', 'Not Yet Picked')
                     if shortage_ids:
-                        render_load_cards(shortage_ids, 'shortage',
-                                          '🟡 SHORTAGE', '#f59e0b')
+                        render_cards(shortage_ids,  '#f59e0b', '🟡', 'Shortage')
                     if full_pick_ids:
-                        render_load_cards(full_pick_ids, 'full',
-                                          '🟢 FULLY PICKED', '#10b981')
+                        render_cards(full_pick_ids,  '#10b981', '🟢', 'Fully Picked')
 
             st.divider()
             st.subheader("🔍 Search & Download Picks")
