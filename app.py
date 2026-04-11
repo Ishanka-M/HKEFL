@@ -1371,25 +1371,19 @@ if login_section():
                             'Cancelled':  ('var(--color-background-danger)',  'var(--color-text-danger)'),
                         }
 
-                        # ── Header row (HTML only, no Streamlit widgets) ─────────────────────
-                        hdr_html = f'''
-<div style="width:100%;margin-bottom:2px;border-radius:8px 8px 0 0;overflow:hidden;border:1px solid var(--color-border-tertiary);border-bottom:none;">
-  <div style="display:grid;grid-template-columns:2fr 0.8fr 0.9fr 0.7fr 0.9fr 0.55fr 0.7fr 1.4fr;
-              background:{category_color}18;border-bottom:2px solid {category_color};
-              padding:7px 12px;font-size:11px;font-weight:600;color:var(--color-text-secondary);gap:6px;">
-    <div>Load ID</div>
-    <div>SO</div>
-    <div>Country</div>
-    <div>Ship</div>
-    <div>Date</div>
-    <div style="text-align:right;">Lines</div>
-    <div style="text-align:right;">Pick Qty</div>
-    <div style="text-align:center;">Update Status</div>
-  </div>
-</div>'''
-                        st.markdown(hdr_html, unsafe_allow_html=True)
+                        # ── Header (HTML) ────────────────────────────────────────────────────
+                        st.markdown(f'''
+<div style="display:grid;grid-template-columns:3fr 0.8fr 0.9fr 0.7fr 0.9fr 0.6fr 0.7fr;
+            background:{category_color}18;border:1px solid var(--color-border-tertiary);
+            border-radius:8px 8px 0 0;border-bottom:2px solid {category_color};
+            padding:6px 10px;font-size:11px;font-weight:600;color:var(--color-text-secondary);gap:6px;margin-bottom:0;">
+  <div>Load ID / Status</div>
+  <div>SO</div><div>Country</div><div>Ship</div><div>Date</div>
+  <div style="text-align:right;">Lines</div>
+  <div style="text-align:right;">Pick Qty</div>
+</div>''', unsafe_allow_html=True)
 
-                        # ── One Streamlit row per load ID (for widget interactivity) ─────────
+                        # ── One row per load ID ──────────────────────────────────────────────
                         for i, lid in enumerate(id_list):
                             load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
                             status       = str(load_row.get('Pick Status', 'Pending'))
@@ -1404,73 +1398,46 @@ if login_section():
                             variance     = s_data.get('variance', 0)
                             requested    = s_data.get('requested', 0)
                             picked_q     = s_data.get('picked', 0)
-                            fill_pct     = int((picked_q / requested * 100)) if requested > 0 else 0
-                            fill_pct     = min(fill_pct, 100)
+                            fill_pct     = min(int((picked_q / requested * 100)) if requested > 0 else 0, 100)
 
                             st_bg, st_fg = STATUS_STYLES.get(status, ('var(--color-background-secondary)', 'var(--color-text-secondary)'))
-                            shortage_tag = f'<span style="font-size:10px;background:#fde8e8;color:#c0392b;padding:1px 5px;border-radius:4px;margin-left:5px;font-weight:600;">-{int(variance)}</span>' if variance > 0 else ''
-                            row_bg = 'var(--color-background-secondary)' if i % 2 == 1 else 'var(--color-background-primary)'
+                            shortage_tag = (f'<span style="font-size:10px;background:#fde8e8;color:#c0392b;'
+                                            f'padding:1px 5px;border-radius:4px;margin-left:5px;font-weight:600;">-{int(variance)}</span>'
+                                            ) if variance > 0 else ''
+                            is_last  = (i == len(id_list) - 1)
+                            row_bg   = 'var(--color-background-secondary)' if i % 2 == 1 else 'var(--color-background-primary)'
+                            b_radius = f'0 0 8px 8px' if is_last else '0'
 
-                            # Info columns (HTML) + update widgets (Streamlit) side-by-side
-                            info_html = f'''
-<div style="background:{row_bg};border:1px solid var(--color-border-tertiary);border-top:none;
-            padding:7px 12px;border-radius:{'0' if i < len(id_list)-1 else '0 0 8px 8px'};">
-  <div style="display:grid;grid-template-columns:2fr 0.8fr 0.9fr 0.7fr 0.9fr 0.55fr 0.7fr 1.4fr;gap:6px;align-items:center;">
-    <div>
-      <div style="font-size:12px;font-weight:500;color:var(--color-text-primary);">{lid}{shortage_tag}</div>
-      <div style="height:3px;background:var(--color-border-tertiary);border-radius:2px;margin-top:3px;">
-        <div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div>
-      </div>
-      <div style="font-size:9px;color:var(--color-text-secondary);margin-top:1px;">{fill_pct}%</div>
-    </div>
-    <div style="font-size:12px;color:var(--color-text-primary);font-weight:500;">{so_num}</div>
-    <div style="font-size:12px;color:var(--color-text-primary);">{country}</div>
-    <div style="font-size:12px;color:var(--color-text-primary);">{ship}</div>
-    <div style="font-size:11px;color:var(--color-text-secondary);">{date}</div>
-    <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{pick_count}</div>
-    <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{int(pick_qty_val)}</div>
-    <div><!-- status widget placeholder --></div>
+                            # Split: Load ID cell (col_a) | other info cells (col_b)
+                            # Ratio keeps Load ID column proportionally wider to fit widget
+                            col_a, col_b = st.columns([3, 5.3])
+
+                            with col_a:
+                                st.markdown(f'''
+<div style="background:{row_bg};border-left:1px solid var(--color-border-tertiary);
+            border-bottom:1px solid var(--color-border-tertiary);
+            {'border-radius:0 0 0 8px;' if is_last else ''}
+            padding:6px 10px 4px 10px;min-height:58px;">
+  <div style="font-size:12px;font-weight:600;color:var(--color-text-primary);margin-bottom:2px;">{lid}{shortage_tag}</div>
+  <div style="height:3px;background:var(--color-border-tertiary);border-radius:2px;margin-bottom:3px;">
+    <div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div>
   </div>
-</div>'''
-                            # Render info row + widget in columns
-                            _rc1, _rc2 = st.columns([5.6, 1.4])
-                            with _rc1:
-                                # Render the info HTML minus the last placeholder column
-                                _info_no_last = f'''
-<div style="background:{row_bg};border:1px solid var(--color-border-tertiary);border-top:none;
-            border-right:none;padding:7px 12px;border-radius:{'0' if i < len(id_list)-1 else '0 0 0 8px'};">
-  <div style="display:grid;grid-template-columns:2fr 0.8fr 0.9fr 0.7fr 0.9fr 0.55fr 0.7fr;gap:6px;align-items:center;">
-    <div>
-      <div style="font-size:12px;font-weight:500;color:var(--color-text-primary);">{lid}{shortage_tag}</div>
-      <div style="height:3px;background:var(--color-border-tertiary);border-radius:2px;margin-top:3px;">
-        <div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div>
-      </div>
-      <div style="font-size:9px;color:var(--color-text-secondary);margin-top:1px;">{fill_pct}%</div>
-    </div>
-    <div style="font-size:12px;color:var(--color-text-primary);font-weight:500;">{so_num}</div>
-    <div style="font-size:12px;color:var(--color-text-primary);">{country}</div>
-    <div style="font-size:12px;color:var(--color-text-primary);">{ship}</div>
-    <div style="font-size:11px;color:var(--color-text-secondary);">{date}</div>
-    <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{pick_count}</div>
-    <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{int(pick_qty_val)}</div>
-  </div>
-</div>'''
-                                st.markdown(_info_no_last, unsafe_allow_html=True)
-                            with _rc2:
+</div>''', unsafe_allow_html=True)
+                                # Dropdown + Save button directly below Load ID label
                                 safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                                _w1, _w2 = st.columns([3, 1])
-                                new_st = _w1.selectbox(
-                                    f"status_{lid}", STATUS_OPTIONS, index=safe_idx,
+                                _d1, _d2 = st.columns([4, 1])
+                                new_st = _d1.selectbox(
+                                    lid, STATUS_OPTIONS, index=safe_idx,
                                     key=f"st_{lid}", label_visibility="collapsed"
                                 )
-                                if _w2.button("💾", key=f"upd_{lid}", use_container_width=True, help="Save status"):
+                                if _d2.button("💾", key=f"upd_{lid}", use_container_width=True, help="Save status"):
                                     try:
                                         ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
                                         if ok and new_st == "Cancelled":
                                             mpd = DBManager.read_table("master_pick_data")
-                                            lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
-                                            if not mpd.empty and lid_col:
-                                                filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
+                                            lid_col_c = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
+                                            if not mpd.empty and lid_col_c:
+                                                filtered_mpd = mpd[mpd[lid_col_c].astype(str).str.strip() != str(lid).strip()]
                                                 DBManager._overwrite_table("master_pick_data", filtered_mpd)
                                             st.success(f"✅ {lid} → Cancelled")
                                         elif ok:
@@ -1478,6 +1445,21 @@ if login_section():
                                         st.rerun()
                                     except Exception as ex:
                                         st.error(f"Error: {ex}")
+
+                            with col_b:
+                                st.markdown(f'''
+<div style="background:{row_bg};border:1px solid var(--color-border-tertiary);border-left:none;
+            {'border-radius:0 0 8px 0;' if is_last else ''}
+            padding:6px 10px;display:grid;
+            grid-template-columns:0.8fr 0.9fr 0.7fr 0.9fr 0.6fr 0.7fr;
+            gap:6px;align-items:center;min-height:58px;">
+  <div style="font-size:12px;color:var(--color-text-primary);font-weight:500;">{so_num}</div>
+  <div style="font-size:12px;color:var(--color-text-primary);">{country}</div>
+  <div style="font-size:12px;color:var(--color-text-primary);">{ship}</div>
+  <div style="font-size:11px;color:var(--color-text-secondary);">{date}</div>
+  <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{pick_count}</div>
+  <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{int(pick_qty_val)}</div>
+</div>''', unsafe_allow_html=True)
 
                     if zero_pick_ids:
                         st.markdown("#### 🔴 Not Yet Picked")
@@ -3955,3 +3937,4 @@ CREATE UNIQUE INDEX idx_old_history_master_pallet ON old_history_master(pallet);
 
 
 footer_branding()
+
