@@ -1370,13 +1370,24 @@ if login_section():
                             'Completed':  ('var(--color-background-success)', 'var(--color-text-success)'),
                             'Cancelled':  ('var(--color-background-danger)',  'var(--color-text-danger)'),
                         }
-                        STATUS_DOT = {
-                            'Pending': '●', 'PL Pending': '●',
-                            'Processing': '●', 'Completed': '●', 'Cancelled': '●',
-                        }
 
-                        card_html = '<div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; margin-bottom:8px;">'
-                        for lid in id_list:
+                        # ── Vertical table-style layout ──────────────────────────────────────
+                        tbl_html = f'''
+<div style="width:100%;margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid var(--color-border-tertiary);">
+  <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 0.7fr 0.7fr 0.8fr;
+              background:{category_color}18;border-bottom:2px solid {category_color};
+              padding:7px 12px;font-size:11px;font-weight:600;color:var(--color-text-secondary);gap:8px;">
+    <div>Load ID</div>
+    <div>SO</div>
+    <div>Country</div>
+    <div>Ship</div>
+    <div>Date</div>
+    <div style="text-align:right;">Lines</div>
+    <div style="text-align:right;">Pick Qty</div>
+    <div style="text-align:center;">Status</div>
+  </div>'''
+
+                        for i, lid in enumerate(id_list):
                             load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
                             status       = str(load_row.get('Pick Status', 'Pending'))
                             so_num       = str(load_row.get('SO Number', '-'))
@@ -1389,57 +1400,38 @@ if login_section():
                             s_data       = summ_by_load.get(str(lid), {})
                             variance     = s_data.get('variance', 0)
                             requested    = s_data.get('requested', 0)
+                            picked_q     = s_data.get('picked', 0)
+                            fill_pct     = int((picked_q / requested * 100)) if requested > 0 else 0
+                            fill_pct     = min(fill_pct, 100)
 
                             st_bg, st_fg = STATUS_STYLES.get(status, ('var(--color-background-secondary)', 'var(--color-text-secondary)'))
-                            shortage_pill = (
-                                f'<span style="font-size:11px;background:var(--color-background-danger);'
-                                f'color:var(--color-text-danger);padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:500;">-{int(variance)}</span>'
-                            ) if variance > 0 else ''
+                            shortage_tag = f'<span style="font-size:10px;background:#fde8e8;color:#c0392b;padding:1px 5px;border-radius:4px;margin-left:5px;font-weight:600;">-{int(variance)}</span>' if variance > 0 else ''
+                            row_bg = 'var(--color-background-secondary)' if i % 2 == 1 else 'var(--color-background-primary)'
 
-                            fill_pct = int((s_data.get('picked', 0) / requested * 100)) if requested > 0 else 0
-                            fill_pct = min(fill_pct, 100)
-                            bar_color = category_color
+                            tbl_html += f'''
+  <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 0.7fr 0.7fr 0.8fr;
+              padding:8px 12px;gap:8px;border-bottom:1px solid var(--color-border-tertiary);
+              background:{row_bg};align-items:center;">
+    <div>
+      <div style="font-size:12px;font-weight:500;color:var(--color-text-primary);">{lid}{shortage_tag}</div>
+      <div style="height:3px;background:var(--color-border-tertiary);border-radius:2px;margin-top:4px;">
+        <div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div>
+      </div>
+      <div style="font-size:9px;color:var(--color-text-secondary);margin-top:1px;">{fill_pct}% picked</div>
+    </div>
+    <div style="font-size:12px;color:var(--color-text-primary);font-weight:500;">{so_num}</div>
+    <div style="font-size:12px;color:var(--color-text-primary);">{country}</div>
+    <div style="font-size:12px;color:var(--color-text-primary);">{ship}</div>
+    <div style="font-size:11px;color:var(--color-text-secondary);">{date}</div>
+    <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{pick_count}</div>
+    <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{int(pick_qty_val)}</div>
+    <div style="text-align:center;">
+      <span style="font-size:10px;padding:2px 7px;border-radius:4px;background:{st_bg};color:{st_fg};font-weight:500;white-space:nowrap;">{status}</span>
+    </div>
+  </div>'''
 
-                            card_html += f'''
-<div style="background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);
-     border-radius:var(--border-radius-lg);padding:12px 14px;border-top:3px solid {category_color};">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-    <div style="font-size:13px;font-weight:500;color:var(--color-text-primary);line-height:1.3;">
-      {lid}{shortage_pill}
-    </div>
-    <span style="font-size:11px;padding:2px 8px;border-radius:10px;background:{st_bg};color:{st_fg};font-weight:500;white-space:nowrap;margin-left:6px;">
-      {status}
-    </span>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;margin-bottom:10px;">
-    <div style="color:var(--color-text-secondary);">SO</div>
-    <div style="color:var(--color-text-primary);font-weight:500;text-align:right;">{so_num}</div>
-    <div style="color:var(--color-text-secondary);">Country</div>
-    <div style="color:var(--color-text-primary);text-align:right;">{country}</div>
-    <div style="color:var(--color-text-secondary);">Ship Mode</div>
-    <div style="color:var(--color-text-primary);text-align:right;">{ship}</div>
-    <div style="color:var(--color-text-secondary);">Date</div>
-    <div style="color:var(--color-text-primary);text-align:right;">{date}</div>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;">
-    <div style="background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:6px 10px;text-align:center;">
-      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:1px;">Lines</div>
-      <div style="font-size:16px;font-weight:500;color:var(--color-text-primary);">{pick_count}</div>
-    </div>
-    <div style="background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:6px 10px;text-align:center;">
-      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:1px;">Pick Qty</div>
-      <div style="font-size:16px;font-weight:500;color:var(--color-text-primary);">{int(pick_qty_val)}</div>
-    </div>
-  </div>
-  <div style="margin-bottom:2px;">
-    <div style="height:4px;background:var(--color-border-tertiary);border-radius:2px;">
-      <div style="height:4px;width:{fill_pct}%;background:{bar_color};border-radius:2px;"></div>
-    </div>
-    <div style="font-size:10px;color:var(--color-text-secondary);text-align:right;margin-top:2px;">{fill_pct}% picked</div>
-  </div>
-</div>'''
-                        card_html += '</div>'
-                        st.markdown(card_html, unsafe_allow_html=True)
+                        tbl_html += '</div>'
+                        st.markdown(tbl_html, unsafe_allow_html=True)
 
                         # ── Status update controls (unchanged logic) ──
                         for lid in id_list:
@@ -2880,6 +2872,59 @@ if login_section():
                             st.success(f"✅ Reconciled: Pick({int(total_pick_qty)}) + Alloc({int(total_alloc_qty)}) + ATS({int(total_ats_qty)}) + Dmg({int(total_dmg_qty)}) = {int(accounted)}")
                         else:
                             st.warning(f"⚠️ Unaccounted: {int(inv_total_qty-accounted)} | Accounted={int(accounted)} vs Inv={int(inv_total_qty)}")
+
+                        # ── Qty_Mismatch Fix: old_history exact match → update Actual Qty & ATS ────
+                        # For each mismatch pallet: check old_history (pallet + balance_qty exact match)
+                        # If match found → update fmt_df Actual Qty and ATS (nothing else changes)
+                        _qm_fixed_count = 0
+                        try:
+                            _oh_fix_df = DBManager.read_table("old_history")
+                            if not _oh_fix_df.empty:
+                                _ohf_c = {str(c).strip().lower(): str(c).strip() for c in _oh_fix_df.columns}
+                                _ohf_pal_col = _ohf_c.get('pallet', 'pallet')
+                                _ohf_bal_col = _ohf_c.get('balance_qty', 'balance_qty')
+                                # Build exact map: (pallet_lower, balance_qty_rounded) → balance_qty
+                                _oh_bal_map = {}  # (pallet, balance_qty) → balance_qty value
+                                if _ohf_pal_col in _oh_fix_df.columns and _ohf_bal_col in _oh_fix_df.columns:
+                                    _oh_fix_df[_ohf_bal_col] = pd.to_numeric(_oh_fix_df[_ohf_bal_col], errors='coerce').fillna(0)
+                                    for _, _ohfr in _oh_fix_df.iterrows():
+                                        _ohf_p = str(_ohfr.get(_ohf_pal_col, '')).strip().lower()
+                                        _ohf_b = float(_ohfr.get(_ohf_bal_col, 0) or 0)
+                                        if _ohf_p and _ohf_b > 0:
+                                            _oh_bal_map[(_ohf_p, round(_ohf_b, 6))] = _ohf_b
+
+                                if _oh_bal_map:
+                                    # Rebuild inventory actual qty map for mismatch check
+                                    _inv_pal_raw2 = inv_data[_inv_pal_col].astype(str).str.strip()
+                                    _inv_qty_raw2 = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                                    _inv_pal_qty2 = {}
+                                    for _p2, _q2 in zip(_inv_pal_raw2, _inv_qty_raw2):
+                                        _inv_pal_qty2[_p2] = _inv_pal_qty2.get(_p2, 0) + _q2
+
+                                    for _fmt_idx, _fmt_row in fmt_df.iterrows():
+                                        _fmt_p = str(_fmt_row.get('Pallet', '')).strip()
+                                        _fmt_aq = float(pd.to_numeric(_fmt_row.get('Actual Qty', 0), errors='coerce') or 0)
+                                        _inv_aq2 = _inv_pal_qty2.get(_fmt_p, None)
+                                        if _inv_aq2 is None:
+                                            continue
+                                        _diff2 = round(_inv_aq2 - _fmt_aq, 6)
+                                        if abs(_diff2) < 0.01:
+                                            continue  # no mismatch for this pallet
+                                        # Inventory Actual Qty = pallet value from inventory file
+                                        _inv_aq_val2 = _inv_pal_qty2.get(_fmt_p, 0)
+                                        # Check old_history: pallet + balance_qty exact match
+                                        _oh_key = (_fmt_p.lower(), round(_inv_aq_val2, 6))
+                                        if _oh_key in _oh_bal_map:
+                                            _matched_bal = _oh_bal_map[_oh_key]
+                                            # Update Actual Qty and ATS only
+                                            fmt_df.at[_fmt_idx, 'Actual Qty'] = _matched_bal
+                                            fmt_df.at[_fmt_idx, 'ATS'] = _matched_bal
+                                            _qm_fixed_count += 1
+                        except Exception as _qm_err:
+                            st.warning(f"⚠️ Qty_Mismatch fix error: {_qm_err}")
+
+                        if _qm_fixed_count > 0:
+                            st.info(f"🔧 Qty_Mismatch Fix: **{_qm_fixed_count}** rows — Actual Qty & ATS updated from old_history balance_qty match")
 
                         # ── Mismatch pallets report ────────────────────────────────────────
                         mismatch_pallets = []
