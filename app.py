@@ -1360,15 +1360,18 @@ if login_section():
                                 pick_qty_by_lid = _qty_grp.to_dict()
 
                     def render_load_list(id_list, category_color, category_label):
-                        st.markdown(f"""
-                        <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
-                             background:{category_color}15; border:1px solid {category_color}40;
-                             border-radius:8px 8px 0 0; padding:7px 12px;
-                             font-size:11px; font-weight:700; color:#444; margin-top:4px;">
-                            <div>Load ID</div><div>SO</div><div>Country</div><div>Ship</div>
-                            <div>Date</div><div>Lines</div><div>Qty</div><div>Status</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # Header
+                        c_h1, c_h2, c_h3, c_h4, c_h5, c_h6, c_h7, c_h8, c_h9 = st.columns([2.2, 0.9, 1.1, 0.8, 1.0, 0.6, 0.6, 1.4, 0.5])
+                        hdr_style = "font-size:11px; font-weight:700; color:#666; padding-bottom:2px; border-bottom:2px solid " + category_color + ";"
+                        c_h1.markdown(f'<div style="{hdr_style}">Load ID</div>', unsafe_allow_html=True)
+                        c_h2.markdown(f'<div style="{hdr_style}">SO</div>', unsafe_allow_html=True)
+                        c_h3.markdown(f'<div style="{hdr_style}">Country</div>', unsafe_allow_html=True)
+                        c_h4.markdown(f'<div style="{hdr_style}">Ship</div>', unsafe_allow_html=True)
+                        c_h5.markdown(f'<div style="{hdr_style}">Date</div>', unsafe_allow_html=True)
+                        c_h6.markdown(f'<div style="{hdr_style}">Lines</div>', unsafe_allow_html=True)
+                        c_h7.markdown(f'<div style="{hdr_style}">Qty</div>', unsafe_allow_html=True)
+                        c_h8.markdown(f'<div style="{hdr_style}">Update Status</div>', unsafe_allow_html=True)
+                        c_h9.markdown(f'<div style="{hdr_style}"></div>', unsafe_allow_html=True)
 
                         for lid in id_list:
                             load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
@@ -1383,41 +1386,79 @@ if login_section():
                             pick_qty_val = pick_qty_by_lid.get(lid_key, 0)
                             s            = summ_by_load.get(str(lid), {})
                             variance     = s.get('variance', 0)
+                            requested    = s.get('requested', 0)
+                            picked_q     = s.get('picked', 0)
+                            fill_pct     = min(int((picked_q / requested * 100)) if requested > 0 else 0, 100)
 
-                            status_bg  = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f0f0f0')
-                            status_col = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
-                            status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
-                            shortage_tag = f'<span style="font-size:9px; background:#ffe0e0; color:#c0392b; padding:1px 5px; border-radius:4px; margin-left:4px;">⚠️ -{int(variance)}</span>' if variance > 0 else ''
+                            status_bg  = {
+                                'Pending':    '#fff3cd', 'PL Pending': '#fff0d6',
+                                'Processing': '#cce5ff', 'Completed':  '#d4edda',
+                                'Cancelled':  '#f8d7da',
+                            }.get(status, '#f0f0f0')
+                            status_col = {
+                                'Pending':    '#856404', 'PL Pending': '#7a4f00',
+                                'Processing': '#004085', 'Completed':  '#155724',
+                                'Cancelled':  '#721c24',
+                            }.get(status, '#333')
+                            shortage_tag = (
+                                f'<span style="font-size:9px;background:#ffe0e0;color:#c0392b;'
+                                f'padding:1px 5px;border-radius:4px;margin-left:4px;">⚠️ -{int(variance)}</span>'
+                            ) if variance > 0 else ''
 
-                            st.markdown(f"""
-                            <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
-                                 border-left:3px solid {category_color}; border-bottom:1px solid #eee;
-                                 padding:7px 12px; background:#fff; font-size:11px; color:#333; align-items:center;">
-                                <div style="font-weight:600; color:#1a1a1a;">{lid}{shortage_tag}</div>
-                                <div>{so_num}</div><div>{country}</div><div>{ship}</div><div>{date}</div>
-                                <div><b>{pick_count}</b></div><div><b>{int(pick_qty_val)}</b></div>
-                                <div><span style="background:{status_bg}; color:{status_col}; font-size:10px; font-weight:600; padding:2px 8px; border-radius:10px;">{status_dot} {status}</span></div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            # One row: 9 Streamlit columns
+                            c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([2.2, 0.9, 1.1, 0.8, 1.0, 0.6, 0.6, 1.4, 0.5])
 
-                            c1, c2 = st.columns([3, 1])
-                            safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                            new_st = c1.selectbox("", STATUS_OPTIONS, index=safe_idx, key=f"st_{lid}", label_visibility="collapsed")
-                            if c2.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
-                                try:
-                                    ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
-                                    if ok and new_st == "Cancelled":
-                                        mpd = DBManager.read_table("master_pick_data")
-                                        lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
-                                        if not mpd.empty and lid_col:
-                                            filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
-                                            DBManager._overwrite_table("master_pick_data", filtered_mpd)
-                                        st.success(f"✅ {lid} → Cancelled | Master_Pick_Data records deleted.")
-                                    elif ok:
-                                        st.success(f"✅ {lid} → {new_st}")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(f"Update error: {ex}")
+                            with c1:
+                                st.markdown(
+                                    f'<div style="border-left:3px solid {category_color};padding-left:6px;">'
+                                    f'<div style="font-size:12px;font-weight:700;color:#1a1a1a;">{lid}{shortage_tag}</div>'
+                                    f'<div style="height:3px;background:#e0e0e0;border-radius:2px;margin-top:3px;">'
+                                    f'<div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div></div>'
+                                    f'<div style="font-size:9px;color:#888;">{fill_pct}% picked</div></div>',
+                                    unsafe_allow_html=True
+                                )
+                            with c2:
+                                st.markdown(f'<div style="font-size:11px;padding-top:4px;">{so_num}</div>', unsafe_allow_html=True)
+                            with c3:
+                                st.markdown(f'<div style="font-size:11px;padding-top:4px;">{country}</div>', unsafe_allow_html=True)
+                            with c4:
+                                st.markdown(f'<div style="font-size:11px;padding-top:4px;">{ship}</div>', unsafe_allow_html=True)
+                            with c5:
+                                st.markdown(f'<div style="font-size:11px;color:#666;padding-top:4px;">{date}</div>', unsafe_allow_html=True)
+                            with c6:
+                                st.markdown(f'<div style="font-size:12px;font-weight:600;padding-top:4px;">{pick_count}</div>', unsafe_allow_html=True)
+                            with c7:
+                                st.markdown(f'<div style="font-size:12px;font-weight:600;padding-top:4px;">{int(pick_qty_val)}</div>', unsafe_allow_html=True)
+                            with c8:
+                                # Current status badge + selectbox inline
+                                st.markdown(
+                                    f'<div style="font-size:9px;margin-bottom:2px;">'
+                                    f'<span style="background:{status_bg};color:{status_col};'
+                                    f'padding:1px 7px;border-radius:8px;font-weight:600;">{status}</span></div>',
+                                    unsafe_allow_html=True
+                                )
+                                safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
+                                new_st = st.selectbox("", STATUS_OPTIONS, index=safe_idx,
+                                                      key=f"st_{lid}", label_visibility="collapsed")
+                            with c9:
+                                st.markdown("<div style='margin-top:18px;'></div>", unsafe_allow_html=True)
+                                if st.button("💾", key=f"upd_{lid}", use_container_width=True, help="Save status"):
+                                    try:
+                                        ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
+                                        if ok and new_st == "Cancelled":
+                                            mpd = DBManager.read_table("master_pick_data")
+                                            lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
+                                            if not mpd.empty and lid_col:
+                                                filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
+                                                DBManager._overwrite_table("master_pick_data", filtered_mpd)
+                                            st.success(f"✅ {lid} → Cancelled | Master_Pick_Data records deleted.")
+                                        elif ok:
+                                            st.success(f"✅ {lid} → {new_st}")
+                                        st.rerun()
+                                    except Exception as ex:
+                                        st.error(f"Update error: {ex}")
+
+                            st.markdown('<hr style="margin:2px 0 4px 0;border:none;border-top:1px solid #f0f0f0;">', unsafe_allow_html=True)
 
                     if zero_pick_ids:
                         st.markdown("#### 🔴 Not Yet Picked")
@@ -2821,8 +2862,15 @@ if login_section():
                                                 break
 
                                         if _matched_bal is not None:
+                                            _fmt_pick  = float(pd.to_numeric(_fmt_row.get('Pick Quantity', 0), errors='coerce') or 0)
+                                            _fmt_alloc = float(pd.to_numeric(_fmt_row.get('Allocated',     0), errors='coerce') or 0)
+                                            _fmt_dmg   = sum(
+                                                float(pd.to_numeric(_fmt_row.get(_rmk, 0), errors='coerce') or 0)
+                                                for _rmk in damage_remarks
+                                            )
+                                            _new_ats = max(0.0, round(_matched_bal - _fmt_pick - _fmt_alloc - _fmt_dmg, 3))
                                             fmt_df.at[_fmt_idx, 'Actual Qty'] = _matched_bal
-                                            fmt_df.at[_fmt_idx, 'ATS']        = _matched_bal
+                                            fmt_df.at[_fmt_idx, 'ATS']        = _new_ats
                                             _qm_fixed_count += 1
 
                         except Exception as _qm_err:
