@@ -2793,14 +2793,12 @@ if login_section():
                             st.warning(f"⚠️ Unaccounted: {int(inv_total_qty-accounted)} | Accounted={int(accounted)} vs Inv={int(inv_total_qty)}")
 
                         # ── Qty_Mismatch Fix: logic2_matched_partial_history (pallet-filtered) ──
-                        # Only runs when Inventory Actual Qty ≠ Report Actual Qty for a pallet.
-                        # Steps:
-                        #   1. Build inv_pal_qty map from uploaded inventory
-                        #   2. For each fmt_df row with mismatch (inv_aq ≠ report_aq):
-                        #      a. Take the Pallet value
-                        #      b. Filter logic2_matched_partial_history WHERE pallet == that pallet
-                        #      c. If any balance_qty in those rows == Inventory Actual Qty (tolerance 0.01)
-                        #      d. → update fmt_df Actual Qty & ATS to that matched balance_qty
+                        # For each pallet in the inventory file where Inv Actual Qty ≠ fmt_df Actual Qty:
+                        #   1. Filter logic2_matched_partial_history WHERE pallet == mismatch pallet
+                        #   2. Check if any balance_qty in those rows == Inventory Actual Qty (±0.01)
+                        #   3. If match found:
+                        #      a. If row exists in fmt_df → update Actual Qty & recalculate ATS
+                        #      b. If row missing from fmt_df → add new row from inventory data
                         _qm_fixed_count = 0
                         try:
                             _l2mph_fix_df = None
@@ -2830,29 +2828,42 @@ if login_section():
                                             _l2_pal_bal_map[_lp] = {}
                                         _l2_pal_bal_map[_lp][_lbrnd] = _lb
 
-                                    # Build inventory pallet → actual qty map
-                                    _qm_inv_pal_raw = inv_data[_inv_pal_col].astype(str).str.strip()
-                                    _qm_inv_qty_raw = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                                    # Build inventory pallet → actual qty map  AND  pallet → inv_row map
                                     _qm_inv_pal_qty = {}
-                                    for _qp, _qq in zip(_qm_inv_pal_raw, _qm_inv_qty_raw):
-                                        _qm_inv_pal_qty[_qp] = _qm_inv_pal_qty.get(_qp, 0) + _qq
+                                    _qm_inv_pal_row = {}   # last inventory row for each pallet (for new row creation)
+                                    for _, _ir in inv_data.iterrows():
+                                        _qp = str(_ir.get(_inv_pal_col, '')).strip()
+                                        _qq = float(pd.to_numeric(_ir.get(_inv_aq_col, 0), errors='coerce') or 0)
+                                        if _qp and _qp not in ('nan', 'none', ''):
+                                            _qm_inv_pal_qty[_qp] = _qm_inv_pal_qty.get(_qp, 0) + _qq
+                                            _qm_inv_pal_row[_qp] = _ir  # keep last row as representative
 
-                                    # Apply fix only to mismatched rows
-                                    for _fmt_idx, _fmt_row in fmt_df.iterrows():
-                                        _fmt_p  = str(_fmt_row.get('Pallet', '')).strip()
-                                        _fmt_aq = float(pd.to_numeric(_fmt_row.get('Actual Qty', 0), errors='coerce') or 0)
-                                        _inv_aq = _qm_inv_pal_qty.get(_fmt_p, None)
-                                        if _inv_aq is None:
-                                            continue
-                                        if abs(_inv_aq - _fmt_aq) < 0.01:
+                                    # Build fmt_df pallet → index map (first occurrence)
+                                    _fmt_pal_idx = {}
+                                    for _fi, _fr in fmt_df.iterrows():
+                                        _fp = str(_fr.get('Pallet', '')).strip()
+                                        if _fp and _fp not in ('nan', 'none', '') and _fp not in _fmt_pal_idx:
+                                            _fmt_pal_idx[_fp] = _fi
+
+                                    # Loop inventory pallets — find mismatches
+                                    _new_rows = []
+                                    for _inv_p, _inv_aq in _qm_inv_pal_qty.items():
+                                        # What does fmt_df report for this pallet?
+                                        _fmt_idx = _fmt_pal_idx.get(_inv_p)
+                                        if _fmt_idx is not None:
+                                            _rpt_aq = float(pd.to_numeric(fmt_df.at[_fmt_idx, 'Actual Qty'], errors='coerce') or 0)
+                                        else:
+                                            _rpt_aq = 0.0  # pallet missing from report
+
+                                        if abs(_inv_aq - _rpt_aq) < 0.01:
                                             continue  # no mismatch — skip
 
-                                        # Mismatch: look up this pallet in logic2_matched_partial_history
-                                        _pkey_low  = _fmt_p.lower()
-                                        _base_low  = _base_pallet(_fmt_p).lower()
-                                        _bal_map   = _l2_pal_bal_map.get(_pkey_low) or _l2_pal_bal_map.get(_base_low)
+                                        # Mismatch: look up in logic2_matched_partial_history
+                                        _pkey_low = _inv_p.lower()
+                                        _base_low = _base_pallet(_inv_p).lower()
+                                        _bal_map  = _l2_pal_bal_map.get(_pkey_low) or _l2_pal_bal_map.get(_base_low)
                                         if not _bal_map:
-                                            continue  # pallet not found in logic2_matched_partial_history
+                                            continue  # pallet not in logic2_matched_partial_history
 
                                         _inv_rnd     = round(_inv_aq, 6)
                                         _matched_bal = None
@@ -2861,7 +2872,12 @@ if login_section():
                                                 _matched_bal = _bval
                                                 break
 
-                                        if _matched_bal is not None:
+                                        if _matched_bal is None:
+                                            continue
+
+                                        if _fmt_idx is not None:
+                                            # Row exists — update Actual Qty & recalculate ATS
+                                            _fmt_row   = fmt_df.loc[_fmt_idx]
                                             _fmt_pick  = float(pd.to_numeric(_fmt_row.get('Pick Quantity', 0), errors='coerce') or 0)
                                             _fmt_alloc = float(pd.to_numeric(_fmt_row.get('Allocated',     0), errors='coerce') or 0)
                                             _fmt_dmg   = sum(
@@ -2872,6 +2888,26 @@ if login_section():
                                             fmt_df.at[_fmt_idx, 'Actual Qty'] = _matched_bal
                                             fmt_df.at[_fmt_idx, 'ATS']        = _new_ats
                                             _qm_fixed_count += 1
+                                        else:
+                                            # Row missing — build new row from inventory data
+                                            _inv_row_src = _qm_inv_pal_row.get(_inv_p)
+                                            if _inv_row_src is not None:
+                                                _new_r = build_row(_inv_row_src, override_actual_qty=_matched_bal)
+                                                for _fc in final_cols:
+                                                    if _fc not in _new_r:
+                                                        _new_r[_fc] = ''
+                                                # Set pick/alloc/dmg = 0, ATS = matched_bal
+                                                _new_r['Pick Quantity'] = 0
+                                                _new_r['Allocated']     = 0
+                                                _new_r['ATS']           = _matched_bal
+                                                for _rmk in damage_remarks:
+                                                    _new_r[_rmk] = 0
+                                                _new_rows.append(_new_r)
+                                                _qm_fixed_count += 1
+
+                                    if _new_rows:
+                                        _new_df = pd.DataFrame(_new_rows, columns=final_cols)
+                                        fmt_df  = pd.concat([fmt_df, _new_df], ignore_index=True)
 
                         except Exception as _qm_err:
                             st.warning(f"⚠️ Qty_Mismatch fix error: {_qm_err}")
