@@ -2269,15 +2269,21 @@ if login_section():
                                     if _gp_val and _gp_val not in ('nan','None',''):
                                         _l2b_key = (_gp_val.lower(), round(_pq_val, 6))
                                         if _l2b_key not in l2b_exact_map:
+                                            _l2b_aq  = _l2b_c.get('actual_qty',   'actual_qty')
+                                            _l2b_bq  = _l2b_c.get('balance_qty',  'balance_qty')
+                                            _l2b_aq_val = pd.to_numeric(_l2b_row.get(_l2b_aq, 0), errors='coerce')
+                                            _l2b_bq_val = pd.to_numeric(_l2b_row.get(_l2b_bq, 0), errors='coerce')
                                             l2b_exact_map[_l2b_key] = {
-                                                'gen_pallet_id': _gp_val,
-                                                'partial_qty':   _pq_val,
-                                                'orig_pallet':   str(_l2b_row.get(_l2b_pal, '')).strip(),
-                                                'load_id':       str(_l2b_row.get(_l2b_lid, '')).strip(),
-                                                'country':       str(_l2b_row.get(_l2b_cn,  '')).strip(),
-                                                'vendor_name':   str(_l2b_row.get(_l2b_vn,  '')).strip(),
-                                                'invoice_number':str(_l2b_row.get(_l2b_inv, '')).strip(),
-                                                'grn_number':    str(_l2b_row.get(_l2b_grn, '')).strip(),
+                                                'gen_pallet_id':  _gp_val,
+                                                'partial_qty':    _pq_val,
+                                                'actual_qty':     float(_l2b_aq_val) if pd.notna(_l2b_aq_val) else 0.0,
+                                                'balance_qty':    float(_l2b_bq_val) if pd.notna(_l2b_bq_val) else 0.0,
+                                                'orig_pallet':    str(_l2b_row.get(_l2b_pal, '')).strip(),
+                                                'load_id':        str(_l2b_row.get(_l2b_lid, '')).strip(),
+                                                'country':        str(_l2b_row.get(_l2b_cn,  '')).strip(),
+                                                'vendor_name':    str(_l2b_row.get(_l2b_vn,  '')).strip(),
+                                                'invoice_number': str(_l2b_row.get(_l2b_inv, '')).strip(),
+                                                'grn_number':     str(_l2b_row.get(_l2b_grn, '')).strip(),
                                             }
                         except Exception as _l2b_build_err:
                             st.warning(f"⚠️ Logic 2B map build error: {_l2b_build_err}")
@@ -2322,6 +2328,44 @@ if login_section():
                                 row = fill_row_from_oh_master(row, real_orig, is_pick_or_alloc=True)
                                 fmt_rows.append(row)
                                 l2b_matched_count += 1
+
+                                # ── L2B Balance row: if balance_qty > 0 generate ATS row for orig_pallet ──
+                                # Find orig_pallet in inv_unpicked (Pick Id = 0) to get inventory row data
+                                _l2b_bal_qty = _l2b_e.get('balance_qty', 0) or 0
+                                if _l2b_bal_qty > 0.01:
+                                    # Look for orig_pallet row in inv_unpicked
+                                    _bal_inv_rows = inv_unpicked[
+                                        inv_unpicked[_inv_pal_col].astype(str).str.strip() == real_orig
+                                    ]
+                                    if not _bal_inv_rows.empty:
+                                        _bal_inv_row = _bal_inv_rows.iloc[0]
+                                        _bal_act_qty = float(pd.to_numeric(_bal_inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
+                                        # Use inventory Actual Qty if > 0, else fall back to balance_qty
+                                        _bal_use_qty = _bal_act_qty if _bal_act_qty > 0 else _l2b_bal_qty
+                                        if _bal_use_qty > 0.01 and real_orig not in logic3_matched_pallets \
+                                                and real_orig not in logic4_matched_pallets \
+                                                and real_orig not in l1_l2_matched_pallets:
+                                            bal_vn, bal_vc, bal_inv_n, bal_grn_n = _get_vendor_info(_bal_inv_row, real_orig)
+                                            if not bal_vn: bal_vn = vn
+                                            if not bal_vc: bal_vc = vc
+                                            if not bal_inv_n: bal_inv_n = inv_n
+                                            if not bal_grn_n: bal_grn_n = grn_n
+                                            bal_row = build_row(_bal_inv_row, override_pallet=real_orig, override_actual_qty=round(_bal_use_qty, 3))
+                                            bal_row['Pick Quantity']       = ''
+                                            bal_row['Allocated']           = ''
+                                            bal_row['Destination Country'] = ''
+                                            bal_row['Order NO']            = ''
+                                            for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((real_orig, rmk), '')
+                                            bal_row['ATS']            = round(_bal_use_qty, 3)
+                                            bal_row['Vendor Name']    = bal_vn
+                                            bal_row['COO']            = bal_vc
+                                            bal_row['Invoice Number'] = bal_inv_n
+                                            bal_row['Grn Number']     = bal_grn_n
+                                            bal_row = fill_row_from_partial(bal_row, pallet_key=real_orig)
+                                            bal_row = fill_row_from_oh_master(bal_row, real_orig)
+                                            fmt_rows.append(bal_row)
+                                            # Mark orig_pallet as handled so Logic 5 doesn't duplicate
+                                            logic4_matched_pallets.add(real_orig)
                             else:
                                 # Still unmatched after L1 + L2 + L2B — keep in unmatched report
                                 l2b_still_unmatched.append({
