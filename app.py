@@ -2672,7 +2672,9 @@ if login_section():
                             # RULE: Only fill if Pick Quantity or Allocated is filled
                             _ord_pick  = float(pd.to_numeric(fmt_df.at[idx, 'Pick Quantity'] if 'Pick Quantity' in fmt_df.columns else 0, errors='coerce') or 0)
                             _ord_alloc = float(pd.to_numeric(fmt_df.at[idx, 'Allocated']     if 'Allocated'     in fmt_df.columns else 0, errors='coerce') or 0)
-                            ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
+                            _ord_ats   = float(pd.to_numeric(fmt_df.at[idx, 'ATS']           if 'ATS'           in fmt_df.columns else 0, errors='coerce') or 0)
+                            ord_n = str(fmt_df.at[idx, 'Order NO']).strip() if 'Order NO' in fmt_df.columns else ''
+                            # Only fill Order NO if row has Pick or Allocated — never for ATS-only rows
                             if (_ord_pick > 0 or _ord_alloc > 0) and (not ord_n or ord_n in ('nan','None','')):
                                 # old_history_master (1st pass)
                                 fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
@@ -2737,30 +2739,31 @@ if login_section():
 
                         # ── Destination Country blank fill (any DB pallet/gen_pallet_id match) ──
                         # RULE: Only update if Pick Quantity OR Allocated has a value (quantity > 0)
+                        # Destination Country and Order NO must NEVER be filled for ATS/Damage rows
                         _dc_fixed = 0
+                        _pick_col_dc  = 'Pick Quantity' if 'Pick Quantity' in fmt_df.columns else None
+                        _alloc_col_dc = 'Allocated'     if 'Allocated'     in fmt_df.columns else None
                         for _dc_idx, _dc_row in fmt_df.iterrows():
-                            _dc_val = str(_dc_row.get('Destination Country', '')).strip()
+                            _dc_val = str(fmt_df.at[_dc_idx, 'Destination Country']).strip()
                             if _dc_val and _dc_val not in ('nan', 'None', ''):
                                 continue  # already filled
-                            # ── Only fill if Pick Quantity or Allocated is filled ──
-                            _dc_pick  = float(pd.to_numeric(_dc_row.get('Pick Quantity', 0), errors='coerce') or 0)
-                            _dc_alloc = float(pd.to_numeric(_dc_row.get('Allocated',     0), errors='coerce') or 0)
+                            # ── Gate: only fill if Pick Quantity OR Allocated > 0 ──
+                            _dc_pick  = float(pd.to_numeric(fmt_df.at[_dc_idx, _pick_col_dc]  if _pick_col_dc  else 0, errors='coerce') or 0)
+                            _dc_alloc = float(pd.to_numeric(fmt_df.at[_dc_idx, _alloc_col_dc] if _alloc_col_dc else 0, errors='coerce') or 0)
                             if _dc_pick <= 0 and _dc_alloc <= 0:
-                                continue  # ATS / damage row — do NOT fill Destination Country
-                            _dc_pkey = str(_dc_row.get('Pallet', '')).strip()
+                                continue  # ATS / damage / balance row — do NOT fill Destination Country
+                            _dc_pkey = str(fmt_df.at[_dc_idx, 'Pallet']).strip()
                             _dc_base = _base_pallet(_dc_pkey)
                             fb_dc = country_lookup.get(_dc_pkey.lower(), '') or \
                                     country_lookup.get(_dc_base.lower(), '')
                             if not fb_dc:
-                                # try gen_pallet_ids in partial entries for this pallet
                                 _dc_parts = partial_map.get(_dc_base, []) or partial_map.get(_dc_pkey, [])
                                 for _dpe in _dc_parts:
                                     fb_dc = country_lookup.get(_dpe.get('gen_pallet','').lower(), '') or \
                                             _dpe.get('country', '')
                                     if fb_dc: break
                             if not fb_dc:
-                                # fallback via Order NO → load_history country
-                                _dc_ord = str(_dc_row.get('Order NO', '')).strip()
+                                _dc_ord = str(fmt_df.at[_dc_idx, 'Order NO']).strip()
                                 if _dc_ord and _dc_ord not in ('nan', 'None', ''):
                                     fb_dc = load_id_country_map.get(_dc_ord, '')
                             if fb_dc and fb_dc not in ('nan', 'None', ''):
@@ -2768,6 +2771,17 @@ if login_section():
                                 _dc_fixed += 1
                         if _dc_fixed > 0:
                             st.info(f"🌍 Destination Country: **{_dc_fixed}** blank rows filled from DB lookup")
+
+                        # ── FINAL SAFETY: Force-blank Destination Country + Order NO for ATS/Damage rows ──
+                        # Any row where Pick Quantity=0 AND Allocated=0 must have DC and Order NO blank
+                        if 'Pick Quantity' in fmt_df.columns and 'Allocated' in fmt_df.columns:
+                            _pick_s  = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0)
+                            _alloc_s = pd.to_numeric(fmt_df['Allocated'],     errors='coerce').fillna(0)
+                            _ats_mask = (_pick_s <= 0) & (_alloc_s <= 0)
+                            if 'Destination Country' in fmt_df.columns:
+                                fmt_df.loc[_ats_mask, 'Destination Country'] = ''
+                            if 'Order NO' in fmt_df.columns:
+                                fmt_df.loc[_ats_mask, 'Order NO'] = ''
 
                         # ── Auto-fix ATS: Actual Qty = Pick + Allocated + Damage + ATS ──────
                         # NOTE: Only apply to rows where Pick Quantity AND Allocated are both blank/zero
