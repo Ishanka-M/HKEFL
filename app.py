@@ -1360,64 +1360,110 @@ if login_section():
                                 pick_qty_by_lid = _qty_grp.to_dict()
 
                     def render_load_list(id_list, category_color, category_label):
-                        st.markdown(f"""
-                        <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
-                             background:{category_color}15; border:1px solid {category_color}40;
-                             border-radius:8px 8px 0 0; padding:7px 12px;
-                             font-size:11px; font-weight:700; color:#444; margin-top:4px;">
-                            <div>Load ID</div><div>SO</div><div>Country</div><div>Ship</div>
-                            <div>Date</div><div>Lines</div><div>Qty</div><div>Status</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        if not id_list:
+                            return
 
+                        STATUS_STYLES = {
+                            'Pending':    ('var(--color-background-warning)', 'var(--color-text-warning)'),
+                            'PL Pending': ('#fff0d6',                         '#7a4f00'),
+                            'Processing': ('var(--color-background-info)',    'var(--color-text-info)'),
+                            'Completed':  ('var(--color-background-success)', 'var(--color-text-success)'),
+                            'Cancelled':  ('var(--color-background-danger)',  'var(--color-text-danger)'),
+                        }
+                        STATUS_DOT = {
+                            'Pending': '●', 'PL Pending': '●',
+                            'Processing': '●', 'Completed': '●', 'Cancelled': '●',
+                        }
+
+                        card_html = '<div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; margin-bottom:8px;">'
                         for lid in id_list:
-                            load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
-                            status   = str(load_row.get('Pick Status', 'Pending'))
-                            so_num   = str(load_row.get('SO Number', '-'))
-                            country  = str(load_row.get('Country Name', '-'))
-                            ship     = str(load_row.get('SHIP MODE', '-'))
-                            date     = str(load_row.get('Date', '-'))[:10]
-
+                            load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
+                            status       = str(load_row.get('Pick Status', 'Pending'))
+                            so_num       = str(load_row.get('SO Number', '-'))
+                            country      = str(load_row.get('Country Name', '-'))
+                            ship         = str(load_row.get('SHIP MODE', '-'))
+                            date         = str(load_row.get('Date', '-'))[:10]
                             lid_key      = str(lid).strip()
                             pick_count   = pick_counts_by_lid.get(lid_key, 0)
                             pick_qty_val = pick_qty_by_lid.get(lid_key, 0)
-                            s            = summ_by_load.get(str(lid), {})
-                            variance     = s.get('variance', 0)
+                            s_data       = summ_by_load.get(str(lid), {})
+                            variance     = s_data.get('variance', 0)
+                            requested    = s_data.get('requested', 0)
 
-                            status_bg  = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f0f0f0')
-                            status_col = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
-                            status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
-                            shortage_tag = f'<span style="font-size:9px; background:#ffe0e0; color:#c0392b; padding:1px 5px; border-radius:4px; margin-left:4px;">⚠️ -{int(variance)}</span>' if variance > 0 else ''
+                            st_bg, st_fg = STATUS_STYLES.get(status, ('var(--color-background-secondary)', 'var(--color-text-secondary)'))
+                            shortage_pill = (
+                                f'<span style="font-size:11px;background:var(--color-background-danger);'
+                                f'color:var(--color-text-danger);padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:500;">-{int(variance)}</span>'
+                            ) if variance > 0 else ''
 
-                            st.markdown(f"""
-                            <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
-                                 border-left:3px solid {category_color}; border-bottom:1px solid #eee;
-                                 padding:7px 12px; background:#fff; font-size:11px; color:#333; align-items:center;">
-                                <div style="font-weight:600; color:#1a1a1a;">{lid}{shortage_tag}</div>
-                                <div>{so_num}</div><div>{country}</div><div>{ship}</div><div>{date}</div>
-                                <div><b>{pick_count}</b></div><div><b>{int(pick_qty_val)}</b></div>
-                                <div><span style="background:{status_bg}; color:{status_col}; font-size:10px; font-weight:600; padding:2px 8px; border-radius:10px;">{status_dot} {status}</span></div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            fill_pct = int((s_data.get('picked', 0) / requested * 100)) if requested > 0 else 0
+                            fill_pct = min(fill_pct, 100)
+                            bar_color = category_color
 
-                            c1, c2 = st.columns([3, 1])
-                            safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                            new_st = c1.selectbox("", STATUS_OPTIONS, index=safe_idx, key=f"st_{lid}", label_visibility="collapsed")
-                            if c2.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
-                                try:
-                                    ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
-                                    if ok and new_st == "Cancelled":
-                                        mpd = DBManager.read_table("master_pick_data")
-                                        lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
-                                        if not mpd.empty and lid_col:
-                                            filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
-                                            DBManager._overwrite_table("master_pick_data", filtered_mpd)
-                                        st.success(f"✅ {lid} → Cancelled | Master_Pick_Data records deleted.")
-                                    elif ok:
-                                        st.success(f"✅ {lid} → {new_st}")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(f"Update error: {ex}")
+                            card_html += f'''
+<div style="background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);
+     border-radius:var(--border-radius-lg);padding:12px 14px;border-top:3px solid {category_color};">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+    <div style="font-size:13px;font-weight:500;color:var(--color-text-primary);line-height:1.3;">
+      {lid}{shortage_pill}
+    </div>
+    <span style="font-size:11px;padding:2px 8px;border-radius:10px;background:{st_bg};color:{st_fg};font-weight:500;white-space:nowrap;margin-left:6px;">
+      {status}
+    </span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;margin-bottom:10px;">
+    <div style="color:var(--color-text-secondary);">SO</div>
+    <div style="color:var(--color-text-primary);font-weight:500;text-align:right;">{so_num}</div>
+    <div style="color:var(--color-text-secondary);">Country</div>
+    <div style="color:var(--color-text-primary);text-align:right;">{country}</div>
+    <div style="color:var(--color-text-secondary);">Ship Mode</div>
+    <div style="color:var(--color-text-primary);text-align:right;">{ship}</div>
+    <div style="color:var(--color-text-secondary);">Date</div>
+    <div style="color:var(--color-text-primary);text-align:right;">{date}</div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;">
+    <div style="background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:6px 10px;text-align:center;">
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:1px;">Lines</div>
+      <div style="font-size:16px;font-weight:500;color:var(--color-text-primary);">{pick_count}</div>
+    </div>
+    <div style="background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:6px 10px;text-align:center;">
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:1px;">Pick Qty</div>
+      <div style="font-size:16px;font-weight:500;color:var(--color-text-primary);">{int(pick_qty_val)}</div>
+    </div>
+  </div>
+  <div style="margin-bottom:2px;">
+    <div style="height:4px;background:var(--color-border-tertiary);border-radius:2px;">
+      <div style="height:4px;width:{fill_pct}%;background:{bar_color};border-radius:2px;"></div>
+    </div>
+    <div style="font-size:10px;color:var(--color-text-secondary);text-align:right;margin-top:2px;">{fill_pct}% picked</div>
+  </div>
+</div>'''
+                        card_html += '</div>'
+                        st.markdown(card_html, unsafe_allow_html=True)
+
+                        # ── Status update controls (unchanged logic) ──
+                        for lid in id_list:
+                            load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
+                            status   = str(load_row.get('Pick Status', 'Pending'))
+                            with st.expander(f"✏️ Update status — {lid}", expanded=False):
+                                c1, c2 = st.columns([3, 1])
+                                safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
+                                new_st = c1.selectbox("", STATUS_OPTIONS, index=safe_idx, key=f"st_{lid}", label_visibility="collapsed")
+                                if c2.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
+                                    try:
+                                        ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
+                                        if ok and new_st == "Cancelled":
+                                            mpd = DBManager.read_table("master_pick_data")
+                                            lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
+                                            if not mpd.empty and lid_col:
+                                                filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
+                                                DBManager._overwrite_table("master_pick_data", filtered_mpd)
+                                            st.success(f"✅ {lid} → Cancelled | Master_Pick_Data records deleted.")
+                                        elif ok:
+                                            st.success(f"✅ {lid} → {new_st}")
+                                        st.rerun()
+                                    except Exception as ex:
+                                        st.error(f"Update error: {ex}")
 
                     if zero_pick_ids:
                         st.markdown("#### 🔴 Not Yet Picked")
@@ -2370,6 +2416,9 @@ if login_section():
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = float(pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
+                            # ── Skip if this pallet already matched by L1/L2/L2B (Pick Id filled rows) ──
+                            if orig_pallet in l1_l2_matched_pallets or orig_pallet in l1_l2_matched_gen_pallets:
+                                continue
                             _l3key = (orig_pallet, round(inv_actual_qty, 6))
                             if _l3key not in mpd_exact_map:
                                 continue
@@ -2417,6 +2466,9 @@ if login_section():
                             is_damaged     = orig_pallet in damage_pallets
 
                             if orig_pallet in logic3_matched_pallets:
+                                continue
+                            # ── Skip if this pallet already matched by L1/L2/L2B ──
+                            if orig_pallet in l1_l2_matched_pallets or orig_pallet in l1_l2_matched_gen_pallets:
                                 continue
 
                             partials_all = partial_map.get(orig_pallet, [])
@@ -2484,6 +2536,9 @@ if login_section():
                             is_damaged     = orig_pallet in damage_pallets
 
                             if orig_pallet in logic3_matched_pallets or orig_pallet in logic4_matched_pallets:
+                                continue
+                            # ── Skip if this pallet already matched by L1/L2/L2B (Pick Id filled rows) ──
+                            if orig_pallet in l1_l2_matched_pallets or orig_pallet in l1_l2_matched_gen_pallets:
                                 continue
 
                             vn, vc, inv_n, grn_n = _get_vendor_info(inv_row, orig_pallet)
@@ -2703,6 +2758,8 @@ if login_section():
                             st.info(f"🌍 Destination Country: **{_dc_fixed}** blank rows filled from DB lookup")
 
                         # ── Auto-fix ATS: Actual Qty = Pick + Allocated + Damage + ATS ──────
+                        # NOTE: Only apply to rows where Pick Quantity AND Allocated are both blank/zero
+                        #       (i.e. pure ATS rows). Never overwrite Pick/Allocated rows with ATS.
                         _autofix_count = 0
                         for _af_idx, _af_row in fmt_df.iterrows():
                             _af_act   = float(pd.to_numeric(_af_row.get('Actual Qty',    0), errors='coerce') or 0)
@@ -2716,6 +2773,9 @@ if login_section():
                             _af_acc  = round(_af_pick + _af_alloc + _af_dmg + _af_ats, 3)
                             _af_diff = round(_af_act - _af_acc, 3)
                             if abs(_af_diff) > 0.01:
+                                # ── Do NOT touch rows that have Pick Quantity or Allocated filled ──
+                                if _af_pick > 0 or _af_alloc > 0:
+                                    continue
                                 fmt_df.at[_af_idx, 'ATS'] = max(0.0, round(_af_act - _af_pick - _af_alloc - _af_dmg, 3))
                                 _autofix_count += 1
                         if _autofix_count > 0:
