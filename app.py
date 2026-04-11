@@ -2773,137 +2773,108 @@ if login_section():
                             st.warning(f"⚠️ Unaccounted: {int(inv_total_qty-accounted)} | Accounted={int(accounted)} vs Inv={int(inv_total_qty)}")
 
                         # ── Qty_Mismatch Fix: logic2_matched_partial_history (pallet-filtered) ──
-                        # For each pallet in the inventory file where Inv Actual Qty ≠ fmt_df Actual Qty:
-                        #   1. Filter logic2_matched_partial_history WHERE pallet == mismatch pallet
-                        #   2. Check if any balance_qty in those rows == Inventory Actual Qty (±0.01)
-                        #   3. If match found:
-                        #      a. If row exists in fmt_df → update Actual Qty & recalculate ATS
-                        #      b. If row missing from fmt_df → add new row from inventory data
                         _qm_fixed_count = 0
                         _qm_debug_msgs  = []
                         try:
-                            _l2mph_fix_df  = None
-                            _l2mph_load_err = None
-                            try:
-                                _l2mph_fix_df = DBManager.read_table("logic2_matched_partial_history")
-                            except Exception as _l2e:
-                                _l2mph_load_err = str(_l2e)
+                            # 1. Inventory Pallet ගණනය කිරීම
+                            _qm_inv_pal_qty = {}
+                            _qm_inv_pal_row = {}
+                            for _, _ir in inv_data.iterrows():
+                                _qp = str(_ir.get(_inv_pal_col, '')).strip()
+                                _qq = float(pd.to_numeric(_ir.get(_inv_aq_col, 0), errors='coerce') or 0)
+                                if _qp and _qp not in ('nan', 'none', ''):
+                                    _qm_inv_pal_qty[_qp] = _qm_inv_pal_qty.get(_qp, 0) + _qq
+                                    _qm_inv_pal_row[_qp] = _ir
 
-                            if _l2mph_load_err:
-                                _qm_debug_msgs.append(f"❌ logic2_matched_partial_history load error: {_l2mph_load_err}")
-                            elif _l2mph_fix_df is None or _l2mph_fix_df.empty:
-                                _qm_debug_msgs.append("ℹ️ logic2_matched_partial_history: empty / no rows")
-                            else:
-                                _qm_debug_msgs.append(f"✅ logic2_matched_partial_history loaded: {len(_l2mph_fix_df)} rows | cols: {list(_l2mph_fix_df.columns[:6])}")
-                                _l2_dc = {str(c).strip().lower(): str(c).strip() for c in _l2mph_fix_df.columns}
-                                _l2_pal_col = _l2_dc.get('pallet')
-                                _l2_bal_col = _l2_dc.get('balance_qty')
+                            # 2. දැනට Report එකේ (fmt_df) තියෙන Pallets වල Index සෙවීම
+                            _fmt_pal_idx = {}
+                            for _fi, _fr in fmt_df.iterrows():
+                                _fp = str(_fr.get('Pallet', '')).strip()
+                                if _fp and _fp not in ('nan', 'none', '') and _fp not in _fmt_pal_idx:
+                                    _fmt_pal_idx[_fp] = _fi
 
-                                if not _l2_pal_col:
-                                    _qm_debug_msgs.append(f"❌ 'pallet' column not found. Available: {list(_l2_dc.keys())[:8]}")
-                                elif not _l2_bal_col:
-                                    _qm_debug_msgs.append(f"❌ 'balance_qty' column not found. Available: {list(_l2_dc.keys())[:8]}")
-                                else:
-                                    _l2mph_fix_df[_l2_bal_col] = pd.to_numeric(
-                                        _l2mph_fix_df[_l2_bal_col], errors='coerce').fillna(0)
+                            # 3. Database එකෙන් History Data ගැනීම
+                            _l2mph_fix_df = DBManager.read_table("logic2_matched_partial_history")
+                            
+                            if _l2mph_fix_df is not None and not _l2mph_fix_df.empty:
+                                # Column නම් සියල්ල lowercase කිරීම පහසුව සඳහා
+                                _l2mph_fix_df.columns = [str(c).strip().lower() for c in _l2mph_fix_df.columns]
+                                
+                                _pal_col_db = 'pallet' if 'pallet' in _l2mph_fix_df.columns else None
+                                _gen_col_db = 'gen_pallet_id' if 'gen_pallet_id' in _l2mph_fix_df.columns else None
+                                _bal_col_db = 'balance_qty' if 'balance_qty' in _l2mph_fix_df.columns else None
 
-                                    # Pre-build {pallet_lower → {bal_rounded → bal_float}}
-                                    _l2_pal_bal_map = {}
-                                    for _, _lr in _l2mph_fix_df.iterrows():
-                                        _lp  = str(_lr.get(_l2_pal_col, '')).strip().lower()
-                                        _lb  = float(_lr.get(_l2_bal_col, 0) or 0)
-                                        if not _lp or _lp in ('nan', 'none', '') or _lb <= 0:
-                                            continue
-                                        _lbrnd = round(_lb, 6)
-                                        if _lp not in _l2_pal_bal_map:
-                                            _l2_pal_bal_map[_lp] = {}
-                                        _l2_pal_bal_map[_lp][_lbrnd] = _lb
+                                if _bal_col_db and (_pal_col_db or _gen_col_db):
+                                    _l2mph_fix_df[_bal_col_db] = pd.to_numeric(_l2mph_fix_df[_bal_col_db], errors='coerce').fillna(0)
 
-                                    _qm_debug_msgs.append(f"✅ Pallet map built: {len(_l2_pal_bal_map)} unique pallets in logic2_matched_partial_history")
+                                    # Pallet / Gen_Pallet -> Balance Qty Map එකක් සෑදීම
+                                    _l2_map = {}
+                                    for _, _r in _l2mph_fix_df.iterrows():
+                                        _b = float(_r.get(_bal_col_db, 0))
+                                        if _b <= 0: continue
+                                        _b_rnd = round(_b, 6)
 
-                                    # Build inventory pallet → actual qty map  AND  pallet → inv_row map
-                                    _qm_inv_pal_qty = {}
-                                    _qm_inv_pal_row = {}
-                                    for _, _ir in inv_data.iterrows():
-                                        _qp = str(_ir.get(_inv_pal_col, '')).strip()
-                                        _qq = float(pd.to_numeric(_ir.get(_inv_aq_col, 0), errors='coerce') or 0)
-                                        if _qp and _qp not in ('nan', 'none', ''):
-                                            _qm_inv_pal_qty[_qp] = _qm_inv_pal_qty.get(_qp, 0) + _qq
-                                            _qm_inv_pal_row[_qp] = _ir
+                                        _pals = []
+                                        if _pal_col_db: _pals.append(str(_r.get(_pal_col_db, '')).strip().lower())
+                                        if _gen_col_db: _pals.append(str(_r.get(_gen_col_db, '')).strip().lower())
 
-                                    # Build fmt_df pallet → index map (first occurrence)
-                                    _fmt_pal_idx = {}
-                                    for _fi, _fr in fmt_df.iterrows():
-                                        _fp = str(_fr.get('Pallet', '')).strip()
-                                        if _fp and _fp not in ('nan', 'none', '') and _fp not in _fmt_pal_idx:
-                                            _fmt_pal_idx[_fp] = _fi
+                                        for _p in _pals:
+                                            if _p and _p not in ('nan', 'none', ''):
+                                                if _p not in _l2_map: _l2_map[_p] = set()
+                                                _l2_map[_p].add(_b_rnd)
 
-                                    # Loop inventory pallets — find mismatches
-                                    _new_rows        = []
-                                    _qm_miss_pallets = []   # mismatched pallets with no l2mph match
+                                    # 4. Mismatch වෙන Pallets හොයාගෙන Fix කිරීම
+                                    _new_rows = []
                                     for _inv_p, _inv_aq in _qm_inv_pal_qty.items():
+                                        _inv_aq_rnd = round(_inv_aq, 6)
                                         _fmt_idx = _fmt_pal_idx.get(_inv_p)
-                                        if _fmt_idx is not None:
-                                            _rpt_aq = float(pd.to_numeric(fmt_df.at[_fmt_idx, 'Actual Qty'], errors='coerce') or 0)
-                                        else:
-                                            _rpt_aq = 0.0
+                                        _rpt_aq = float(pd.to_numeric(fmt_df.at[_fmt_idx, 'Actual Qty'], errors='coerce') or 0) if _fmt_idx is not None else 0.0
 
-                                        if abs(_inv_aq - _rpt_aq) < 0.01:
-                                            continue  # no mismatch
+                                        # Mismatch එකක් නැත්නම් මගහරින්න
+                                        if abs(_inv_aq_rnd - _rpt_aq) < 0.01:
+                                            continue 
 
-                                        _pkey_low = _inv_p.lower()
+                                        _p_low = _inv_p.lower()
                                         _base_low = _base_pallet(_inv_p).lower()
-                                        _bal_map  = _l2_pal_bal_map.get(_pkey_low) or _l2_pal_bal_map.get(_base_low)
-                                        if not _bal_map:
-                                            _qm_miss_pallets.append(f"{_inv_p}(inv={_inv_aq},rpt={_rpt_aq},not_in_l2mph)")
-                                            continue
+                                        _bals = _l2_map.get(_p_low, set()).union(_l2_map.get(_base_low, set()))
 
-                                        _inv_rnd     = round(_inv_aq, 6)
                                         _matched_bal = None
-                                        for _brnd, _bval in _bal_map.items():
-                                            if abs(_brnd - _inv_rnd) < 0.01:
-                                                _matched_bal = _bval
+                                        for _b in _bals:
+                                            if abs(_b - _inv_aq_rnd) < 0.01:
+                                                _matched_bal = _b
                                                 break
 
-                                        if _matched_bal is None:
-                                            _bal_vals = list(_bal_map.keys())
-                                            _qm_miss_pallets.append(f"{_inv_p}(inv={_inv_aq},rpt={_rpt_aq},l2mph_bals={_bal_vals})")
-                                            continue
+                                        if _matched_bal is not None:
+                                            if _fmt_idx is not None:
+                                                # පවතින පේළිය Update කිරීම
+                                                _fmt_row = fmt_df.loc[_fmt_idx]
+                                                _fmt_pick  = float(pd.to_numeric(_fmt_row.get('Pick Quantity', 0), errors='coerce') or 0)
+                                                _fmt_alloc = float(pd.to_numeric(_fmt_row.get('Allocated',     0), errors='coerce') or 0)
+                                                _fmt_dmg   = sum(float(pd.to_numeric(_fmt_row.get(_rmk, 0), errors='coerce') or 0) for _rmk in damage_remarks)
 
-                                        if _fmt_idx is not None:
-                                            _fmt_row   = fmt_df.loc[_fmt_idx]
-                                            _fmt_pick  = float(pd.to_numeric(_fmt_row.get('Pick Quantity', 0), errors='coerce') or 0)
-                                            _fmt_alloc = float(pd.to_numeric(_fmt_row.get('Allocated',     0), errors='coerce') or 0)
-                                            _fmt_dmg   = sum(
-                                                float(pd.to_numeric(_fmt_row.get(_rmk, 0), errors='coerce') or 0)
-                                                for _rmk in damage_remarks
-                                            )
-                                            _new_ats = max(0.0, round(_matched_bal - _fmt_pick - _fmt_alloc - _fmt_dmg, 3))
-                                            fmt_df.at[_fmt_idx, 'Actual Qty'] = _matched_bal
-                                            fmt_df.at[_fmt_idx, 'ATS']        = _new_ats
-                                            _qm_fixed_count += 1
-                                        else:
-                                            _inv_row_src = _qm_inv_pal_row.get(_inv_p)
-                                            if _inv_row_src is not None:
-                                                _new_r = build_row(_inv_row_src, override_actual_qty=_matched_bal)
-                                                for _fc in final_cols:
-                                                    if _fc not in _new_r:
-                                                        _new_r[_fc] = ''
-                                                _new_r['Pick Quantity'] = 0
-                                                _new_r['Allocated']     = 0
-                                                _new_r['ATS']           = _matched_bal
-                                                for _rmk in damage_remarks:
-                                                    _new_r[_rmk] = 0
-                                                _new_rows.append(_new_r)
+                                                _new_ats = max(0.0, round(_matched_bal - _fmt_pick - _fmt_alloc - _fmt_dmg, 3))
+                                                fmt_df.at[_fmt_idx, 'Actual Qty'] = _matched_bal
+                                                fmt_df.at[_fmt_idx, 'ATS']        = _new_ats
                                                 _qm_fixed_count += 1
+                                            else:
+                                                # සම්පූර්ණයෙන්ම අලුත් පේළියක් එකතු කිරීම (Pallet නම අනිවාර්යයෙන්ම ලබා දීම)
+                                                _inv_row_src = _qm_inv_pal_row.get(_inv_p)
+                                                if _inv_row_src is not None:
+                                                    _new_r = build_row(_inv_row_src, override_pallet=_inv_p, override_actual_qty=_matched_bal)
+                                                    for _fc in final_cols:
+                                                        if _fc not in _new_r: _new_r[_fc] = ''
+                                                    _new_r['Pick Quantity'] = 0
+                                                    _new_r['Allocated']     = 0
+                                                    _new_r['ATS']           = _matched_bal
+                                                    for _rmk in damage_remarks: _new_r[_rmk] = 0
+                                                    _new_rows.append(_new_r)
+                                                    _qm_fixed_count += 1
 
+                                    # අලුත් පේළි Report එකට එකතු කිරීම
                                     if _new_rows:
                                         _new_df = pd.DataFrame(_new_rows, columns=final_cols)
-                                        fmt_df  = pd.concat([fmt_df, _new_df], ignore_index=True)
-
-                                    if _qm_miss_pallets:
-                                        _qm_debug_msgs.append(f"⚠️ Unresolved mismatches ({len(_qm_miss_pallets)}): {'; '.join(_qm_miss_pallets[:5])}")
-
+                                        fmt_df = pd.concat([fmt_df, _new_df], ignore_index=True)
+                                        
                         except Exception as _qm_err:
                             _qm_debug_msgs.append(f"❌ Fix block exception: {_qm_err}")
 
