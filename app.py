@@ -1371,19 +1371,20 @@ if login_section():
                             'Cancelled':  ('var(--color-background-danger)',  'var(--color-text-danger)'),
                         }
 
-                        # ── Header (HTML) ────────────────────────────────────────────────────
+                        # ── Header row ────────────────────────────────────────────────────────
                         st.markdown(f'''
-<div style="display:grid;grid-template-columns:3fr 0.8fr 0.9fr 0.7fr 0.9fr 0.6fr 0.7fr;
+<div style="display:grid;grid-template-columns:2.5fr 1.8fr 0.8fr 1fr 0.7fr 1fr 0.6fr 0.7fr;
             background:{category_color}18;border:1px solid var(--color-border-tertiary);
             border-radius:8px 8px 0 0;border-bottom:2px solid {category_color};
-            padding:6px 10px;font-size:11px;font-weight:600;color:var(--color-text-secondary);gap:6px;margin-bottom:0;">
-  <div>Load ID / Status</div>
+            padding:6px 12px;font-size:11px;font-weight:600;
+            color:var(--color-text-secondary);gap:6px;margin-bottom:0;">
+  <div>Load ID</div><div>Update Status</div>
   <div>SO</div><div>Country</div><div>Ship</div><div>Date</div>
   <div style="text-align:right;">Lines</div>
   <div style="text-align:right;">Pick Qty</div>
 </div>''', unsafe_allow_html=True)
 
-                        # ── One row per load ID ──────────────────────────────────────────────
+                        # ── One row per load ID — pure Streamlit columns ──────────────────────
                         for i, lid in enumerate(id_list):
                             load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
                             status       = str(load_row.get('Pick Status', 'Pending'))
@@ -1400,37 +1401,37 @@ if login_section():
                             picked_q     = s_data.get('picked', 0)
                             fill_pct     = min(int((picked_q / requested * 100)) if requested > 0 else 0, 100)
 
-                            st_bg, st_fg = STATUS_STYLES.get(status, ('var(--color-background-secondary)', 'var(--color-text-secondary)'))
                             shortage_tag = (f'<span style="font-size:10px;background:#fde8e8;color:#c0392b;'
-                                            f'padding:1px 5px;border-radius:4px;margin-left:5px;font-weight:600;">-{int(variance)}</span>'
-                                            ) if variance > 0 else ''
-                            is_last  = (i == len(id_list) - 1)
-                            row_bg   = 'var(--color-background-secondary)' if i % 2 == 1 else 'var(--color-background-primary)'
-                            b_radius = f'0 0 8px 8px' if is_last else '0'
+                                            f'padding:1px 5px;border-radius:4px;margin-left:5px;font-weight:600;">'
+                                            f'-{int(variance)}</span>') if variance > 0 else ''
+                            row_bg = '#f9f9f9' if i % 2 == 1 else '#ffffff'
+                            border_bottom = '1px solid var(--color-border-tertiary)'
 
-                            # Split: Load ID cell (col_a) | other info cells (col_b)
-                            # Ratio keeps Load ID column proportionally wider to fit widget
-                            col_a, col_b = st.columns([3, 5.3])
+                            # c_lid | c_sel | c_save | c_so | c_country | c_ship | c_date | c_lines | c_qty
+                            c_lid, c_sel, c_save, c_so, c_country, c_ship, c_date, c_lines, c_qty = st.columns(
+                                [2.5, 1.4, 0.4, 0.8, 1.0, 0.7, 1.0, 0.6, 0.7]
+                            )
 
-                            with col_a:
+                            with c_lid:
                                 st.markdown(f'''
-<div style="background:{row_bg};border-left:1px solid var(--color-border-tertiary);
-            border-bottom:1px solid var(--color-border-tertiary);
-            {'border-radius:0 0 0 8px;' if is_last else ''}
-            padding:6px 10px 4px 10px;min-height:58px;">
-  <div style="font-size:12px;font-weight:600;color:var(--color-text-primary);margin-bottom:2px;">{lid}{shortage_tag}</div>
-  <div style="height:3px;background:var(--color-border-tertiary);border-radius:2px;margin-bottom:3px;">
+<div style="padding:4px 0 2px 0;">
+  <div style="font-size:12px;font-weight:600;color:var(--color-text-primary);">{lid}{shortage_tag}</div>
+  <div style="height:3px;background:#e0e0e0;border-radius:2px;margin-top:3px;margin-bottom:1px;">
     <div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div>
   </div>
+  <div style="font-size:9px;color:var(--color-text-secondary);">{fill_pct}% picked</div>
 </div>''', unsafe_allow_html=True)
-                                # Dropdown + Save button directly below Load ID label
+
+                            with c_sel:
                                 safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                                _d1, _d2 = st.columns([4, 1])
-                                new_st = _d1.selectbox(
-                                    lid, STATUS_OPTIONS, index=safe_idx,
+                                new_st = st.selectbox(
+                                    f"_sel_{lid}", STATUS_OPTIONS, index=safe_idx,
                                     key=f"st_{lid}", label_visibility="collapsed"
                                 )
-                                if _d2.button("💾", key=f"upd_{lid}", use_container_width=True, help="Save status"):
+
+                            with c_save:
+                                st.markdown("<div style='margin-top:4px;'></div>", unsafe_allow_html=True)
+                                if st.button("💾", key=f"upd_{lid}", use_container_width=True, help="Save"):
                                     try:
                                         ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
                                         if ok and new_st == "Cancelled":
@@ -1446,20 +1447,20 @@ if login_section():
                                     except Exception as ex:
                                         st.error(f"Error: {ex}")
 
-                            with col_b:
-                                st.markdown(f'''
-<div style="background:{row_bg};border:1px solid var(--color-border-tertiary);border-left:none;
-            {'border-radius:0 0 8px 0;' if is_last else ''}
-            padding:6px 10px;display:grid;
-            grid-template-columns:0.8fr 0.9fr 0.7fr 0.9fr 0.6fr 0.7fr;
-            gap:6px;align-items:center;min-height:58px;">
-  <div style="font-size:12px;color:var(--color-text-primary);font-weight:500;">{so_num}</div>
-  <div style="font-size:12px;color:var(--color-text-primary);">{country}</div>
-  <div style="font-size:12px;color:var(--color-text-primary);">{ship}</div>
-  <div style="font-size:11px;color:var(--color-text-secondary);">{date}</div>
-  <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{pick_count}</div>
-  <div style="font-size:12px;text-align:right;font-weight:500;color:var(--color-text-primary);">{int(pick_qty_val)}</div>
-</div>''', unsafe_allow_html=True)
+                            with c_so:
+                                st.markdown(f'<div style="font-size:12px;font-weight:500;padding-top:6px;">{so_num}</div>', unsafe_allow_html=True)
+                            with c_country:
+                                st.markdown(f'<div style="font-size:12px;padding-top:6px;">{country}</div>', unsafe_allow_html=True)
+                            with c_ship:
+                                st.markdown(f'<div style="font-size:12px;padding-top:6px;">{ship}</div>', unsafe_allow_html=True)
+                            with c_date:
+                                st.markdown(f'<div style="font-size:11px;color:var(--color-text-secondary);padding-top:6px;">{date}</div>', unsafe_allow_html=True)
+                            with c_lines:
+                                st.markdown(f'<div style="font-size:12px;font-weight:500;text-align:right;padding-top:6px;">{pick_count}</div>', unsafe_allow_html=True)
+                            with c_qty:
+                                st.markdown(f'<div style="font-size:12px;font-weight:500;text-align:right;padding-top:6px;">{int(pick_qty_val)}</div>', unsafe_allow_html=True)
+
+                            st.markdown('<hr style="margin:0;border:none;border-top:1px solid var(--color-border-tertiary);">', unsafe_allow_html=True)
 
                     if zero_pick_ids:
                         st.markdown("#### 🔴 Not Yet Picked")
@@ -2877,73 +2878,105 @@ if login_section():
                         else:
                             st.warning(f"⚠️ Unaccounted: {int(inv_total_qty-accounted)} | Accounted={int(accounted)} vs Inv={int(inv_total_qty)}")
 
-                        # ── Qty_Mismatch Fix: old_history exact match → update Actual Qty & ATS ────
-                        # For each mismatch pallet: old_history හි ඒ pallet line ගොඩක් තිබිය හැකිය
-                        # inventory Actual Qty == old_history balance_qty exact match ඇති line හොයා
-                        # match found → Actual Qty සහ ATS update (වෙනත් කිසිම දෙයක් touch නොකරයි)
+                        # ── Qty_Mismatch Fix: old_history + logic2_matched_partial_history ──────
+                        # Sources: (1) old_history  (2) logic2_matched_partial_history
+                        # Per source: pallet (+ gen_pallet_id for L2mph) → collect ALL balance_qty values
+                        # inventory Actual Qty == any balance_qty → exact match → update Actual Qty & ATS only
                         _qm_fixed_count = 0
                         try:
+                            # ── Helper: add rows from a df into the combined bal-sets ──────────
+                            # _qm_bal_sets:  {pallet_lower → set(bal_rounded)}
+                            # _qm_bal_vals:  {(pallet_lower, bal_rounded) → float value}
+                            _qm_bal_sets = {}
+                            _qm_bal_vals = {}
+
+                            def _qm_add_rows(df, pal_db_key, bal_db_key, extra_pal_db_key=None):
+                                """Feed rows from df into _qm_bal_sets / _qm_bal_vals."""
+                                if df is None or df.empty:
+                                    return
+                                _dc = {str(c).strip().lower(): str(c).strip() for c in df.columns}
+                                _pc  = _dc.get(pal_db_key, pal_db_key)
+                                _bc  = _dc.get(bal_db_key, bal_db_key)
+                                _gpc = _dc.get(extra_pal_db_key, None) if extra_pal_db_key else None
+                                if _bc not in df.columns:
+                                    return
+                                df[_bc] = pd.to_numeric(df[_bc], errors='coerce').fillna(0)
+                                for _, _r in df.iterrows():
+                                    _b = float(_r.get(_bc, 0) or 0)
+                                    if _b <= 0:
+                                        continue
+                                    _brnd = round(_b, 6)
+                                    # collect all pallet keys for this row
+                                    _pkeys = []
+                                    if _pc in df.columns:
+                                        _pv = str(_r.get(_pc, '')).strip().lower()
+                                        if _pv and _pv not in ('nan', 'none', ''):
+                                            _pkeys.append(_pv)
+                                    if _gpc and _gpc in df.columns:
+                                        _gpv = str(_r.get(_gpc, '')).strip().lower()
+                                        if _gpv and _gpv not in ('nan', 'none', ''):
+                                            _pkeys.append(_gpv)
+                                    for _pk in _pkeys:
+                                        if _pk not in _qm_bal_sets:
+                                            _qm_bal_sets[_pk] = set()
+                                        _qm_bal_sets[_pk].add(_brnd)
+                                        _qm_bal_vals[(_pk, _brnd)] = _b
+
+                            # Source 1: old_history — pallet column
                             _oh_fix_df = DBManager.read_table("old_history")
-                            if not _oh_fix_df.empty:
-                                _ohf_c = {str(c).strip().lower(): str(c).strip() for c in _oh_fix_df.columns}
-                                _ohf_pal_col = _ohf_c.get('pallet', 'pallet')
-                                _ohf_bal_col = _ohf_c.get('balance_qty', 'balance_qty')
+                            _qm_add_rows(_oh_fix_df, pal_db_key='pallet', bal_db_key='balance_qty')
 
-                                # Build per-pallet set of all balance_qty values (multiple lines per pallet supported)
-                                # Structure: {pallet_lower: set(balance_qty_rounded_values)}
-                                _oh_pallet_bal_sets = {}  # pallet_lower → set of rounded balance_qty values
-                                _oh_pallet_bal_vals = {}  # (pallet_lower, bal_rounded) → actual float value
-                                if _ohf_pal_col in _oh_fix_df.columns and _ohf_bal_col in _oh_fix_df.columns:
-                                    _oh_fix_df[_ohf_bal_col] = pd.to_numeric(_oh_fix_df[_ohf_bal_col], errors='coerce').fillna(0)
-                                    for _, _ohfr in _oh_fix_df.iterrows():
-                                        _ohf_p = str(_ohfr.get(_ohf_pal_col, '')).strip().lower()
-                                        _ohf_b = float(_ohfr.get(_ohf_bal_col, 0) or 0)
-                                        if _ohf_p and _ohf_b > 0:
-                                            _brnd = round(_ohf_b, 6)
-                                            if _ohf_p not in _oh_pallet_bal_sets:
-                                                _oh_pallet_bal_sets[_ohf_p] = set()
-                                            _oh_pallet_bal_sets[_ohf_p].add(_brnd)
-                                            _oh_pallet_bal_vals[(_ohf_p, _brnd)] = _ohf_b
+                            # Source 2: logic2_matched_partial_history — pallet column only
+                            try:
+                                _l2mph_fix_df = DBManager.read_table("logic2_matched_partial_history")
+                                _qm_add_rows(
+                                    _l2mph_fix_df,
+                                    pal_db_key='pallet',
+                                    bal_db_key='balance_qty',
+                                )
+                            except Exception:
+                                pass
 
-                                if _oh_pallet_bal_sets:
-                                    # Rebuild inventory actual qty map
-                                    _inv_pal_raw2 = inv_data[_inv_pal_col].astype(str).str.strip()
-                                    _inv_qty_raw2 = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
-                                    _inv_pal_qty2 = {}
-                                    for _p2, _q2 in zip(_inv_pal_raw2, _inv_qty_raw2):
-                                        _inv_pal_qty2[_p2] = _inv_pal_qty2.get(_p2, 0) + _q2
+                            # ── Apply fixes to fmt_df ─────────────────────────────────────────
+                            if _qm_bal_sets:
+                                _inv_pal_raw2 = inv_data[_inv_pal_col].astype(str).str.strip()
+                                _inv_qty_raw2 = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                                _inv_pal_qty2 = {}
+                                for _p2, _q2 in zip(_inv_pal_raw2, _inv_qty_raw2):
+                                    _inv_pal_qty2[_p2] = _inv_pal_qty2.get(_p2, 0) + _q2
 
-                                    for _fmt_idx, _fmt_row in fmt_df.iterrows():
-                                        _fmt_p = str(_fmt_row.get('Pallet', '')).strip()
-                                        _fmt_aq = float(pd.to_numeric(_fmt_row.get('Actual Qty', 0), errors='coerce') or 0)
-                                        _inv_aq2 = _inv_pal_qty2.get(_fmt_p, None)
-                                        if _inv_aq2 is None:
-                                            continue
-                                        # Only process rows that have a mismatch
-                                        if abs(_inv_aq2 - _fmt_aq) < 0.01:
-                                            continue
-                                        # Check old_history: inventory Actual Qty == any balance_qty for this pallet
-                                        _pkey_low = _fmt_p.lower()
-                                        _bal_set = _oh_pallet_bal_sets.get(_pkey_low)
-                                        if not _bal_set:
-                                            continue
-                                        _inv_rounded = round(_inv_aq2, 6)
-                                        # Scan all balance_qty values for this pallet for exact match
-                                        _matched_bal = None
-                                        for _b_candidate in _bal_set:
-                                            if abs(_b_candidate - _inv_rounded) < 0.01:
-                                                _matched_bal = _oh_pallet_bal_vals.get((_pkey_low, _b_candidate))
-                                                break
-                                        if _matched_bal is not None:
-                                            # Update Actual Qty and ATS only — nothing else
-                                            fmt_df.at[_fmt_idx, 'Actual Qty'] = _matched_bal
-                                            fmt_df.at[_fmt_idx, 'ATS'] = _matched_bal
-                                            _qm_fixed_count += 1
+                                for _fmt_idx, _fmt_row in fmt_df.iterrows():
+                                    _fmt_p  = str(_fmt_row.get('Pallet', '')).strip()
+                                    _fmt_aq = float(pd.to_numeric(_fmt_row.get('Actual Qty', 0), errors='coerce') or 0)
+                                    _inv_aq2 = _inv_pal_qty2.get(_fmt_p, None)
+                                    if _inv_aq2 is None:
+                                        continue
+                                    if abs(_inv_aq2 - _fmt_aq) < 0.01:
+                                        continue  # no mismatch
+                                    _pkey_low    = _fmt_p.lower()
+                                    _inv_rounded = round(_inv_aq2, 6)
+                                    # Try exact pallet key first, then base pallet (strip -Pxxxx suffix)
+                                    _base_low2   = _base_pallet(_fmt_p).lower()
+                                    _bal_set = _qm_bal_sets.get(_pkey_low) or _qm_bal_sets.get(_base_low2)
+                                    if not _bal_set:
+                                        continue
+                                    # Scan ALL balance_qty values for this pallet
+                                    _matched_bal = None
+                                    for _bc in _bal_set:
+                                        if abs(_bc - _inv_rounded) < 0.01:
+                                            _matched_bal = (_qm_bal_vals.get((_pkey_low, _bc))
+                                                            or _qm_bal_vals.get((_base_low2, _bc)))
+                                            break
+                                    if _matched_bal is not None:
+                                        fmt_df.at[_fmt_idx, 'Actual Qty'] = _matched_bal
+                                        fmt_df.at[_fmt_idx, 'ATS']        = _matched_bal
+                                        _qm_fixed_count += 1
+
                         except Exception as _qm_err:
                             st.warning(f"⚠️ Qty_Mismatch fix error: {_qm_err}")
 
                         if _qm_fixed_count > 0:
-                            st.info(f"🔧 Qty_Mismatch Fix: **{_qm_fixed_count}** rows — Actual Qty & ATS updated (old_history balance_qty exact match)")
+                            st.info(f"🔧 Qty_Mismatch Fix: **{_qm_fixed_count}** rows — Actual Qty & ATS updated (old_history + logic2_matched_partial_history balance_qty match)")
 
                         # ── Mismatch pallets report ────────────────────────────────────────
                         mismatch_pallets = []
@@ -3937,4 +3970,3 @@ CREATE UNIQUE INDEX idx_old_history_master_pallet ON old_history_master(pallet);
 
 
 footer_branding()
-
