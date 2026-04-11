@@ -1360,118 +1360,64 @@ if login_section():
                                 pick_qty_by_lid = _qty_grp.to_dict()
 
                     def render_load_list(id_list, category_color, category_label):
-                        if not id_list:
-                            return
+                        st.markdown(f"""
+                        <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
+                             background:{category_color}15; border:1px solid {category_color}40;
+                             border-radius:8px 8px 0 0; padding:7px 12px;
+                             font-size:11px; font-weight:700; color:#444; margin-top:4px;">
+                            <div>Load ID</div><div>SO</div><div>Country</div><div>Ship</div>
+                            <div>Date</div><div>Lines</div><div>Qty</div><div>Status</div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                        STATUS_STYLES = {
-                            'Pending':    ('var(--color-background-warning)', 'var(--color-text-warning)'),
-                            'PL Pending': ('#fff0d6',                         '#7a4f00'),
-                            'Processing': ('var(--color-background-info)',    'var(--color-text-info)'),
-                            'Completed':  ('var(--color-background-success)', 'var(--color-text-success)'),
-                            'Cancelled':  ('var(--color-background-danger)',  'var(--color-text-danger)'),
-                        }
+                        for lid in id_list:
+                            load_row = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
+                            status   = str(load_row.get('Pick Status', 'Pending'))
+                            so_num   = str(load_row.get('SO Number', '-'))
+                            country  = str(load_row.get('Country Name', '-'))
+                            ship     = str(load_row.get('SHIP MODE', '-'))
+                            date     = str(load_row.get('Date', '-'))[:10]
 
-                        # ── Header row ────────────────────────────────────────────────────────
-                        st.markdown(f'''
-<div style="display:grid;grid-template-columns:2.5fr 1.0fr 1.2fr 0.8fr 1.2fr 0.7fr 0.8fr;
-            background:{category_color}18;border:1px solid var(--color-border-tertiary);
-            border-radius:8px 8px 0 0;border-bottom:2px solid {category_color};
-            padding:6px 12px;font-size:11px;font-weight:600;
-            color:var(--color-text-secondary);gap:6px;margin-bottom:0;">
-  <div>Load ID</div>
-  <div>SO</div><div>Country</div><div>Ship</div><div>Date</div>
-  <div style="text-align:right;">Lines</div>
-  <div style="text-align:right;">Pick Qty</div>
-</div>''', unsafe_allow_html=True)
-
-                        # ── One row per load ID — pure Streamlit columns ──────────────────────
-                        for i, lid in enumerate(id_list):
-                            load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
-                            status       = str(load_row.get('Pick Status', 'Pending'))
-                            so_num       = str(load_row.get('SO Number', '-'))
-                            country      = str(load_row.get('Country Name', '-'))
-                            ship         = str(load_row.get('SHIP MODE', '-'))
-                            date         = str(load_row.get('Date', '-'))[:10]
                             lid_key      = str(lid).strip()
                             pick_count   = pick_counts_by_lid.get(lid_key, 0)
                             pick_qty_val = pick_qty_by_lid.get(lid_key, 0)
-                            s_data       = summ_by_load.get(str(lid), {})
-                            variance     = s_data.get('variance', 0)
-                            requested    = s_data.get('requested', 0)
-                            picked_q     = s_data.get('picked', 0)
-                            fill_pct     = min(int((picked_q / requested * 100)) if requested > 0 else 0, 100)
+                            s            = summ_by_load.get(str(lid), {})
+                            variance     = s.get('variance', 0)
 
-                            shortage_tag = (f'<span style="font-size:10px;background:#fde8e8;color:#c0392b;'
-                                            f'padding:1px 5px;border-radius:4px;margin-left:5px;font-weight:600;">'
-                                            f'-{int(variance)}</span>') if variance > 0 else ''
-                            row_bg = '#f9f9f9' if i % 2 == 1 else '#ffffff'
-                            border_bottom = '1px solid var(--color-border-tertiary)'
+                            status_bg  = {'Pending': '#fff3cd', 'Processing': '#cce5ff'}.get(status, '#f0f0f0')
+                            status_col = {'Pending': '#856404', 'Processing': '#004085'}.get(status, '#333')
+                            status_dot = {'Pending': '🟡', 'Processing': '🔵'}.get(status, '⚪')
+                            shortage_tag = f'<span style="font-size:9px; background:#ffe0e0; color:#c0392b; padding:1px 5px; border-radius:4px; margin-left:4px;">⚠️ -{int(variance)}</span>' if variance > 0 else ''
 
-                            # c_lid | c_so | c_country | c_ship | c_date | c_lines | c_qty
-                            c_lid, c_so, c_country, c_ship, c_date, c_lines, c_qty = st.columns(
-                                [2.5, 1.0, 1.2, 0.8, 1.2, 0.7, 0.8]
-                            )
+                            st.markdown(f"""
+                            <div style="display:grid; grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr; gap:4px;
+                                 border-left:3px solid {category_color}; border-bottom:1px solid #eee;
+                                 padding:7px 12px; background:#fff; font-size:11px; color:#333; align-items:center;">
+                                <div style="font-weight:600; color:#1a1a1a;">{lid}{shortage_tag}</div>
+                                <div>{so_num}</div><div>{country}</div><div>{ship}</div><div>{date}</div>
+                                <div><b>{pick_count}</b></div><div><b>{int(pick_qty_val)}</b></div>
+                                <div><span style="background:{status_bg}; color:{status_col}; font-size:10px; font-weight:600; padding:2px 8px; border-radius:10px;">{status_dot} {status}</span></div>
+                            </div>
+                            """, unsafe_allow_html=True)
 
-                            with c_lid:
-                                st.markdown(f'''
-<div style="padding:4px 0 2px 0;">
-  <div style="font-size:12px;font-weight:600;color:var(--color-text-primary);">{lid}{shortage_tag}</div>
-  <div style="height:3px;background:#e0e0e0;border-radius:2px;margin-top:3px;margin-bottom:1px;">
-    <div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div>
-  </div>
-  <div style="font-size:9px;color:var(--color-text-secondary);">{fill_pct}% picked</div>
-</div>''', unsafe_allow_html=True)
-
-                            with c_so:
-                                # SO number shown inline; Update Status dropdown inside expander below
-                                st.markdown(f'<div style="font-size:12px;font-weight:500;padding-top:2px;">{so_num}</div>', unsafe_allow_html=True)
-                                STATUS_STYLES_BADGE = {
-                                    'Pending':    ('#fff3cd', '#856404'),
-                                    'PL Pending': ('#fff0d6', '#7a4f00'),
-                                    'Processing': ('#d1ecf1', '#0c5460'),
-                                    'Completed':  ('#d4edda', '#155724'),
-                                    'Cancelled':  ('#f8d7da', '#721c24'),
-                                }
-                                _badge_bg, _badge_fg = STATUS_STYLES_BADGE.get(status, ('#e2e3e5', '#383d41'))
-                                st.markdown(
-                                    f'<span style="font-size:10px;background:{_badge_bg};color:{_badge_fg};'
-                                    f'padding:2px 6px;border-radius:4px;font-weight:600;">{status}</span>',
-                                    unsafe_allow_html=True
-                                )
-                                with st.expander("✏️ Update", expanded=False):
-                                    safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                                    new_st = st.selectbox(
-                                        "New Status", STATUS_OPTIONS, index=safe_idx,
-                                        key=f"st_{lid}", label_visibility="collapsed"
-                                    )
-                                    if st.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
-                                        try:
-                                            ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
-                                            if ok and new_st == "Cancelled":
-                                                mpd = DBManager.read_table("master_pick_data")
-                                                lid_col_c = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
-                                                if not mpd.empty and lid_col_c:
-                                                    filtered_mpd = mpd[mpd[lid_col_c].astype(str).str.strip() != str(lid).strip()]
-                                                    DBManager._overwrite_table("master_pick_data", filtered_mpd)
-                                                st.success(f"✅ {lid} → Cancelled")
-                                            elif ok:
-                                                st.success(f"✅ {lid} → {new_st}")
-                                            st.rerun()
-                                        except Exception as ex:
-                                            st.error(f"Error: {ex}")
-
-                            with c_country:
-                                st.markdown(f'<div style="font-size:12px;padding-top:6px;">{country}</div>', unsafe_allow_html=True)
-                            with c_ship:
-                                st.markdown(f'<div style="font-size:12px;padding-top:6px;">{ship}</div>', unsafe_allow_html=True)
-                            with c_date:
-                                st.markdown(f'<div style="font-size:11px;color:var(--color-text-secondary);padding-top:6px;">{date}</div>', unsafe_allow_html=True)
-                            with c_lines:
-                                st.markdown(f'<div style="font-size:12px;font-weight:500;text-align:right;padding-top:6px;">{pick_count}</div>', unsafe_allow_html=True)
-                            with c_qty:
-                                st.markdown(f'<div style="font-size:12px;font-weight:500;text-align:right;padding-top:6px;">{int(pick_qty_val)}</div>', unsafe_allow_html=True)
-
-                            st.markdown('<hr style="margin:0;border:none;border-top:1px solid var(--color-border-tertiary);">', unsafe_allow_html=True)
+                            c1, c2 = st.columns([3, 1])
+                            safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
+                            new_st = c1.selectbox("", STATUS_OPTIONS, index=safe_idx, key=f"st_{lid}", label_visibility="collapsed")
+                            if c2.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
+                                try:
+                                    ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
+                                    if ok and new_st == "Cancelled":
+                                        mpd = DBManager.read_table("master_pick_data")
+                                        lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
+                                        if not mpd.empty and lid_col:
+                                            filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
+                                            DBManager._overwrite_table("master_pick_data", filtered_mpd)
+                                        st.success(f"✅ {lid} → Cancelled | Master_Pick_Data records deleted.")
+                                    elif ok:
+                                        st.success(f"✅ {lid} → {new_st}")
+                                    st.rerun()
+                                except Exception as ex:
+                                    st.error(f"Update error: {ex}")
 
                     if zero_pick_ids:
                         st.markdown("#### 🔴 Not Yet Picked")
@@ -2063,7 +2009,7 @@ if login_section():
                                     row['Grn Number'] = pallet_grn_map_fmt[pallet_key]
                             return row
 
-                        def fill_row_from_oh_master(row, pallet_key, is_pick_or_alloc=False):
+                        def fill_row_from_oh_master(row, pallet_key):
                             """Blank fill sequence per Logic.txt Additional:
                             1. master_pick_data (already done before calling this)
                             2. old_history_master → oh_master_lookup
@@ -2073,7 +2019,6 @@ if login_section():
                             6. logic2_matched_partial_history (pallet or gen_pallet_id) → l2_matched_hist_lookup
                             7. logic2_history (pallet or gen_pallet_id) → l2_history_lookup
                             8. master_partial_data (pallet or gen_pallet_id) → partial_map / gen_to_orig
-                            NOTE: Order NO only filled if is_pick_or_alloc=True (Pick Qty or Allocated > 0)
                             """
                             _pkey_low = str(pallet_key).lower()
                             _base_low = _base_pallet(pallet_key).lower()
@@ -2082,10 +2027,8 @@ if login_section():
                                 for col in OH_FILL_COLS:
                                     if _is_blank(row.get(col)) and not _is_blank(src_data.get(col, '')):
                                         row[col] = src_data[col]
-                                # Order NO only for Pick / Allocated rows
-                                if is_pick_or_alloc:
-                                    if _is_blank(row.get('Order NO')) and not _is_blank(src_data.get('Order NO', '')):
-                                        row['Order NO'] = src_data['Order NO']
+                                if _is_blank(row.get('Order NO')) and not _is_blank(src_data.get('Order NO', '')):
+                                    row['Order NO'] = src_data['Order NO']
 
                             # Source 2: old_history_master (1st pass)
                             oh_data = oh_master_lookup.get(_pkey_low) or oh_master_lookup.get(_base_low, {})
@@ -2190,7 +2133,7 @@ if login_section():
                             row['Invoice Number'] = inv_n
                             row['Grn Number']     = grn_n
                             row = fill_row_from_partial(row, pallet_key=orig_pallet)
-                            row = fill_row_from_oh_master(row, orig_pallet, is_pick_or_alloc=True)
+                            row = fill_row_from_oh_master(row, orig_pallet)
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
@@ -2240,7 +2183,7 @@ if login_section():
                                 row['Invoice Number'] = inv_n
                                 row['Grn Number']     = grn_n
                                 row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet, partial_entry=par_entry)
-                                row = fill_row_from_oh_master(row, real_orig, is_pick_or_alloc=True)
+                                row = fill_row_from_oh_master(row, real_orig)
                                 fmt_rows.append(row)
                             else:
                                 # L1 + L2 both unmatched → L2B will attempt logic2_matched_partial_history match
@@ -2277,21 +2220,15 @@ if login_section():
                                     if _gp_val and _gp_val not in ('nan','None',''):
                                         _l2b_key = (_gp_val.lower(), round(_pq_val, 6))
                                         if _l2b_key not in l2b_exact_map:
-                                            _l2b_aq  = _l2b_c.get('actual_qty',   'actual_qty')
-                                            _l2b_bq  = _l2b_c.get('balance_qty',  'balance_qty')
-                                            _l2b_aq_val = pd.to_numeric(_l2b_row.get(_l2b_aq, 0), errors='coerce')
-                                            _l2b_bq_val = pd.to_numeric(_l2b_row.get(_l2b_bq, 0), errors='coerce')
                                             l2b_exact_map[_l2b_key] = {
-                                                'gen_pallet_id':  _gp_val,
-                                                'partial_qty':    _pq_val,
-                                                'actual_qty':     float(_l2b_aq_val) if pd.notna(_l2b_aq_val) else 0.0,
-                                                'balance_qty':    float(_l2b_bq_val) if pd.notna(_l2b_bq_val) else 0.0,
-                                                'orig_pallet':    str(_l2b_row.get(_l2b_pal, '')).strip(),
-                                                'load_id':        str(_l2b_row.get(_l2b_lid, '')).strip(),
-                                                'country':        str(_l2b_row.get(_l2b_cn,  '')).strip(),
-                                                'vendor_name':    str(_l2b_row.get(_l2b_vn,  '')).strip(),
-                                                'invoice_number': str(_l2b_row.get(_l2b_inv, '')).strip(),
-                                                'grn_number':     str(_l2b_row.get(_l2b_grn, '')).strip(),
+                                                'gen_pallet_id': _gp_val,
+                                                'partial_qty':   _pq_val,
+                                                'orig_pallet':   str(_l2b_row.get(_l2b_pal, '')).strip(),
+                                                'load_id':       str(_l2b_row.get(_l2b_lid, '')).strip(),
+                                                'country':       str(_l2b_row.get(_l2b_cn,  '')).strip(),
+                                                'vendor_name':   str(_l2b_row.get(_l2b_vn,  '')).strip(),
+                                                'invoice_number':str(_l2b_row.get(_l2b_inv, '')).strip(),
+                                                'grn_number':    str(_l2b_row.get(_l2b_grn, '')).strip(),
                                             }
                         except Exception as _l2b_build_err:
                             st.warning(f"⚠️ Logic 2B map build error: {_l2b_build_err}")
@@ -2333,47 +2270,9 @@ if login_section():
                                 row['Invoice Number'] = inv_n
                                 row['Grn Number']     = grn_n
                                 row = fill_row_from_partial(row, pallet_key=real_orig, gen_pallet_key=orig_pallet)
-                                row = fill_row_from_oh_master(row, real_orig, is_pick_or_alloc=True)
+                                row = fill_row_from_oh_master(row, real_orig)
                                 fmt_rows.append(row)
                                 l2b_matched_count += 1
-
-                                # ── L2B Balance row: if balance_qty > 0 generate ATS row for orig_pallet ──
-                                # Find orig_pallet in inv_unpicked (Pick Id = 0) to get inventory row data
-                                _l2b_bal_qty = _l2b_e.get('balance_qty', 0) or 0
-                                if _l2b_bal_qty > 0.01:
-                                    # Look for orig_pallet row in inv_unpicked
-                                    _bal_inv_rows = inv_unpicked[
-                                        inv_unpicked[_inv_pal_col].astype(str).str.strip() == real_orig
-                                    ]
-                                    if not _bal_inv_rows.empty:
-                                        _bal_inv_row = _bal_inv_rows.iloc[0]
-                                        _bal_act_qty = float(pd.to_numeric(_bal_inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
-                                        # Use inventory Actual Qty if > 0, else fall back to balance_qty
-                                        _bal_use_qty = _bal_act_qty if _bal_act_qty > 0 else _l2b_bal_qty
-                                        if _bal_use_qty > 0.01 and real_orig not in logic3_matched_pallets \
-                                                and real_orig not in logic4_matched_pallets \
-                                                and real_orig not in l1_l2_matched_pallets:
-                                            bal_vn, bal_vc, bal_inv_n, bal_grn_n = _get_vendor_info(_bal_inv_row, real_orig)
-                                            if not bal_vn: bal_vn = vn
-                                            if not bal_vc: bal_vc = vc
-                                            if not bal_inv_n: bal_inv_n = inv_n
-                                            if not bal_grn_n: bal_grn_n = grn_n
-                                            bal_row = build_row(_bal_inv_row, override_pallet=real_orig, override_actual_qty=round(_bal_use_qty, 3))
-                                            bal_row['Pick Quantity']       = ''
-                                            bal_row['Allocated']           = ''
-                                            bal_row['Destination Country'] = ''
-                                            bal_row['Order NO']            = ''
-                                            for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((real_orig, rmk), '')
-                                            bal_row['ATS']            = round(_bal_use_qty, 3)
-                                            bal_row['Vendor Name']    = bal_vn
-                                            bal_row['COO']            = bal_vc
-                                            bal_row['Invoice Number'] = bal_inv_n
-                                            bal_row['Grn Number']     = bal_grn_n
-                                            bal_row = fill_row_from_partial(bal_row, pallet_key=real_orig)
-                                            bal_row = fill_row_from_oh_master(bal_row, real_orig)
-                                            fmt_rows.append(bal_row)
-                                            # Mark orig_pallet as handled so Logic 5 doesn't duplicate
-                                            logic4_matched_pallets.add(real_orig)
                             else:
                                 # Still unmatched after L1 + L2 + L2B — keep in unmatched report
                                 l2b_still_unmatched.append({
@@ -2471,9 +2370,6 @@ if login_section():
                         for _inv_idx, inv_row in inv_unpicked.iterrows():
                             orig_pallet    = str(inv_row.get(_inv_pal_col, '')).strip()
                             inv_actual_qty = float(pd.to_numeric(inv_row.get(_inv_aq_col, 0), errors='coerce') or 0)
-                            # ── Skip if this pallet already matched by L1/L2/L2B (Pick Id filled rows) ──
-                            if orig_pallet in l1_l2_matched_pallets or orig_pallet in l1_l2_matched_gen_pallets:
-                                continue
                             _l3key = (orig_pallet, round(inv_actual_qty, 6))
                             if _l3key not in mpd_exact_map:
                                 continue
@@ -2496,7 +2392,7 @@ if login_section():
                             row['Invoice Number'] = inv_n
                             row['Grn Number']     = grn_n
                             row = fill_row_from_partial(row, pallet_key=orig_pallet)
-                            row = fill_row_from_oh_master(row, orig_pallet, is_pick_or_alloc=True)
+                            row = fill_row_from_oh_master(row, orig_pallet)
                             fmt_rows.append(row)
 
                         # ════════════════════════════════════════════════════════════════
@@ -2521,9 +2417,6 @@ if login_section():
                             is_damaged     = orig_pallet in damage_pallets
 
                             if orig_pallet in logic3_matched_pallets:
-                                continue
-                            # ── Skip if this pallet already matched by L1/L2/L2B ──
-                            if orig_pallet in l1_l2_matched_pallets or orig_pallet in l1_l2_matched_gen_pallets:
                                 continue
 
                             partials_all = partial_map.get(orig_pallet, [])
@@ -2560,7 +2453,7 @@ if login_section():
                                 row['Invoice Number'] = par_entry.get('invoice_number','') or inv_invoice_map_fmt.get(gp,'') or inv_n
                                 row['Grn Number']     = par_entry.get('grn_number','') or inv_grn_map_fmt.get(gp,'') or grn_n
                                 row = fill_row_from_partial(row, pallet_key=orig_pallet, gen_pallet_key=gp, partial_entry=par_entry)
-                                row = fill_row_from_oh_master(row, orig_pallet, is_pick_or_alloc=True)
+                                row = fill_row_from_oh_master(row, orig_pallet)
                                 fmt_rows.append(row)
 
                             # Balance row → ATS
@@ -2591,9 +2484,6 @@ if login_section():
                             is_damaged     = orig_pallet in damage_pallets
 
                             if orig_pallet in logic3_matched_pallets or orig_pallet in logic4_matched_pallets:
-                                continue
-                            # ── Skip if this pallet already matched by L1/L2/L2B (Pick Id filled rows) ──
-                            if orig_pallet in l1_l2_matched_pallets or orig_pallet in l1_l2_matched_gen_pallets:
                                 continue
 
                             vn, vc, inv_n, grn_n = _get_vendor_info(inv_row, orig_pallet)
@@ -2721,13 +2611,8 @@ if login_section():
                                     if fb: fmt_df.at[idx, _fc2] = fb
 
                             # Order NO from old_history_master → old_history → l2 histories if blank
-                            # RULE: Only fill if Pick Quantity or Allocated is filled
-                            _ord_pick  = float(pd.to_numeric(fmt_df.at[idx, 'Pick Quantity'] if 'Pick Quantity' in fmt_df.columns else 0, errors='coerce') or 0)
-                            _ord_alloc = float(pd.to_numeric(fmt_df.at[idx, 'Allocated']     if 'Allocated'     in fmt_df.columns else 0, errors='coerce') or 0)
-                            _ord_ats   = float(pd.to_numeric(fmt_df.at[idx, 'ATS']           if 'ATS'           in fmt_df.columns else 0, errors='coerce') or 0)
-                            ord_n = str(fmt_df.at[idx, 'Order NO']).strip() if 'Order NO' in fmt_df.columns else ''
-                            # Only fill Order NO if row has Pick or Allocated — never for ATS-only rows
-                            if (_ord_pick > 0 or _ord_alloc > 0) and (not ord_n or ord_n in ('nan','None','')):
+                            ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
+                            if not ord_n or ord_n in ('nan','None',''):
                                 # old_history_master (1st pass)
                                 fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
                                          oh_master_lookup.get(base.lower(),{}).get('Order NO','')
@@ -2790,32 +2675,25 @@ if login_section():
                                         fmt_df.at[idx, _oh_col] = _oh_v
 
                         # ── Destination Country blank fill (any DB pallet/gen_pallet_id match) ──
-                        # RULE: Only update if Pick Quantity OR Allocated has a value (quantity > 0)
-                        # Destination Country and Order NO must NEVER be filled for ATS/Damage rows
                         _dc_fixed = 0
-                        _pick_col_dc  = 'Pick Quantity' if 'Pick Quantity' in fmt_df.columns else None
-                        _alloc_col_dc = 'Allocated'     if 'Allocated'     in fmt_df.columns else None
                         for _dc_idx, _dc_row in fmt_df.iterrows():
-                            _dc_val = str(fmt_df.at[_dc_idx, 'Destination Country']).strip()
+                            _dc_val = str(_dc_row.get('Destination Country', '')).strip()
                             if _dc_val and _dc_val not in ('nan', 'None', ''):
                                 continue  # already filled
-                            # ── Gate: only fill if Pick Quantity OR Allocated > 0 ──
-                            _dc_pick  = float(pd.to_numeric(fmt_df.at[_dc_idx, _pick_col_dc]  if _pick_col_dc  else 0, errors='coerce') or 0)
-                            _dc_alloc = float(pd.to_numeric(fmt_df.at[_dc_idx, _alloc_col_dc] if _alloc_col_dc else 0, errors='coerce') or 0)
-                            if _dc_pick <= 0 and _dc_alloc <= 0:
-                                continue  # ATS / damage / balance row — do NOT fill Destination Country
-                            _dc_pkey = str(fmt_df.at[_dc_idx, 'Pallet']).strip()
+                            _dc_pkey = str(_dc_row.get('Pallet', '')).strip()
                             _dc_base = _base_pallet(_dc_pkey)
                             fb_dc = country_lookup.get(_dc_pkey.lower(), '') or \
                                     country_lookup.get(_dc_base.lower(), '')
                             if not fb_dc:
+                                # try gen_pallet_ids in partial entries for this pallet
                                 _dc_parts = partial_map.get(_dc_base, []) or partial_map.get(_dc_pkey, [])
                                 for _dpe in _dc_parts:
                                     fb_dc = country_lookup.get(_dpe.get('gen_pallet','').lower(), '') or \
                                             _dpe.get('country', '')
                                     if fb_dc: break
                             if not fb_dc:
-                                _dc_ord = str(fmt_df.at[_dc_idx, 'Order NO']).strip()
+                                # fallback via Order NO → load_history country
+                                _dc_ord = str(_dc_row.get('Order NO', '')).strip()
                                 if _dc_ord and _dc_ord not in ('nan', 'None', ''):
                                     fb_dc = load_id_country_map.get(_dc_ord, '')
                             if fb_dc and fb_dc not in ('nan', 'None', ''):
@@ -2824,20 +2702,7 @@ if login_section():
                         if _dc_fixed > 0:
                             st.info(f"🌍 Destination Country: **{_dc_fixed}** blank rows filled from DB lookup")
 
-                        # ── FINAL SAFETY: Force-blank Destination Country + Order NO for ATS/Damage rows ──
-                        # Any row where Pick Quantity=0 AND Allocated=0 must have DC and Order NO blank
-                        if 'Pick Quantity' in fmt_df.columns and 'Allocated' in fmt_df.columns:
-                            _pick_s  = pd.to_numeric(fmt_df['Pick Quantity'], errors='coerce').fillna(0)
-                            _alloc_s = pd.to_numeric(fmt_df['Allocated'],     errors='coerce').fillna(0)
-                            _ats_mask = (_pick_s <= 0) & (_alloc_s <= 0)
-                            if 'Destination Country' in fmt_df.columns:
-                                fmt_df.loc[_ats_mask, 'Destination Country'] = ''
-                            if 'Order NO' in fmt_df.columns:
-                                fmt_df.loc[_ats_mask, 'Order NO'] = ''
-
                         # ── Auto-fix ATS: Actual Qty = Pick + Allocated + Damage + ATS ──────
-                        # NOTE: Only apply to rows where Pick Quantity AND Allocated are both blank/zero
-                        #       (i.e. pure ATS rows). Never overwrite Pick/Allocated rows with ATS.
                         _autofix_count = 0
                         for _af_idx, _af_row in fmt_df.iterrows():
                             _af_act   = float(pd.to_numeric(_af_row.get('Actual Qty',    0), errors='coerce') or 0)
@@ -2851,9 +2716,6 @@ if login_section():
                             _af_acc  = round(_af_pick + _af_alloc + _af_dmg + _af_ats, 3)
                             _af_diff = round(_af_act - _af_acc, 3)
                             if abs(_af_diff) > 0.01:
-                                # ── Do NOT touch rows that have Pick Quantity or Allocated filled ──
-                                if _af_pick > 0 or _af_alloc > 0:
-                                    continue
                                 fmt_df.at[_af_idx, 'ATS'] = max(0.0, round(_af_act - _af_pick - _af_alloc - _af_dmg, 3))
                                 _autofix_count += 1
                         if _autofix_count > 0:
@@ -2890,16 +2752,16 @@ if login_section():
                             st.warning(f"⚠️ Unaccounted: {int(inv_total_qty-accounted)} | Accounted={int(accounted)} vs Inv={int(inv_total_qty)}")
 
                         # ── Qty_Mismatch Fix: logic2_matched_partial_history (pallet-filtered) ──
-                        # Logic:
-                        #   1. Build inv_pal_qty map from uploaded inventory file
-                        #   2. For each fmt_df row where Inventory Actual Qty ≠ Report Actual Qty (mismatch):
-                        #      a. Take the pallet value from that row
-                        #      b. Filter logic2_matched_partial_history rows WHERE pallet == that pallet
-                        #      c. Check if any balance_qty in those filtered rows == Inventory Actual Qty
-                        #      d. If exact match found → update fmt_df Actual Qty & ATS to that balance_qty
+                        # Only runs when Inventory Actual Qty ≠ Report Actual Qty for a pallet.
+                        # Steps:
+                        #   1. Build inv_pal_qty map from uploaded inventory
+                        #   2. For each fmt_df row with mismatch (inv_aq ≠ report_aq):
+                        #      a. Take the Pallet value
+                        #      b. Filter logic2_matched_partial_history WHERE pallet == that pallet
+                        #      c. If any balance_qty in those rows == Inventory Actual Qty (tolerance 0.01)
+                        #      d. → update fmt_df Actual Qty & ATS to that matched balance_qty
                         _qm_fixed_count = 0
                         try:
-                            # Load logic2_matched_partial_history once
                             _l2mph_fix_df = None
                             try:
                                 _l2mph_fix_df = DBManager.read_table("logic2_matched_partial_history")
@@ -2907,7 +2769,6 @@ if login_section():
                                 pass
 
                             if _l2mph_fix_df is not None and not _l2mph_fix_df.empty:
-                                # Normalise column names
                                 _l2_dc = {str(c).strip().lower(): str(c).strip() for c in _l2mph_fix_df.columns}
                                 _l2_pal_col = _l2_dc.get('pallet')
                                 _l2_bal_col = _l2_dc.get('balance_qty')
@@ -2915,11 +2776,12 @@ if login_section():
                                 if _l2_pal_col and _l2_bal_col:
                                     _l2mph_fix_df[_l2_bal_col] = pd.to_numeric(
                                         _l2mph_fix_df[_l2_bal_col], errors='coerce').fillna(0)
-                                    # Pre-build {pallet_lower → set(balance_qty_rounded)} for fast lookup
+
+                                    # Pre-build {pallet_lower → {bal_rounded → bal_float}}
                                     _l2_pal_bal_map = {}
                                     for _, _lr in _l2mph_fix_df.iterrows():
-                                        _lp = str(_lr.get(_l2_pal_col, '')).strip().lower()
-                                        _lb = float(_lr.get(_l2_bal_col, 0) or 0)
+                                        _lp  = str(_lr.get(_l2_pal_col, '')).strip().lower()
+                                        _lb  = float(_lr.get(_l2_bal_col, 0) or 0)
                                         if not _lp or _lp in ('nan', 'none', '') or _lb <= 0:
                                             continue
                                         _lbrnd = round(_lb, 6)
@@ -2928,34 +2790,33 @@ if login_section():
                                         _l2_pal_bal_map[_lp][_lbrnd] = _lb
 
                                     # Build inventory pallet → actual qty map
-                                    _inv_pal_raw2 = inv_data[_inv_pal_col].astype(str).str.strip()
-                                    _inv_qty_raw2 = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
-                                    _inv_pal_qty2 = {}
-                                    for _p2, _q2 in zip(_inv_pal_raw2, _inv_qty_raw2):
-                                        _inv_pal_qty2[_p2] = _inv_pal_qty2.get(_p2, 0) + _q2
+                                    _qm_inv_pal_raw = inv_data[_inv_pal_col].astype(str).str.strip()
+                                    _qm_inv_qty_raw = pd.to_numeric(inv_data[_inv_aq_col], errors='coerce').fillna(0)
+                                    _qm_inv_pal_qty = {}
+                                    for _qp, _qq in zip(_qm_inv_pal_raw, _qm_inv_qty_raw):
+                                        _qm_inv_pal_qty[_qp] = _qm_inv_pal_qty.get(_qp, 0) + _qq
 
                                     # Apply fix only to mismatched rows
                                     for _fmt_idx, _fmt_row in fmt_df.iterrows():
                                         _fmt_p  = str(_fmt_row.get('Pallet', '')).strip()
                                         _fmt_aq = float(pd.to_numeric(_fmt_row.get('Actual Qty', 0), errors='coerce') or 0)
-                                        _inv_aq2 = _inv_pal_qty2.get(_fmt_p, None)
-                                        if _inv_aq2 is None:
+                                        _inv_aq = _qm_inv_pal_qty.get(_fmt_p, None)
+                                        if _inv_aq is None:
                                             continue
-                                        if abs(_inv_aq2 - _fmt_aq) < 0.01:
+                                        if abs(_inv_aq - _fmt_aq) < 0.01:
                                             continue  # no mismatch — skip
 
-                                        # Mismatch found — filter logic2_matched_partial_history by this pallet
+                                        # Mismatch: look up this pallet in logic2_matched_partial_history
                                         _pkey_low  = _fmt_p.lower()
-                                        _base_low2 = _base_pallet(_fmt_p).lower()
-                                        _bal_map   = _l2_pal_bal_map.get(_pkey_low) or _l2_pal_bal_map.get(_base_low2)
+                                        _base_low  = _base_pallet(_fmt_p).lower()
+                                        _bal_map   = _l2_pal_bal_map.get(_pkey_low) or _l2_pal_bal_map.get(_base_low)
                                         if not _bal_map:
-                                            continue  # this pallet not in logic2_matched_partial_history
+                                            continue  # pallet not found in logic2_matched_partial_history
 
-                                        # Check if any balance_qty in those filtered rows == Inventory Actual Qty
-                                        _inv_rounded = round(_inv_aq2, 6)
+                                        _inv_rnd     = round(_inv_aq, 6)
                                         _matched_bal = None
                                         for _brnd, _bval in _bal_map.items():
-                                            if abs(_brnd - _inv_rounded) < 0.01:
+                                            if abs(_brnd - _inv_rnd) < 0.01:
                                                 _matched_bal = _bval
                                                 break
 
