@@ -1277,94 +1277,12 @@ if login_section():
     # TAB 2: DASHBOARD & TRACKING
     # ==========================================================================
     elif choice == "📊 Dashboard & Tracking":
-
-        # ── Dashboard CSS ──────────────────────────────────────────────────────
-        st.markdown("""
-        <style>
-        .dash-kpi-wrap {
-            display:flex; gap:12px; margin-bottom:18px; flex-wrap:wrap;
-        }
-        .dash-kpi {
-            flex:1; min-width:140px;
-            background:#ffffff; border:1px solid #e8e8e8; border-radius:10px;
-            padding:14px 18px; position:relative; overflow:hidden;
-        }
-        .dash-kpi::after {
-            content:''; position:absolute; top:0; left:0; right:0; height:3px;
-            background:var(--kpi-color,#1a1a1a); border-radius:10px 10px 0 0;
-        }
-        .dash-kpi-num { font-size:30px; font-weight:700; color:#1a1a1a; line-height:1.1; }
-        .dash-kpi-lbl { font-size:11px; color:#888; margin-top:4px; letter-spacing:.5px; }
-
-        /* ── per-card accent bar ── */
-        .card-wrap {
-            border:1px solid #e8e8e8; border-radius:10px;
-            overflow:hidden; margin-bottom:6px; background:#fff;
-        }
-        .card-accent-top {
-            height:3px; width:100%;
-        }
-        .card-body {
-            padding:10px 14px 8px 14px;
-        }
-        .card-lid-line {
-            display:flex; align-items:center; gap:6px;
-            font-size:14px; font-weight:700; color:#1a1a1a;
-        }
-        .card-shortage {
-            font-size:10px; background:#fee2e2; color:#b91c1c;
-            padding:1px 7px; border-radius:20px; font-weight:600;
-        }
-        .card-progress-wrap {
-            height:4px; background:#f0f0f0; border-radius:2px; margin:6px 0 2px;
-        }
-        .card-progress-fill { height:4px; border-radius:2px; }
-        .card-progress-pct  { font-size:10px; color:#aaa; }
-        .card-meta {
-            display:flex; gap:0px; margin-top:8px; flex-wrap:wrap;
-        }
-        .card-meta-item {
-            flex:1; min-width:70px;
-            border-left:1px solid #f0f0f0; padding:0 10px;
-        }
-        .card-meta-item:first-child { border-left:none; padding-left:0; }
-        .card-meta-lbl { font-size:9px; color:#aaa; letter-spacing:1px; text-transform:uppercase; }
-        .card-meta-val { font-size:12px; font-weight:600; color:#1a1a1a; margin-top:1px; }
-
-        .sp { display:inline-block; font-size:10px; font-weight:700;
-              padding:2px 10px; border-radius:20px; white-space:nowrap; }
-        .sp-pending    { background:#fef3c7; color:#92400e; }
-        .sp-plpending  { background:#ffedd5; color:#9a3412; }
-        .sp-processing { background:#dbeafe; color:#1e40af; }
-        .sp-completed  { background:#dcfce7; color:#166534; }
-        .sp-cancelled  { background:#fee2e2; color:#991b1b; }
-
-        .card-update-bar {
-            background:#fafafa; border-top:1px solid #f0f0f0;
-            padding:6px 14px 8px 14px;
-        }
-        .card-update-lbl {
-            font-size:10px; color:#bbb; letter-spacing:1px;
-            text-transform:uppercase; margin-bottom:4px;
-        }
-
-        .sec-hdr {
-            font-size:11px; font-weight:700; letter-spacing:2px;
-            text-transform:uppercase; padding:4px 0 4px 10px;
-            border-left:3px solid; margin:16px 0 8px;
-            border-radius:0;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        # ── Header ─────────────────────────────────────────────────────────────
-        _hc1, _hc2 = st.columns([5, 1])
-        _hc1.title("📊 Load Tracking & Dashboard")
-        if _hc2.button("🔄 Refresh", use_container_width=True, key="dash_refresh"):
+        col_t1, col_t2 = st.columns([4, 1])
+        col_t1.title("📊 Load Tracking & Dashboard")
+        if col_t2.button("🔄 Refresh Data", use_container_width=True):
             DBManager.invalidate()
             st.rerun()
 
-        # ── Data load ──────────────────────────────────────────────────────────
         _batch  = DBManager.batch_read(["load_history", "summary_data", "master_pick_data"])
         hist_df = _batch["load_history"]
         summ_df = _batch["summary_data"]
@@ -1375,26 +1293,20 @@ if login_section():
         pending_loads    = len(hist_df[hist_df['Pick Status'] == 'Pending'])    if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
         processing_loads = len(hist_df[hist_df['Pick Status'] == 'Processing']) if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
 
-        # ── KPI cards ──────────────────────────────────────────────────────────
-        km1, km2, km3, km4 = st.columns(4)
-        km1.markdown(f"""<div class="dash-kpi" style="--kpi-color:#1a1a1a">
-            <div class="dash-kpi-num">{total_loads}</div>
-            <div class="dash-kpi-lbl">Total Load IDs</div></div>""", unsafe_allow_html=True)
-        km2.markdown(f"""<div class="dash-kpi" style="--kpi-color:#2563eb">
-            <div class="dash-kpi-num">{total_picks}</div>
-            <div class="dash-kpi-lbl">Total Picks Made</div></div>""", unsafe_allow_html=True)
-        km3.markdown(f"""<div class="dash-kpi" style="--kpi-color:#f59e0b">
-            <div class="dash-kpi-num">{pending_loads}</div>
-            <div class="dash-kpi-lbl">Pending Loads</div></div>""", unsafe_allow_html=True)
-        km4.markdown(f"""<div class="dash-kpi" style="--kpi-color:#10b981">
-            <div class="dash-kpi-num">{processing_loads}</div>
-            <div class="dash-kpi-lbl">Processing Loads</div></div>""", unsafe_allow_html=True)
-
-        st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
+        st.subheader("📈 Overall System Summary")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Load IDs",   total_loads)
+        m2.metric("Total Picks Made", total_picks)
+        m3.metric("Pending Loads",    pending_loads)
+        m4.metric("Processing Loads", processing_loads)
+        st.divider()
 
         if total_loads == 0:
             st.info("දැනට පද්ධතියේ කිසිදු දත්තයක් නොමැත. 'Picking Operations' මගින් දත්ත ඇතුලත් කරන්න.")
         else:
+            st.subheader("📦 Active Load ID Overview")
+            st.caption("Cancelled සහ Completed Load IDs මෙහි නොපෙන්වයි.")
+
             if not hist_df.empty and 'Generated Load ID' in hist_df.columns and 'Pick Status' in hist_df.columns:
                 active_loads = hist_df[~hist_df['Pick Status'].astype(str).isin(['Cancelled', 'Completed'])].copy()
 
@@ -1403,170 +1315,140 @@ if login_section():
                 else:
                     load_ids = active_loads['Generated Load ID'].dropna().unique().tolist()
 
-                    _sf1, _sf2 = st.columns([2, 5])
-                    status_filter = _sf1.selectbox(
-                        "Filter by Status:", ["All", "Pending", "PL Pending", "Processing"],
-                        key="dash_status_filter", label_visibility="collapsed"
-                    )
+                    filter_col1, filter_col2 = st.columns([2, 4])
+                    status_filter = filter_col1.selectbox("🔽 Filter by Status:",
+                        ["All", "Pending", "PL Pending", "Processing"], key="dash_status_filter")
                     if status_filter != "All":
-                        load_ids = active_loads[
-                            active_loads['Pick Status'].astype(str) == status_filter
-                        ]['Generated Load ID'].dropna().unique().tolist()
+                        filtered_active = active_loads[active_loads['Pick Status'].astype(str) == status_filter]
+                        load_ids = filtered_active['Generated Load ID'].dropna().unique().tolist()
 
-                    # ── Summary aggregation ───────────────────────────────────
                     summ_by_load = {}
                     if not summ_df.empty and 'Load ID' in summ_df.columns:
-                        for _sc in ['Variance', 'Requested', 'Picked']:
-                            summ_df[_sc] = pd.to_numeric(summ_df.get(_sc, 0), errors='coerce').fillna(0)
-                        for _ls in summ_df['Load ID'].dropna().unique():
-                            _lr = summ_df[summ_df['Load ID'].astype(str) == str(_ls)]
-                            summ_by_load[str(_ls)] = {
-                                'requested': _lr['Requested'].sum(),
-                                'picked':    _lr['Picked'].sum(),
-                                'variance':  _lr['Variance'].sum(),
+                        for col in ['Variance', 'Requested', 'Picked']:
+                            summ_df[col] = pd.to_numeric(summ_df.get(col, 0), errors='coerce').fillna(0)
+                        for lid_s in summ_df['Load ID'].dropna().unique():
+                            rows = summ_df[summ_df['Load ID'].astype(str) == str(lid_s)]
+                            summ_by_load[str(lid_s)] = {
+                                'requested': rows['Requested'].sum(),
+                                'picked':    rows['Picked'].sum(),
+                                'variance':  rows['Variance'].sum(),
                             }
 
                     zero_pick_ids, shortage_ids, full_pick_ids = [], [], []
                     for lid in load_ids:
-                        _s  = summ_by_load.get(str(lid), {})
-                        _rq = _s.get('requested', 0)
-                        _pq = _s.get('picked',    0)
-                        _vq = _s.get('variance',  0)
-                        if _pq == 0 and _rq > 0: zero_pick_ids.append(lid)
-                        elif _vq > 0:            shortage_ids.append(lid)
-                        else:                    full_pick_ids.append(lid)
+                        s = summ_by_load.get(str(lid), {})
+                        req_q    = s.get('requested', 0)
+                        picked_q = s.get('picked', 0)
+                        var_q    = s.get('variance', 0)
+                        if picked_q == 0 and req_q > 0: zero_pick_ids.append(lid)
+                        elif var_q > 0:                 shortage_ids.append(lid)
+                        else:                           full_pick_ids.append(lid)
 
                     STATUS_OPTIONS = ["Pending", "PL Pending", "Processing", "Completed", "Cancelled"]
 
-                    # ── Pick counts ───────────────────────────────────────────
                     pick_counts_by_lid = {}
                     pick_qty_by_lid    = {}
                     if not pick_df.empty:
-                        _lc = next((c for c in pick_df.columns if str(c).strip().lower() in ('load id','loadid','load_id')), None)
-                        _ac = next((c for c in pick_df.columns if str(c).strip().lower() == 'actual qty'), None)
-                        if _lc:
-                            _ls2 = pick_df[_lc].astype(str).str.strip()
-                            pick_counts_by_lid = _ls2.value_counts().to_dict()
-                            if _ac:
-                                pick_qty_by_lid = pick_df.groupby(_ls2)[_ac].apply(
-                                    lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum()
-                                ).to_dict()
+                        load_id_col_pick = next((c for c in pick_df.columns if str(c).strip().lower() in ('load id', 'loadid', 'load_id')), None)
+                        actual_col_pick  = next((c for c in pick_df.columns if str(c).strip().lower() == 'actual qty'), None)
+                        if load_id_col_pick:
+                            _lid_series = pick_df[load_id_col_pick].astype(str).str.strip()
+                            pick_counts_by_lid = _lid_series.value_counts().to_dict()
+                            if actual_col_pick:
+                                _qty_grp = pick_df.groupby(_lid_series)[actual_col_pick].apply(
+                                    lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum())
+                                pick_qty_by_lid = _qty_grp.to_dict()
 
-                    def _sp_cls(s):
-                        return {'Pending':'sp-pending','PL Pending':'sp-plpending',
-                                'Processing':'sp-processing','Completed':'sp-completed',
-                                'Cancelled':'sp-cancelled'}.get(s,'sp-pending')
-
-                    # ── Card renderer ─────────────────────────────────────────
-                    def render_cards(id_list, accent, section_emoji, section_label):
-                        st.markdown(
-                            f'<div class="sec-hdr" style="border-color:{accent};color:{accent};">'
-                            f'{section_emoji} {section_label}</div>',
-                            unsafe_allow_html=True
-                        )
-                        for lid in id_list:
-                            _row       = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
-                            status     = str(_row.get('Pick Status',    'Pending'))
-                            so_num     = str(_row.get('SO Number',      '—'))
-                            country    = str(_row.get('Country Name',   '—'))
-                            ship       = str(_row.get('SHIP MODE',      '—'))
-                            date_val   = str(_row.get('Date',           '—'))[:10]
-                            lid_key    = str(lid).strip()
-                            lines_cnt  = pick_counts_by_lid.get(lid_key, 0)
-                            qty_val    = int(pick_qty_by_lid.get(lid_key, 0))
-                            _sv        = summ_by_load.get(str(lid), {})
-                            variance   = _sv.get('variance',  0)
-                            requested  = _sv.get('requested', 0)
-                            picked_q   = _sv.get('picked',    0)
-                            fill_pct   = min(int(picked_q / requested * 100) if requested > 0 else 0, 100)
-                            sp_cls     = _sp_cls(status)
-                            shortage_html = (
-                                f'<span class="card-shortage">⚠ -{int(variance)}</span>'
-                            ) if variance > 0 else ''
-
-                            # ── Card HTML (pure display — no Streamlit widgets) ─
-                            st.markdown(f"""
-<div class="card-wrap">
-  <div class="card-accent-top" style="background:{accent};"></div>
-  <div class="card-body">
-    <div class="card-lid-line">
-      <span>{lid}</span>{shortage_html}
-      <span class="sp {sp_cls}" style="margin-left:auto;">{status}</span>
-    </div>
-    <div class="card-progress-wrap">
-      <div class="card-progress-fill" style="width:{fill_pct}%;background:{accent};"></div>
-    </div>
-    <div class="card-progress-pct">{fill_pct}% picked</div>
-    <div class="card-meta">
-      <div class="card-meta-item">
-        <div class="card-meta-lbl">SO Number</div>
-        <div class="card-meta-val">{so_num}</div>
-      </div>
-      <div class="card-meta-item">
-        <div class="card-meta-lbl">Country</div>
-        <div class="card-meta-val">{country}</div>
-      </div>
-      <div class="card-meta-item">
-        <div class="card-meta-lbl">Ship Mode</div>
-        <div class="card-meta-val">{ship}</div>
-      </div>
-      <div class="card-meta-item">
-        <div class="card-meta-lbl">Date</div>
-        <div class="card-meta-val">{date_val}</div>
-      </div>
-      <div class="card-meta-item">
-        <div class="card-meta-lbl">Lines</div>
-        <div class="card-meta-val">{lines_cnt}</div>
-      </div>
-      <div class="card-meta-item">
-        <div class="card-meta-lbl">Pick Qty</div>
-        <div class="card-meta-val">{qty_val:,}</div>
-      </div>
-    </div>
-  </div>
-  <div class="card-update-bar">
-    <div class="card-update-lbl">Update Status</div>
-  </div>
+                    def render_load_list(id_list, category_color, category_label):
+                        # ── Header row ──────────────────────────────────────────────────
+                        st.markdown(f"""
+<div style="display:grid;grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr;gap:4px;
+     background:{category_color}15;border:1px solid {category_color}40;
+     border-radius:8px 8px 0 0;padding:7px 12px;
+     font-size:11px;font-weight:700;color:#444;margin-top:4px;">
+    <div>Load ID</div><div>SO</div><div>Country</div><div>Ship</div>
+    <div>Date</div><div>Lines</div><div>Qty</div><div>Status</div>
 </div>""", unsafe_allow_html=True)
 
-                            # ── Status update — Streamlit widgets immediately
-                            # after the card HTML (visually inside the update bar)
-                            _c1, _c2, _c3 = st.columns([4, 1, 3])
+                        for lid in id_list:
+                            load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
+                            status       = str(load_row.get('Pick Status', 'Pending'))
+                            so_num       = str(load_row.get('SO Number', '-'))
+                            country      = str(load_row.get('Country Name', '-'))
+                            ship         = str(load_row.get('SHIP MODE', '-'))
+                            date         = str(load_row.get('Date', '-'))[:10]
+                            lid_key      = str(lid).strip()
+                            pick_count   = pick_counts_by_lid.get(lid_key, 0)
+                            pick_qty_val = pick_qty_by_lid.get(lid_key, 0)
+                            s            = summ_by_load.get(str(lid), {})
+                            variance     = s.get('variance', 0)
+                            requested    = s.get('requested', 0)
+                            picked_q     = s.get('picked', 0)
+                            fill_pct     = min(int((picked_q / requested * 100)) if requested > 0 else 0, 100)
+
+                            status_bg  = {
+                                'Pending':    '#fff3cd', 'PL Pending': '#fff0d6',
+                                'Processing': '#cce5ff', 'Completed':  '#d4edda',
+                                'Cancelled':  '#f8d7da',
+                            }.get(status, '#f0f0f0')
+                            status_col = {
+                                'Pending':    '#856404', 'PL Pending': '#7a4f00',
+                                'Processing': '#004085', 'Completed':  '#155724',
+                                'Cancelled':  '#721c24',
+                            }.get(status, '#333')
+                            shortage_tag = (
+                                f'<span style="font-size:9px;background:#ffe0e0;color:#c0392b;'
+                                f'padding:1px 5px;border-radius:4px;margin-left:4px;">⚠️ -{int(variance)}</span>'
+                            ) if variance > 0 else ''
+
+                            # ── Info row (HTML grid — no interactive widgets) ─────────────
+                            st.markdown(f"""
+<div style="display:grid;grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr;gap:4px;
+     border-left:3px solid {category_color};border-bottom:1px solid #eee;
+     padding:7px 12px;background:#fff;font-size:11px;color:#333;align-items:center;">
+    <div>
+        <div style="font-weight:700;color:#1a1a1a;">{lid}{shortage_tag}</div>
+        <div style="height:3px;background:#e0e0e0;border-radius:2px;margin-top:3px;">
+            <div style="height:3px;width:{fill_pct}%;background:{category_color};border-radius:2px;"></div>
+        </div>
+        <div style="font-size:9px;color:#888;">{fill_pct}% picked</div>
+    </div>
+    <div>{so_num}</div><div>{country}</div><div>{ship}</div><div>{date}</div>
+    <div><b>{pick_count}</b></div><div><b>{int(pick_qty_val)}</b></div>
+    <div><span style="background:{status_bg};color:{status_col};font-size:10px;
+         font-weight:700;padding:2px 10px;border-radius:10px;">{status}</span></div>
+</div>""", unsafe_allow_html=True)
+
+                            # ── Status update row (selectbox + Save button) ──────────────
+                            _u1, _u2 = st.columns([5, 1])
                             safe_idx = STATUS_OPTIONS.index(status) if status in STATUS_OPTIONS else 0
-                            new_st = _c1.selectbox(
-                                "status", STATUS_OPTIONS, index=safe_idx,
-                                key=f"st_{lid}", label_visibility="collapsed"
-                            )
-                            if _c2.button("💾", key=f"upd_{lid}", use_container_width=True,
-                                          help="Save status"):
+                            new_st = _u1.selectbox("", STATUS_OPTIONS, index=safe_idx,
+                                                   key=f"st_{lid}", label_visibility="collapsed")
+                            if _u2.button("💾 Save", key=f"upd_{lid}", use_container_width=True):
                                 try:
-                                    ok = DBManager.update_cell(
-                                        "load_history", "Generated Load ID",
-                                        str(lid), "Pick Status", new_st
-                                    )
+                                    ok = DBManager.update_cell("load_history", "Generated Load ID", str(lid), "Pick Status", new_st)
                                     if ok and new_st == "Cancelled":
                                         mpd = DBManager.read_table("master_pick_data")
-                                        _lc2 = next((c for c in mpd.columns
-                                                     if str(c).strip().lower() == 'load id'), None)
-                                        if not mpd.empty and _lc2:
-                                            DBManager._overwrite_table(
-                                                "master_pick_data",
-                                                mpd[mpd[_lc2].astype(str).str.strip() != str(lid).strip()]
-                                            )
-                                        _c3.error(f"🚫 {lid} Cancelled · pick records deleted")
+                                        lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
+                                        if not mpd.empty and lid_col:
+                                            filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(lid).strip()]
+                                            DBManager._overwrite_table("master_pick_data", filtered_mpd)
+                                        st.success(f"✅ {lid} → Cancelled | Master_Pick_Data records deleted.")
                                     elif ok:
-                                        _c3.success(f"✅ {lid} → {new_st}")
+                                        st.success(f"✅ {lid} → {new_st}")
                                     st.rerun()
-                                except Exception as _ex:
-                                    _c3.error(f"Error: {_ex}")
+                                except Exception as ex:
+                                    st.error(f"Update error: {ex}")
 
-                    # ── Render sections ───────────────────────────────────────
                     if zero_pick_ids:
-                        render_cards(zero_pick_ids, '#ef4444', '🔴', 'Not Yet Picked')
+                        st.markdown("#### 🔴 Not Yet Picked")
+                        render_load_list(zero_pick_ids, '#e74c3c', 'Not Yet Picked')
                     if shortage_ids:
-                        render_cards(shortage_ids,  '#f59e0b', '🟡', 'Shortage')
+                        st.markdown("#### 🟡 Shortage")
+                        render_load_list(shortage_ids, '#f39c12', 'Shortage')
                     if full_pick_ids:
-                        render_cards(full_pick_ids,  '#10b981', '🟢', 'Fully Picked')
+                        st.markdown("#### 🟢 Fully Picked")
+                        render_load_list(full_pick_ids, '#27ae60', 'Fully Picked')
 
             st.divider()
             st.subheader("🔍 Search & Download Picks")
@@ -2601,8 +2483,26 @@ if login_section():
                                 bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=round(balance_qty, 3))
                                 bal_row['Pick Quantity']       = ''
                                 bal_row['Allocated']           = ''
-                                bal_row['Destination Country'] = ''
-                                bal_row['Order NO']            = ''
+                                # ── Destination Country: try partial_map → mpd_pallet_rows → country_lookup
+                                _bal_cntry = ''
+                                _bal_ord   = ''
+                                _bal_parts = partial_map.get(orig_pallet, [])
+                                for _bpe in _bal_parts:
+                                    if not _bal_cntry: _bal_cntry = _bpe.get('country', '')
+                                    if not _bal_ord:   _bal_ord   = _bpe.get('load_id', '')
+                                    if _bal_cntry and _bal_ord: break
+                                if not _bal_cntry or not _bal_ord:
+                                    for _mpe in mpd_pallet_rows.get(orig_pallet, []):
+                                        if not _bal_cntry: _bal_cntry = _mpe.get('country', '')
+                                        if not _bal_ord:   _bal_ord   = _mpe.get('load_id', '')
+                                        if _bal_cntry and _bal_ord: break
+                                if not _bal_cntry:
+                                    _bal_cntry = country_lookup.get(orig_pallet.lower(), '') or \
+                                                 country_lookup.get(_base_pallet(orig_pallet).lower(), '')
+                                if not _bal_cntry and _bal_ord:
+                                    _bal_cntry = load_id_country_map.get(_bal_ord, '')
+                                bal_row['Destination Country'] = _bal_cntry
+                                bal_row['Order NO']            = _bal_ord
                                 for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 bal_row['ATS']            = round(balance_qty, 3)
                                 bal_row['Vendor Name']    = vn
@@ -2627,10 +2527,30 @@ if login_section():
 
                             vn, vc, inv_n, grn_n = _get_vendor_info(inv_row, orig_pallet)
                             row = build_row(inv_row)
-                            row['Pick Quantity']       = ''
-                            row['Allocated']           = ''
-                            row['Destination Country'] = ''
-                            row['Order NO']            = ''
+                            row['Pick Quantity'] = ''
+                            row['Allocated']     = ''
+
+                            # ── Destination Country + Order NO:
+                            # Priority: partial_map → mpd_pallet_rows → country_lookup → load_id_country_map
+                            _l5_cntry = ''
+                            _l5_ord   = ''
+                            for _l5pe in partial_map.get(orig_pallet, []):
+                                if not _l5_cntry: _l5_cntry = _l5pe.get('country', '')
+                                if not _l5_ord:   _l5_ord   = _l5pe.get('load_id', '')
+                                if _l5_cntry and _l5_ord: break
+                            if not _l5_cntry or not _l5_ord:
+                                for _l5me in mpd_pallet_rows.get(orig_pallet, []):
+                                    if not _l5_cntry: _l5_cntry = _l5me.get('country', '')
+                                    if not _l5_ord:   _l5_ord   = _l5me.get('load_id', '')
+                                    if _l5_cntry and _l5_ord: break
+                            if not _l5_cntry:
+                                _l5_cntry = country_lookup.get(orig_pallet.lower(), '') or \
+                                            country_lookup.get(_base_pallet(orig_pallet).lower(), '')
+                            if not _l5_cntry and _l5_ord:
+                                _l5_cntry = load_id_country_map.get(_l5_ord, '')
+                            row['Destination Country'] = _l5_cntry
+                            row['Order NO']            = _l5_ord
+
                             for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                             row['ATS']            = round(inv_actual_qty, 3) if (not is_damaged and inv_actual_qty > 0) else ''
                             row['Vendor Name']    = vn
@@ -2813,33 +2733,56 @@ if login_section():
                                     if _oh_v and _oh_col in fmt_df.columns:
                                         fmt_df.at[idx, _oh_col] = _oh_v
 
-                        # ── Destination Country blank fill (any DB pallet/gen_pallet_id match) ──
+                        # ── Destination Country + Order NO blank fill (post-loop) ──────────
+                        # Runs after all rows are built. Fills any still-blank Country/Order NO
+                        # using: partial_map → mpd_pallet_rows → country_lookup → load_id_country_map
                         _dc_fixed = 0
+                        _ord_fixed = 0
                         for _dc_idx, _dc_row in fmt_df.iterrows():
+                            _dc_pkey = str(_dc_row.get('Pallet', '')).strip()
+                            _dc_base = _base_pallet(_dc_pkey)
+
+                            # ── Order NO blank fill ────────────────────────────────────────
+                            _cur_ord = str(_dc_row.get('Order NO', '')).strip()
+                            if not _cur_ord or _cur_ord in ('nan', 'None', ''):
+                                _fb_ord = ''
+                                for _pe_ord in (partial_map.get(_dc_base, []) or partial_map.get(_dc_pkey, [])):
+                                    _fb_ord = _pe_ord.get('load_id', '')
+                                    if _fb_ord: break
+                                if not _fb_ord:
+                                    for _me_ord in (mpd_pallet_rows.get(_dc_base, []) or mpd_pallet_rows.get(_dc_pkey, [])):
+                                        _fb_ord = _me_ord.get('load_id', '')
+                                        if _fb_ord: break
+                                if _fb_ord and _fb_ord not in ('nan', 'None', ''):
+                                    fmt_df.at[_dc_idx, 'Order NO'] = _fb_ord
+                                    _cur_ord = _fb_ord
+                                    _ord_fixed += 1
+
+                            # ── Destination Country blank fill ─────────────────────────────
                             _dc_val = str(_dc_row.get('Destination Country', '')).strip()
                             if _dc_val and _dc_val not in ('nan', 'None', ''):
                                 continue  # already filled
-                            _dc_pkey = str(_dc_row.get('Pallet', '')).strip()
-                            _dc_base = _base_pallet(_dc_pkey)
                             fb_dc = country_lookup.get(_dc_pkey.lower(), '') or \
                                     country_lookup.get(_dc_base.lower(), '')
                             if not fb_dc:
-                                # try gen_pallet_ids in partial entries for this pallet
                                 _dc_parts = partial_map.get(_dc_base, []) or partial_map.get(_dc_pkey, [])
                                 for _dpe in _dc_parts:
-                                    fb_dc = country_lookup.get(_dpe.get('gen_pallet','').lower(), '') or \
+                                    fb_dc = country_lookup.get(_dpe.get('gen_pallet', '').lower(), '') or \
                                             _dpe.get('country', '')
                                     if fb_dc: break
                             if not fb_dc:
-                                # fallback via Order NO → load_history country
-                                _dc_ord = str(_dc_row.get('Order NO', '')).strip()
-                                if _dc_ord and _dc_ord not in ('nan', 'None', ''):
-                                    fb_dc = load_id_country_map.get(_dc_ord, '')
+                                for _mpe2 in (mpd_pallet_rows.get(_dc_base, []) or mpd_pallet_rows.get(_dc_pkey, [])):
+                                    fb_dc = _mpe2.get('country', '')
+                                    if fb_dc: break
+                            if not fb_dc and _cur_ord and _cur_ord not in ('nan', 'None', ''):
+                                fb_dc = load_id_country_map.get(_cur_ord, '')
                             if fb_dc and fb_dc not in ('nan', 'None', ''):
                                 fmt_df.at[_dc_idx, 'Destination Country'] = fb_dc
                                 _dc_fixed += 1
                         if _dc_fixed > 0:
                             st.info(f"🌍 Destination Country: **{_dc_fixed}** blank rows filled from DB lookup")
+                        if _ord_fixed > 0:
+                            st.info(f"📋 Order NO: **{_ord_fixed}** blank rows filled from partial / MPD lookup")
 
                         # ── Auto-fix ATS: Actual Qty = Pick + Allocated + Damage + ATS ──────
                         _autofix_count = 0
