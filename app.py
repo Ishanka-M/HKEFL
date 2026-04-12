@@ -3032,12 +3032,18 @@ if login_section():
                         # Pick=0 AND Alloc=0 → force clear Destination Country + Order NO
                         # This runs AFTER all other fill/fix steps to guarantee clean output
                         # ══════════════════════════════════════════════════════════════════
+                        _f7_cleared = 0
                         for _f7_idx, _f7_row in fmt_df.iterrows():
-                            _f7_pick  = float(pd.to_numeric(_f7_row.get('Pick Quantity', 0), errors='coerce') or 0)
-                            _f7_alloc = float(pd.to_numeric(_f7_row.get('Allocated',     0), errors='coerce') or 0)
-                            if _f7_pick <= 0 and _f7_alloc <= 0:
+                            _f7_pick  = str(fmt_df.at[_f7_idx, 'Pick Quantity']).strip() if 'Pick Quantity' in fmt_df.columns else ''
+                            _f7_alloc = str(fmt_df.at[_f7_idx, 'Allocated']).strip()     if 'Allocated'     in fmt_df.columns else ''
+                            _f7_pick_v  = float(pd.to_numeric(_f7_pick,  errors='coerce') or 0)
+                            _f7_alloc_v = float(pd.to_numeric(_f7_alloc, errors='coerce') or 0)
+                            if _f7_pick_v <= 0 and _f7_alloc_v <= 0:
                                 fmt_df.at[_f7_idx, 'Destination Country'] = ''
                                 fmt_df.at[_f7_idx, 'Order NO']            = ''
+                                _f7_cleared += 1
+                        if _f7_cleared > 0:
+                            st.info(f"🧹 Logic 7 Final: **{_f7_cleared}** ATS/Damage rows — Destination Country + Order NO cleared")
 
                         # ── Total row ──────────────────────────────────────────────────────
                         total_row = {}
