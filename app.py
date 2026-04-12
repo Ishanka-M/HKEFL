@@ -3027,6 +3027,18 @@ if login_section():
                         # ── Preview ────────────────────────────────────────────────────────
                         st.dataframe(fmt_df.astype(str), use_container_width=True)
 
+                        # ══════════════════════════════════════════════════════════════════
+                        # LOGIC 7 — FINAL PASS (absolute last step before export)
+                        # Pick=0 AND Alloc=0 → force clear Destination Country + Order NO
+                        # This runs AFTER all other fill/fix steps to guarantee clean output
+                        # ══════════════════════════════════════════════════════════════════
+                        for _f7_idx, _f7_row in fmt_df.iterrows():
+                            _f7_pick  = float(pd.to_numeric(_f7_row.get('Pick Quantity', 0), errors='coerce') or 0)
+                            _f7_alloc = float(pd.to_numeric(_f7_row.get('Allocated',     0), errors='coerce') or 0)
+                            if _f7_pick <= 0 and _f7_alloc <= 0:
+                                fmt_df.at[_f7_idx, 'Destination Country'] = ''
+                                fmt_df.at[_f7_idx, 'Order NO']            = ''
+
                         # ── Total row ──────────────────────────────────────────────────────
                         total_row = {}
                         for _col in final_cols:
