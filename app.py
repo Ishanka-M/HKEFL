@@ -3045,6 +3045,30 @@ if login_section():
                         if _f7_cleared > 0:
                             st.info(f"🧹 Logic 7 Final: **{_f7_cleared}** ATS/Damage rows — Destination Country + Order NO cleared")
 
+                        # ══════════════════════════════════════════════════════════════════
+                        # LOGIC 8 — ATS CLEAR PASS (runs after Logic 7)
+                        # ATS > 0 ඇති rows වල Destination Country + Order NO clear කරන්න
+                        # (Mixed rows — Pick/Alloc > 0 ද ATS > 0 ද — ඒවාත් clear වේ)
+                        # ══════════════════════════════════════════════════════════════════
+                        _l8_cleared = 0
+                        for _l8_idx, _l8_row in fmt_df.iterrows():
+                            _l8_ats = float(pd.to_numeric(
+                                fmt_df.at[_l8_idx, 'ATS'] if 'ATS' in fmt_df.columns else 0,
+                                errors='coerce') or 0)
+                            if _l8_ats > 0:
+                                _cur_dc  = str(fmt_df.at[_l8_idx, 'Destination Country']).strip() \
+                                           if 'Destination Country' in fmt_df.columns else ''
+                                _cur_ord = str(fmt_df.at[_l8_idx, 'Order NO']).strip() \
+                                           if 'Order NO' in fmt_df.columns else ''
+                                if _cur_dc or _cur_ord:
+                                    if 'Destination Country' in fmt_df.columns:
+                                        fmt_df.at[_l8_idx, 'Destination Country'] = ''
+                                    if 'Order NO' in fmt_df.columns:
+                                        fmt_df.at[_l8_idx, 'Order NO'] = ''
+                                    _l8_cleared += 1
+                        if _l8_cleared > 0:
+                            st.info(f"🧹 Logic 8: **{_l8_cleared}** ATS rows — Destination Country + Order NO cleared")
+
                         # ── Total row ──────────────────────────────────────────────────────
                         total_row = {}
                         for _col in final_cols:
