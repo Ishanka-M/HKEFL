@@ -2697,8 +2697,9 @@ if login_section():
 
                         # ══════════════════════════════════════════════════════════════════
                         # LOGIC 7: Destination Country + Order NO — conditional fill/clear
-                        # Rule: Pick Quantity > 0 හෝ Allocated > 0 නම් → fill
-                        #       Otherwise (pure ATS rows) → blank/clear
+                        # Rule:
+                        #   Pick Quantity > 0 හෝ Allocated > 0  → fill Country + Order NO
+                        #   Pick=0 AND Alloc=0 (ATS / Damage only rows) → clear both
                         # ══════════════════════════════════════════════════════════════════
                         _l7_filled  = 0
                         _l7_cleared = 0
@@ -2708,8 +2709,8 @@ if login_section():
                             _l7_pkey  = str(_l7_row.get('Pallet', '')).strip()
                             _l7_base  = _base_pallet(_l7_pkey)
 
+                            # ── ATS-only / Damage-only rows: Pick=0 AND Alloc=0 ───────────
                             if _l7_pick <= 0 and _l7_alloc <= 0:
-                                # ── Pure ATS row → clear Country + Order NO ────────────────
                                 _cur_dc  = str(_l7_row.get('Destination Country', '')).strip()
                                 _cur_ord = str(_l7_row.get('Order NO', '')).strip()
                                 if (_cur_dc  and _cur_dc  not in ('nan', 'None', '')) or \
@@ -2717,8 +2718,9 @@ if login_section():
                                     fmt_df.at[_l7_idx, 'Destination Country'] = ''
                                     fmt_df.at[_l7_idx, 'Order NO']            = ''
                                     _l7_cleared += 1
+
+                            # ── Picked / Allocated rows → fill if blank ────────────────────
                             else:
-                                # ── Picked / Allocated row → fill if blank ─────────────────
                                 _cur_ord = str(_l7_row.get('Order NO', '')).strip()
                                 if not _cur_ord or _cur_ord in ('nan', 'None', ''):
                                     _fb_ord = ''
@@ -2756,7 +2758,7 @@ if login_section():
                         if _l7_filled  > 0:
                             st.info(f"✅ Logic 7: **{_l7_filled}** rows — Destination Country / Order NO filled (picked/allocated rows)")
                         if _l7_cleared > 0:
-                            st.info(f"🧹 Logic 7: **{_l7_cleared}** ATS-only rows — Destination Country / Order NO cleared")
+                            st.info(f"🧹 Logic 7: **{_l7_cleared}** rows — Destination Country / Order NO cleared (ATS / Damage only rows)")
 
                         # ── Auto-fix ATS: Actual Qty = Pick + Allocated + Damage + ATS ──────
                         _autofix_count = 0
