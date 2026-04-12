@@ -2483,26 +2483,8 @@ if login_section():
                                 bal_row = build_row(inv_row, override_pallet=orig_pallet, override_actual_qty=round(balance_qty, 3))
                                 bal_row['Pick Quantity']       = ''
                                 bal_row['Allocated']           = ''
-                                # ── Destination Country: try partial_map → mpd_pallet_rows → country_lookup
-                                _bal_cntry = ''
-                                _bal_ord   = ''
-                                _bal_parts = partial_map.get(orig_pallet, [])
-                                for _bpe in _bal_parts:
-                                    if not _bal_cntry: _bal_cntry = _bpe.get('country', '')
-                                    if not _bal_ord:   _bal_ord   = _bpe.get('load_id', '')
-                                    if _bal_cntry and _bal_ord: break
-                                if not _bal_cntry or not _bal_ord:
-                                    for _mpe in mpd_pallet_rows.get(orig_pallet, []):
-                                        if not _bal_cntry: _bal_cntry = _mpe.get('country', '')
-                                        if not _bal_ord:   _bal_ord   = _mpe.get('load_id', '')
-                                        if _bal_cntry and _bal_ord: break
-                                if not _bal_cntry:
-                                    _bal_cntry = country_lookup.get(orig_pallet.lower(), '') or \
-                                                 country_lookup.get(_base_pallet(orig_pallet).lower(), '')
-                                if not _bal_cntry and _bal_ord:
-                                    _bal_cntry = load_id_country_map.get(_bal_ord, '')
-                                bal_row['Destination Country'] = _bal_cntry
-                                bal_row['Order NO']            = _bal_ord
+                                bal_row['Destination Country'] = ''
+                                bal_row['Order NO']            = ''
                                 for rmk in damage_remarks: bal_row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                                 bal_row['ATS']            = round(balance_qty, 3)
                                 bal_row['Vendor Name']    = vn
@@ -2527,30 +2509,10 @@ if login_section():
 
                             vn, vc, inv_n, grn_n = _get_vendor_info(inv_row, orig_pallet)
                             row = build_row(inv_row)
-                            row['Pick Quantity'] = ''
-                            row['Allocated']     = ''
-
-                            # ── Destination Country + Order NO:
-                            # Priority: partial_map → mpd_pallet_rows → country_lookup → load_id_country_map
-                            _l5_cntry = ''
-                            _l5_ord   = ''
-                            for _l5pe in partial_map.get(orig_pallet, []):
-                                if not _l5_cntry: _l5_cntry = _l5pe.get('country', '')
-                                if not _l5_ord:   _l5_ord   = _l5pe.get('load_id', '')
-                                if _l5_cntry and _l5_ord: break
-                            if not _l5_cntry or not _l5_ord:
-                                for _l5me in mpd_pallet_rows.get(orig_pallet, []):
-                                    if not _l5_cntry: _l5_cntry = _l5me.get('country', '')
-                                    if not _l5_ord:   _l5_ord   = _l5me.get('load_id', '')
-                                    if _l5_cntry and _l5_ord: break
-                            if not _l5_cntry:
-                                _l5_cntry = country_lookup.get(orig_pallet.lower(), '') or \
-                                            country_lookup.get(_base_pallet(orig_pallet).lower(), '')
-                            if not _l5_cntry and _l5_ord:
-                                _l5_cntry = load_id_country_map.get(_l5_ord, '')
-                            row['Destination Country'] = _l5_cntry
-                            row['Order NO']            = _l5_ord
-
+                            row['Pick Quantity']       = ''
+                            row['Allocated']           = ''
+                            row['Destination Country'] = ''
+                            row['Order NO']            = ''
                             for rmk in damage_remarks: row[rmk] = dmg_pallet_remark_qty.get((orig_pallet, rmk), '')
                             row['ATS']            = round(inv_actual_qty, 3) if (not is_damaged and inv_actual_qty > 0) else ''
                             row['Vendor Name']    = vn
@@ -2733,56 +2695,68 @@ if login_section():
                                     if _oh_v and _oh_col in fmt_df.columns:
                                         fmt_df.at[idx, _oh_col] = _oh_v
 
-                        # ── Destination Country + Order NO blank fill (post-loop) ──────────
-                        # Runs after all rows are built. Fills any still-blank Country/Order NO
-                        # using: partial_map → mpd_pallet_rows → country_lookup → load_id_country_map
-                        _dc_fixed = 0
-                        _ord_fixed = 0
-                        for _dc_idx, _dc_row in fmt_df.iterrows():
-                            _dc_pkey = str(_dc_row.get('Pallet', '')).strip()
-                            _dc_base = _base_pallet(_dc_pkey)
+                        # ══════════════════════════════════════════════════════════════════
+                        # LOGIC 7: Destination Country + Order NO — conditional fill/clear
+                        # Rule: Pick Quantity > 0 හෝ Allocated > 0 නම් → fill
+                        #       Otherwise (pure ATS rows) → blank/clear
+                        # ══════════════════════════════════════════════════════════════════
+                        _l7_filled  = 0
+                        _l7_cleared = 0
+                        for _l7_idx, _l7_row in fmt_df.iterrows():
+                            _l7_pick  = float(pd.to_numeric(_l7_row.get('Pick Quantity', 0), errors='coerce') or 0)
+                            _l7_alloc = float(pd.to_numeric(_l7_row.get('Allocated',     0), errors='coerce') or 0)
+                            _l7_pkey  = str(_l7_row.get('Pallet', '')).strip()
+                            _l7_base  = _base_pallet(_l7_pkey)
 
-                            # ── Order NO blank fill ────────────────────────────────────────
-                            _cur_ord = str(_dc_row.get('Order NO', '')).strip()
-                            if not _cur_ord or _cur_ord in ('nan', 'None', ''):
-                                _fb_ord = ''
-                                for _pe_ord in (partial_map.get(_dc_base, []) or partial_map.get(_dc_pkey, [])):
-                                    _fb_ord = _pe_ord.get('load_id', '')
-                                    if _fb_ord: break
-                                if not _fb_ord:
-                                    for _me_ord in (mpd_pallet_rows.get(_dc_base, []) or mpd_pallet_rows.get(_dc_pkey, [])):
-                                        _fb_ord = _me_ord.get('load_id', '')
+                            if _l7_pick <= 0 and _l7_alloc <= 0:
+                                # ── Pure ATS row → clear Country + Order NO ────────────────
+                                _cur_dc  = str(_l7_row.get('Destination Country', '')).strip()
+                                _cur_ord = str(_l7_row.get('Order NO', '')).strip()
+                                if (_cur_dc  and _cur_dc  not in ('nan', 'None', '')) or \
+                                   (_cur_ord and _cur_ord not in ('nan', 'None', '')):
+                                    fmt_df.at[_l7_idx, 'Destination Country'] = ''
+                                    fmt_df.at[_l7_idx, 'Order NO']            = ''
+                                    _l7_cleared += 1
+                            else:
+                                # ── Picked / Allocated row → fill if blank ─────────────────
+                                _cur_ord = str(_l7_row.get('Order NO', '')).strip()
+                                if not _cur_ord or _cur_ord in ('nan', 'None', ''):
+                                    _fb_ord = ''
+                                    for _pe in (partial_map.get(_l7_base, []) or partial_map.get(_l7_pkey, [])):
+                                        _fb_ord = _pe.get('load_id', '')
                                         if _fb_ord: break
-                                if _fb_ord and _fb_ord not in ('nan', 'None', ''):
-                                    fmt_df.at[_dc_idx, 'Order NO'] = _fb_ord
-                                    _cur_ord = _fb_ord
-                                    _ord_fixed += 1
+                                    if not _fb_ord:
+                                        for _me in (mpd_pallet_rows.get(_l7_base, []) or mpd_pallet_rows.get(_l7_pkey, [])):
+                                            _fb_ord = _me.get('load_id', '')
+                                            if _fb_ord: break
+                                    if _fb_ord and _fb_ord not in ('nan', 'None', ''):
+                                        fmt_df.at[_l7_idx, 'Order NO'] = _fb_ord
+                                        _cur_ord = _fb_ord
+                                        _l7_filled += 1
 
-                            # ── Destination Country blank fill ─────────────────────────────
-                            _dc_val = str(_dc_row.get('Destination Country', '')).strip()
-                            if _dc_val and _dc_val not in ('nan', 'None', ''):
-                                continue  # already filled
-                            fb_dc = country_lookup.get(_dc_pkey.lower(), '') or \
-                                    country_lookup.get(_dc_base.lower(), '')
-                            if not fb_dc:
-                                _dc_parts = partial_map.get(_dc_base, []) or partial_map.get(_dc_pkey, [])
-                                for _dpe in _dc_parts:
-                                    fb_dc = country_lookup.get(_dpe.get('gen_pallet', '').lower(), '') or \
-                                            _dpe.get('country', '')
-                                    if fb_dc: break
-                            if not fb_dc:
-                                for _mpe2 in (mpd_pallet_rows.get(_dc_base, []) or mpd_pallet_rows.get(_dc_pkey, [])):
-                                    fb_dc = _mpe2.get('country', '')
-                                    if fb_dc: break
-                            if not fb_dc and _cur_ord and _cur_ord not in ('nan', 'None', ''):
-                                fb_dc = load_id_country_map.get(_cur_ord, '')
-                            if fb_dc and fb_dc not in ('nan', 'None', ''):
-                                fmt_df.at[_dc_idx, 'Destination Country'] = fb_dc
-                                _dc_fixed += 1
-                        if _dc_fixed > 0:
-                            st.info(f"🌍 Destination Country: **{_dc_fixed}** blank rows filled from DB lookup")
-                        if _ord_fixed > 0:
-                            st.info(f"📋 Order NO: **{_ord_fixed}** blank rows filled from partial / MPD lookup")
+                                _cur_dc = str(_l7_row.get('Destination Country', '')).strip()
+                                if not _cur_dc or _cur_dc in ('nan', 'None', ''):
+                                    _fb_dc = country_lookup.get(_l7_pkey.lower(), '') or \
+                                             country_lookup.get(_l7_base.lower(), '')
+                                    if not _fb_dc:
+                                        for _pe2 in (partial_map.get(_l7_base, []) or partial_map.get(_l7_pkey, [])):
+                                            _fb_dc = country_lookup.get(_pe2.get('gen_pallet','').lower(),'') or \
+                                                     _pe2.get('country', '')
+                                            if _fb_dc: break
+                                    if not _fb_dc:
+                                        for _me2 in (mpd_pallet_rows.get(_l7_base, []) or mpd_pallet_rows.get(_l7_pkey, [])):
+                                            _fb_dc = _me2.get('country', '')
+                                            if _fb_dc: break
+                                    if not _fb_dc and _cur_ord and _cur_ord not in ('nan', 'None', ''):
+                                        _fb_dc = load_id_country_map.get(_cur_ord, '')
+                                    if _fb_dc and _fb_dc not in ('nan', 'None', ''):
+                                        fmt_df.at[_l7_idx, 'Destination Country'] = _fb_dc
+                                        _l7_filled += 1
+
+                        if _l7_filled  > 0:
+                            st.info(f"✅ Logic 7: **{_l7_filled}** rows — Destination Country / Order NO filled (picked/allocated rows)")
+                        if _l7_cleared > 0:
+                            st.info(f"🧹 Logic 7: **{_l7_cleared}** ATS-only rows — Destination Country / Order NO cleared")
 
                         # ── Auto-fix ATS: Actual Qty = Pick + Allocated + Damage + ATS ──────
                         _autofix_count = 0
