@@ -2632,8 +2632,11 @@ if login_section():
                                     if fb: fmt_df.at[idx, _fc2] = fb
 
                             # Order NO from old_history_master → old_history → l2 histories if blank
+                            # Logic 7 rule: only fill if Pick > 0 or Allocated > 0
+                            _l7_guard_pick  = float(pd.to_numeric(fmt_df.at[idx, 'Pick Quantity'] if 'Pick Quantity' in fmt_df.columns else 0, errors='coerce') or 0)
+                            _l7_guard_alloc = float(pd.to_numeric(fmt_df.at[idx, 'Allocated']     if 'Allocated'     in fmt_df.columns else 0, errors='coerce') or 0)
                             ord_n = str(fmt_df.at[idx, 'Order NO']).strip()
-                            if not ord_n or ord_n in ('nan','None',''):
+                            if (_l7_guard_pick > 0 or _l7_guard_alloc > 0) and (not ord_n or ord_n in ('nan','None','')):
                                 # old_history_master (1st pass)
                                 fb_ord = oh_master_lookup.get(pkey.lower(),{}).get('Order NO','') or \
                                          oh_master_lookup.get(base.lower(),{}).get('Order NO','')
@@ -2658,6 +2661,9 @@ if login_section():
                                     fb_ord = l2_history_lookup.get(pkey.lower(),{}).get('Order NO','') or \
                                              l2_history_lookup.get(base.lower(),{}).get('Order NO','')
                                 if fb_ord: fmt_df.at[idx, 'Order NO'] = fb_ord
+                            elif _l7_guard_pick <= 0 and _l7_guard_alloc <= 0:
+                                # ATS / Damage-only row — ensure Order NO stays blank
+                                fmt_df.at[idx, 'Order NO'] = ''
 
                             for _oh_col in OH_FILL_COLS:
                                 if _oh_col in ('Vendor Name','Invoice Number','Grn Number'): continue
