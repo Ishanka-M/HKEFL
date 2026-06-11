@@ -15,7 +15,7 @@ INVENTORY_HEADERS = [
     'Mlp', 'Stored Attribute Id', 'Fifo Date', 'Expiration Date', 'Grn Number',
     'Gate Pass Id', 'Cust Dec No', 'Color', 'Size', 'Style', 'Supplier', 'Plant',
     'Client So', 'Client So Line', 'Po Cust Dec', 'Customer Ref Number', 'Item Id',
-    'Invoice Number1', 'Transaction', 'Order Type', 'Order Number', 'Store Order Number',
+    'Invoice Number 1', 'Transaction', 'Order Type', 'Order Number', 'Store Order Number',
     'Customer Po Number', 'Partial Order Flag', 'Order Date', 'Load Id', 'Asn Number',
     'Po Number', 'Supplier Hu', 'New Item Number', 'Asn Line Number',
     'Received Gross Weight', 'Current Gross Weight', 'Received Net Weight',
@@ -52,7 +52,7 @@ PICK_COL_MAP = {
     'Cust Dec No': 'cust_dec_no', 'Color': 'color', 'Size': 'size', 'Style': 'style',
     'Supplier': 'supplier', 'Plant': 'plant', 'Client So': 'client_so', 'Client So Line': 'client_so_line',
     'Po Cust Dec': 'po_cust_dec', 'Customer Ref Number': 'customer_ref_number', 'Item Id': 'item_id',
-    'Invoice Number1': 'invoice_number1', 'Transaction': 'transaction', 'Order Type': 'order_type',
+    'Invoice Number 1': 'invoice_number1', 'Transaction': 'transaction', 'Order Type': 'order_type',
     'Order Number': 'order_number', 'Store Order Number': 'store_order_number',
     'Customer Po Number': 'customer_po_number', 'Partial Order Flag': 'partial_order_flag',
     'Order Date': 'order_date', 'Load Id': 'load_id', 'Asn Number': 'asn_number',
@@ -1256,7 +1256,7 @@ if login_section():
                             partial_hdr = wb.add_format({'bold': True, 'bg_color': '#1A6B3C', 'font_color': '#FFFFFF', 'border': 1})
                             int_fmt     = wb.add_format({'num_format': '0'})
                             float_fmt   = wb.add_format({'num_format': '0.######'})
-                            BIG_INT_COLS = {'Supplier', 'Invoice Number1', 'Stored Attribute Id', 'Gate Pass Id', 'Client So Line', 'Asn Line Number', 'S Qty'}
+                            BIG_INT_COLS = {'Supplier', 'Invoice Number 1', 'Stored Attribute Id', 'Gate Pass Id', 'Client So Line', 'Asn Line Number', 'S Qty'}
                             FLOAT_COLS   = {'Received Gross Weight', 'Current Gross Weight', 'Received Net Weight', 'Current Net Weight', 'Cbm', 'Container Type'}
                             ws_pick_xl = writer.sheets['Pick_Report']
                             for ci, col_name in enumerate(EXCEL_PICK_COLS):
@@ -2391,7 +2391,7 @@ if login_section():
                 'Style': 'style', 'Supplier': 'supplier', 'Plant': 'plant',
                 'Client So': 'client_so', 'Client So Line': 'client_so_line',
                 'Po Cust Dec': 'po_cust_dec', 'Customer Ref Number': 'customer_ref_number',
-                'Item Id': 'item_id', 'Invoice Number1': 'invoice_number1',
+                'Item Id': 'item_id', 'Invoice Number 1': 'invoice_number1',
                 'Transaction': 'transaction', 'Order Type': 'order_type',
                 'Order Number': 'order_number', 'Store Order Number': 'store_order_number',
                 'Customer Po Number': 'customer_po_number', 'Partial Order Flag': 'partial_order_flag',
