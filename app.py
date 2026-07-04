@@ -702,8 +702,10 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
             return item[orig]
         return ''
 
-    for lid in req_df['Generated Load ID'].unique():
+    for lid in req_df['Generated Load ID'].dropna().unique():
         current_reqs = req_df[req_df['Generated Load ID'] == lid]
+        if current_reqs.empty:
+            continue
         so_num    = str(current_reqs['SO Number'].iloc[0])
         ship_mode = str(current_reqs['SHIP MODE: (SEA/AIR)'].iloc[0]) if 'SHIP MODE: (SEA/AIR)' in current_reqs.columns else ""
 
@@ -1029,6 +1031,14 @@ if login_section():
                         req_col_map.get('product upc', 'Product UPC'):             'Product UPC',
                         req_col_map.get('pick qty', 'PICK QTY'):                   'PICK QTY',
                     })
+
+                    # ── Drop blank/incomplete trailing rows (e.g. Excel rows with only
+                    # whitespace in SO Number / SHIP MODE but no Product UPC / PICK QTY).
+                    # Without this, such rows produce a NaN 'Group' key which pandas'
+                    # groupby() silently drops, leaving no Generated Load ID for them and
+                    # causing an IndexError later in process_picking(). ──
+                    req = req.replace(r'^\s*$', pd.NA, regex=True)
+                    req = req.dropna(subset=['Product UPC', 'PICK QTY', 'SO Number'], how='any').reset_index(drop=True)
 
                     new_inv_cols = []
                     seen_inv = {}
