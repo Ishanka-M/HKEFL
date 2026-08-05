@@ -4,6 +4,7 @@ from supabase import create_client, Client
 from datetime import datetime
 import io
 import time
+import re
 
 # --- 1. System Config ---
 st.set_page_config(page_title="Advanced WMS Picking System", layout="wide", page_icon="📦")
@@ -207,8 +208,11 @@ def get_supabase_client() -> Client:
 # ── DB Manager ────────────────────────────────────────────────────────────────
 
 class DBManager:
-    _cache: dict = {}
-    _cache_ttl: int = 30
+    # ⚡ SPEED FIX: Streamlit සෑම rerun එකකදීම මුළු script එකම නැවත run වන නිසා
+    # class-level dict එකක් cache එකක් විදිහට වැඩ කරන්නේ නැහැ (හැම click එකකදීම
+    # reset වී Supabase එකට නැවත call යනවා). ඒ නිසා cache එක st.session_state
+    # තුළ තබයි — rerun අතරේ survive වේ. TTL එකත් 30s → 300s (5 min).
+    _cache_ttl: int = 300
 
     _COL_MAP = {
         "master_pick_data":    PICK_COL_MAP,
@@ -236,11 +240,21 @@ class DBManager:
         return sheet_name.lower().replace(" ", "_")
 
     @classmethod
+    def _store(cls) -> dict:
+        """Rerun අතරේ survive වන cache dict එක (st.session_state තුළ)."""
+        if '_db_cache' not in st.session_state:
+            st.session_state['_db_cache'] = {}
+        return st.session_state['_db_cache']
+
+    @classmethod
     def invalidate(cls, sheet_name=None):
+        store = cls._store()
         if sheet_name:
-            cls._cache.pop(cls._table_key(sheet_name), None)
+            base = cls._table_key(sheet_name)
+            for k in [k for k in list(store.keys()) if k == base or k.startswith(base + "::")]:
+                store.pop(k, None)
         else:
-            cls._cache.clear()
+            store.clear()
 
     @classmethod
     def _db_to_app_df(cls, table_key: str, records: list) -> pd.DataFrame:
@@ -265,33 +279,65 @@ class DBManager:
         return out
 
     @classmethod
-    def read_table(cls, table_name: str, force: bool = False) -> pd.DataFrame:
+    def read_table(cls, table_name: str, force: bool = False, columns: list = None) -> pd.DataFrame:
+        """
+        columns=None  → මුළු table එකම (කලින් වගේම).
+        columns=[...] → අවශ්‍ය columns පමණක් fetch කරයි (⚡ Dashboard speed).
+        """
         key = cls._table_key(table_name)
+        col_map = cls._COL_MAP.get(key, {})
+        db_cols = None
+        if columns:
+            db_cols = [col_map.get(c, str(c).strip().lower().replace(" ", "_")) for c in columns]
+        cache_key = key if not db_cols else f"{key}::cols::{','.join(sorted(db_cols))}"
+
+        store = cls._store()
         now = time.time()
-        if not force and key in cls._cache:
-            ts, df = cls._cache[key]
+        if not force and cache_key in store:
+            ts, df = store[cache_key]
             if (now - ts) < cls._cache_ttl:
                 return df.copy()
         try:
             sb = get_supabase_client()
+            select_expr = ",".join(db_cols) if db_cols else "*"
             all_records = []
             offset = 0
             page_size = 1000
             while True:
-                res = sb.table(key).select("*").range(offset, offset + page_size - 1).execute()
+                res = sb.table(key).select(select_expr).range(offset, offset + page_size - 1).execute()
                 batch = res.data or []
                 all_records.extend(batch)
                 if len(batch) < page_size:
                     break
                 offset += page_size
             df = cls._db_to_app_df(key, all_records)
-            cls._cache[key] = (time.time(), df)
+            store[cache_key] = (time.time(), df)
             return df.copy()
         except Exception as e:
             st.warning(f"DB read error ({table_name}): {e}")
-            if key in cls._cache:
-                return cls._cache[key][1].copy()
+            if cache_key in store:
+                return store[cache_key][1].copy()
             return pd.DataFrame()
+
+    @classmethod
+    def count_rows(cls, table_name: str, force: bool = False) -> int:
+        """⚡ මුළු table එක download නොකර row count එක පමණක් ගනී."""
+        key = cls._table_key(table_name)
+        cache_key = f"{key}::count"
+        store = cls._store()
+        now = time.time()
+        if not force and cache_key in store:
+            ts, val = store[cache_key]
+            if (now - ts) < cls._cache_ttl:
+                return val
+        try:
+            sb = get_supabase_client()
+            res = sb.table(key).select("id", count="exact").limit(1).execute()
+            cnt = int(res.count or 0)
+            store[cache_key] = (time.time(), cnt)
+            return cnt
+        except Exception:
+            return 0
 
     @classmethod
     def batch_read(cls, table_names: list, force: bool = False) -> dict:
@@ -667,28 +713,65 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                 return str(val).strip()
         temp_inv[supplier_col] = temp_inv[supplier_col].apply(normalize_supplier)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # Gen Pallet ID generator
+    #   RULE 1: උපරිම දිග characters 22 (WMS limit) — වැඩි නම් base එක truncate වේ.
+    #   RULE 2: Duplicate බැහැ — master_partial_data + old_history + දැන් upload කළ
+    #           inventory එකේ real pallets සියල්ලට එරෙහිව check කරයි.
+    # ══════════════════════════════════════════════════════════════════════════
+    MAX_GEN_PALLET_LEN = 22
+
+    def _clean_id(v):
+        return re.sub(r'\s+', '', str(v).strip())
+
     existing_gen_pallet_ids = set()
+
+    def _collect_ids(df, *col_names):
+        if df is None or df.empty:
+            return
+        for c in col_names:
+            if c in df.columns:
+                existing_gen_pallet_ids.update(
+                    df[c].dropna().astype(str).map(_clean_id).tolist()
+                )
+
     try:
-        existing_partial = DBManager.read_table("master_partial_data")
-        if not existing_partial.empty and 'Gen Pallet ID' in existing_partial.columns:
-            existing_gen_pallet_ids = set(existing_partial['Gen Pallet ID'].astype(str).tolist())
+        _collect_ids(DBManager.read_table("master_partial_data"), 'Gen Pallet ID', 'Pallet')
     except:
         pass
-    # ── UPDATED: Also check old_history table for unique gen_pallet_id ──
+    # ── UPDATED: old_history read එකේ column rename map එකක් නැති නිසා raw db name
+    #    ('gen_pallet_id') එකත් check කරයි — කලින් මෙය miss වී duplicate විය හැකි විය. ──
     try:
-        old_hist_df = DBManager.read_table("old_history")
-        if not old_hist_df.empty and 'Gen Pallet ID' in old_hist_df.columns:
-            existing_gen_pallet_ids.update(old_hist_df['Gen Pallet ID'].astype(str).tolist())
+        _collect_ids(DBManager.read_table("old_history"),
+                     'Gen Pallet ID', 'gen_pallet_id', 'Pallet', 'pallet')
     except:
         pass
+    # ── දැන් upload කළ inventory එකේ pallets — gen id එකක් real pallet එකකට සමාන නොවිය යුතුය ──
+    try:
+        if pallet_col in inv_df.columns:
+            existing_gen_pallet_ids.update(
+                inv_df[pallet_col].dropna().astype(str).map(_clean_id).tolist()
+            )
+    except:
+        pass
+    existing_gen_pallet_ids.discard('')
 
     gen_pallet_counter = [0]
+    _gen_suffix_pat = re.compile(r'^(.+)-P\d{1,6}$')
 
     def make_unique_gen_pallet_id(pallet):
+        base = _clean_id(pallet)
+        # pallet එකම දැනටමත් gen id එකක් නම් (…-P0004), root එකෙන් අලුත් එකක් හදයි
+        m = _gen_suffix_pat.match(base)
+        root = m.group(1) if m else base
+        if not root:
+            root = 'PAL'
         while True:
             gen_pallet_counter[0] += 1
-            candidate = f"{pallet}-P{gen_pallet_counter[0]:04d}"
-            if candidate not in existing_gen_pallet_ids:
+            suffix = f"-P{gen_pallet_counter[0]:04d}"          # 9999 ට වැඩි වුවත් ගැලපේ
+            avail  = MAX_GEN_PALLET_LEN - len(suffix)
+            candidate = (root[:avail] if len(root) > avail else root) + suffix
+            if len(candidate) <= MAX_GEN_PALLET_LEN and candidate not in existing_gen_pallet_ids:
                 existing_gen_pallet_ids.add(candidate)
                 return candidate
 
@@ -777,16 +860,35 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
 
                     pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
                     orig_qty   = orig_qty_map.get(pallet_val, current_avail)
-                    is_partial = (take < current_avail) or (orig_qty > take)
 
-                    if is_partial:
+                    # ══════════════════════════════════════════════════════════
+                    # NEW RULE — Gen Pallet ID කවදාද හදන්නේ?
+                    #   remaining_after > 0  → pallet එකේ balance එකක් ඉතුරු වේ
+                    #                          ⇒ Gen Pallet ID හදයි (split).
+                    #   remaining_after == 0 → ඉතුරු balance එකත් මේ pick එකෙන්
+                    #                          ඉවර වේ ⇒ Gen Pallet ID නොහදා
+                    #                          Pallet එකෙන්ම යවයි.
+                    #   (කලින් batch එකකදී split වී තිබුණත් — take < orig_qty —
+                    #    balance එක ඉවර නම් අලුත් Gen ID එකක් නොහදයි.)
+                    # ══════════════════════════════════════════════════════════
+                    remaining_after = round(current_avail - take, 6)
+                    is_partial      = remaining_after > 0                       # split → Gen ID
+                    is_balance_pick = (remaining_after <= 0) and (take < orig_qty)  # ඉතුරු balance එක
+
+                    if is_partial or is_balance_pick:
                         def _get(col_name):
                             c = inv_col_map.get(col_name.lower())
                             return str(item[c]) if c and c in item.index else ''
 
-                        gen_pallet_id = make_unique_gen_pallet_id(pallet_val)
-                        pick_rows[-1]['Remark']        = 'Partial'
-                        pick_rows[-1]['Gen Pallet ID'] = gen_pallet_id
+                        if is_partial:
+                            gen_pallet_id = make_unique_gen_pallet_id(pallet_val)
+                            pick_rows[-1]['Remark']        = 'Partial'
+                            pick_rows[-1]['Gen Pallet ID'] = gen_pallet_id
+                        else:
+                            # ── Balance pick: අලුත් ID එකක් නැත, Pallet එකම යොදයි ──
+                            gen_pallet_id = pallet_val
+                            pick_rows[-1]['Remark']        = 'Balance'
+                            pick_rows[-1]['Gen Pallet ID'] = ''
 
                         partial_rows.append({
                             'Batch ID':           batch_id,
@@ -798,7 +900,7 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                             'Actual Qty':         orig_qty,
                             'Partial Qty':        take,
                             'Gen Pallet ID':      gen_pallet_id,
-                            'Balance Qty':        orig_qty - take,
+                            'Balance Qty':        remaining_after,
                             'Location Id':        _get('location id'),
                             'Lot Number':         _get('lot number'),
                             'Color':              _get('color'),
@@ -1349,19 +1451,24 @@ if login_section():
     # TAB 2: DASHBOARD & TRACKING
     # ==========================================================================
     elif choice == "📊 Dashboard & Tracking":
-        col_t1, col_t2 = st.columns([4, 1])
+        col_t1, col_t2, col_t3 = st.columns([4, 1, 1])
         col_t1.title("📊 Load Tracking & Dashboard")
+        col_t3.selectbox("Loads / page", [10, 15, 25, 50, 100], index=1,
+                         key="dash_page_size", label_visibility="collapsed")
         if col_t2.button("🔄 Refresh Data", use_container_width=True):
             DBManager.invalidate()
             st.rerun()
 
-        _batch  = DBManager.batch_read(["load_history", "summary_data", "master_pick_data"])
+        # ⚡ SPEED: master_pick_data එකේ මුළු table එක (60+ columns) load කරන්නේ නැහැ.
+        # Dashboard එකට ඕනේ 'Load Id' + 'Actual Qty' පමණයි. Total count එක DB එකෙන්ම
+        # (count=exact) ගනී. සම්පූර්ණ pick data load වන්නේ පහත Search කරද්දී පමණි.
+        _batch  = DBManager.batch_read(["load_history", "summary_data"])
         hist_df = _batch["load_history"]
         summ_df = _batch["summary_data"]
-        pick_df = _batch["master_pick_data"]
+        pick_lite = DBManager.read_table("master_pick_data", columns=['Load Id', 'Actual Qty'])
 
         total_loads      = hist_df['Generated Load ID'].nunique() if not hist_df.empty and 'Generated Load ID' in hist_df.columns else 0
-        total_picks      = len(pick_df) if not pick_df.empty else 0
+        total_picks      = DBManager.count_rows("master_pick_data") or (0 if pick_lite.empty else len(pick_lite))
         pending_loads    = len(hist_df[hist_df['Pick Status'] == 'Pending'])    if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
         processing_loads = len(hist_df[hist_df['Pick Status'] == 'Processing']) if not hist_df.empty and 'Pick Status' in hist_df.columns else 0
 
@@ -1371,6 +1478,7 @@ if login_section():
         m2.metric("Total Picks Made", total_picks)
         m3.metric("Pending Loads",    pending_loads)
         m4.metric("Processing Loads", processing_loads)
+        st.caption("⚡ දත්ත cache වේ (5 min) — වෙනත් user කෙනෙක් දැම්ම අලුත්ම දත්ත සඳහා **🔄 Refresh Data** click කරන්න.")
         st.divider()
 
         if total_loads == 0:
@@ -1420,18 +1528,42 @@ if login_section():
 
                     pick_counts_by_lid = {}
                     pick_qty_by_lid    = {}
-                    if not pick_df.empty:
-                        load_id_col_pick = next((c for c in pick_df.columns if str(c).strip().lower() in ('load id', 'loadid', 'load_id')), None)
-                        actual_col_pick  = next((c for c in pick_df.columns if str(c).strip().lower() == 'actual qty'), None)
+                    if not pick_lite.empty:
+                        load_id_col_pick = next((c for c in pick_lite.columns if str(c).strip().lower() in ('load id', 'loadid', 'load_id')), None)
+                        actual_col_pick  = next((c for c in pick_lite.columns if str(c).strip().lower() == 'actual qty'), None)
                         if load_id_col_pick:
-                            _lid_series = pick_df[load_id_col_pick].astype(str).str.strip()
+                            _lid_series = pick_lite[load_id_col_pick].astype(str).str.strip()
                             pick_counts_by_lid = _lid_series.value_counts().to_dict()
                             if actual_col_pick:
-                                _qty_grp = pick_df.groupby(_lid_series)[actual_col_pick].apply(
+                                _qty_grp = pick_lite.groupby(_lid_series)[actual_col_pick].apply(
                                     lambda x: pd.to_numeric(x, errors='coerce').fillna(0).sum())
                                 pick_qty_by_lid = _qty_grp.to_dict()
 
+                    # ⚡ SPEED: Load ID එකකට widgets 2ක් (selectbox + button) හැදෙන නිසා
+                    # loads 100ක් = widgets 200ක් → render එක සෙමින්. ඒ නිසා page එකකට
+                    # LOADS_PER_PAGE ගණනක් පමණක් render කරයි (options කිසිවක් අඩු වී නැත).
+                    LOADS_PER_PAGE = st.session_state.get('dash_page_size', 15)
+
                     def render_load_list(id_list, category_color, category_label):
+                        total_n  = len(id_list)
+                        page_ids = id_list
+                        if total_n > LOADS_PER_PAGE:
+                            pages = (total_n + LOADS_PER_PAGE - 1) // LOADS_PER_PAGE
+                            pkey  = "pg_" + str(category_label).replace(' ', '_')
+                            cur   = min(max(int(st.session_state.get(pkey, 1)), 1), pages)
+                            pc1, pc2, pc3 = st.columns([1, 3, 1])
+                            if pc1.button("◀ Prev", key=f"prev_{pkey}", use_container_width=True, disabled=(cur <= 1)):
+                                st.session_state[pkey] = cur - 1
+                                st.rerun()
+                            pc2.markdown(
+                                f"<div style='text-align:center;font-size:11px;color:#666;padding-top:8px;'>"
+                                f"Page <b>{cur}</b> / {pages} &nbsp;•&nbsp; {total_n} loads</div>",
+                                unsafe_allow_html=True)
+                            if pc3.button("Next ▶", key=f"next_{pkey}", use_container_width=True, disabled=(cur >= pages)):
+                                st.session_state[pkey] = cur + 1
+                                st.rerun()
+                            page_ids = id_list[(cur - 1) * LOADS_PER_PAGE: cur * LOADS_PER_PAGE]
+
                         # ── Header row ──────────────────────────────────────────────────
                         st.markdown(f"""
 <div style="display:grid;grid-template-columns:2fr 1fr 1.2fr 1fr 1fr 1fr 1fr 1.5fr;gap:4px;
@@ -1442,7 +1574,7 @@ if login_section():
     <div>Date</div><div>Lines</div><div>Qty</div><div>Status</div>
 </div>""", unsafe_allow_html=True)
 
-                        for lid in id_list:
+                        for lid in page_ids:
                             load_row     = active_loads[active_loads['Generated Load ID'] == lid].iloc[0]
                             status       = str(load_row.get('Pick Status', 'Pending'))
                             so_num       = str(load_row.get('SO Number', '-'))
@@ -1531,7 +1663,11 @@ if login_section():
             col_map_summ = {"Load Id": "load id", "SO Number": "so number", "Pallet": None}
 
             filtered_picks = pd.DataFrame()
+            pick_df = pd.DataFrame()
             if search_term:
+                # ⚡ සම්පූර්ණ master_pick_data load වන්නේ search එකක් කරද්දී පමණයි
+                with st.spinner("🔍 Searching..."):
+                    pick_df = DBManager.read_table("master_pick_data")
                 if not pick_df.empty:
                     actual_col_name = next((c for c in pick_df.columns if str(c).strip().lower() == col_map_pick[search_by]), None)
                     if actual_col_name:
