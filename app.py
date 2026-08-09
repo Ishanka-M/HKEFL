@@ -202,6 +202,19 @@ ALTER TABLE inventory_status ADD COLUMN IF NOT EXISTS location_id text;
 """
 
 
+# ── DB column → SQL type (missing column එකක් හම්බුනොත් ALTER statement හදන්න) ──
+MISSING_COL_TYPES = {
+    'actual_qty': 'numeric', 'unavailable_qty': 'numeric', 'pick_quantity': 'numeric',
+    'allocated': 'numeric', 'ats': 'numeric', 'qc_repair': 'numeric',
+    'balance_qty': 'numeric', 'partial_qty': 'numeric', 's_qty': 'numeric',
+    'requested': 'numeric', 'picked': 'numeric', 'variance': 'numeric',
+    'cbm': 'numeric', 'asn_line_number': 'numeric',
+    'received_gross_weight': 'numeric', 'current_gross_weight': 'numeric',
+    'received_net_weight': 'numeric', 'current_net_weight': 'numeric',
+    'row_order': 'bigint',
+}
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # 🐛 FIX: pandas version එක අනුව missing value එකක් str() කරද්දී 'nan', 'None',
@@ -433,17 +446,117 @@ class DBManager:
     def batch_read(cls, table_names: list, force: bool = False) -> dict:
         return {name: cls.read_table(name, force=force) for name in table_names}
 
+    # ══════════════════════════════════════════════════════════════════════
+    # 🐛 SCHEMA-SAFE WRITES
+    #   Supabase table එකේ column එකක් නැති වුනොත් (ALTER TABLE run කරලා නැති,
+    #   හෝ PostgREST schema cache එක refresh වෙලා නැති), කලින් insert එක
+    #   මුළුමනින්ම fail වුනා — _overwrite_table එකේදී delete කරලා ඉවරයි නිසා
+    #   table එකේ data එක නැති වුනා. දැන්:
+    #     1. delete කරන්න කලින් pre-flight column check එකක් (non-destructive)
+    #     2. නැති columns auto-drop කරලා warning එකක් + හරියටම ඕන SQL එක පෙන්වයි
+    #     3. insert එකේදීත් retry safety net එකක්
+    # ══════════════════════════════════════════════════════════════════════
+    _MISSING_COL_RES = [
+        re.compile(r"Could not find the '([^']+)' column", re.IGNORECASE),
+        re.compile(r'column\s+(?:[\w"]+\.)?"?(\w+)"?\s+does not exist', re.IGNORECASE),
+    ]
+
+    @classmethod
+    def _missing_col(cls, err):
+        """Error message එකෙන් නැති column එකේ නම extract කරයි."""
+        msg = str(err)
+        for pat in cls._MISSING_COL_RES:
+            m = pat.search(msg)
+            if m:
+                return m.group(1)
+        return None
+
+    @classmethod
+    def _filter_valid_columns(cls, key: str, cols: list):
+        """DB එකේ ඇත්තටම තියෙන columns පමණක් return කරයි.
+        select ... limit(1) probe එකක් — කිසිම data එකක් වෙනස් වෙන්නේ නෑ.
+        Returns (valid_cols, dropped_cols)."""
+        cols = [c for c in cols]
+        dropped = []
+        if not cols:
+            return cols, dropped
+        try:
+            sb = get_supabase_client()
+        except Exception:
+            return cols, dropped
+        for _ in range(len(cols) + 1):
+            if not cols:
+                break
+            try:
+                sb.table(key).select(",".join(cols)).limit(1).execute()
+                return cols, dropped
+            except Exception as e:
+                bad = cls._missing_col(e)
+                if bad is None or bad not in cols:
+                    break          # වෙනත් error එකක් — probe එක skip කරයි
+                cols.remove(bad)
+                dropped.append(bad)
+        return cols, dropped
+
+    @classmethod
+    def _insert_chunks(cls, key: str, rows: list, chunk_size: int = 500):
+        """Rows insert කරයි. නැති column එකක් හම්බුනොත් ඒක drop කරලා,
+        දැනටමත් insert වුනු chunks නැවත නොයවා, ඉතුරු ටික insert කරයි.
+        Returns dropped column list."""
+        if not rows:
+            return []
+        # ── සියලු rows එකම key set එකකට normalize (uniform payload) ──
+        all_keys, seen = [], set()
+        for r in rows:
+            for k in r.keys():
+                if k not in seen:
+                    seen.add(k)
+                    all_keys.append(k)
+        work = [{k: r.get(k, None) for k in all_keys} for r in rows]
+
+        sb = get_supabase_client()
+        dropped, start = [], 0
+        while True:
+            try:
+                i = start
+                while i < len(work):
+                    sb.table(key).insert(work[i:i + chunk_size]).execute()
+                    i += chunk_size
+                    start = i                      # progress save
+                return dropped
+            except Exception as e:
+                bad = cls._missing_col(e)
+                if bad is None or bad in dropped:
+                    raise
+                dropped.append(bad)
+                work = [{k: v for k, v in r.items() if k != bad} for r in work]
+
+    @classmethod
+    def _warn_missing_cols(cls, table_name: str, dropped: list):
+        if not dropped:
+            return
+        alters = "\n".join(
+            f"ALTER TABLE {cls._table_key(table_name)} "
+            f"ADD COLUMN IF NOT EXISTS {c} {MISSING_COL_TYPES.get(c, 'text')};"
+            for c in dropped
+        )
+        st.warning(
+            f"⚠️ **{table_name}** table එකේ මේ columns නෑ — ඒවා නැතුව save කළා: "
+            f"**{', '.join(dropped)}**\n\n"
+            "Supabase → SQL Editor එකේ මේක run කරන්න (අන්තිම line එක "
+            "schema cache එක refresh කරයි):"
+        )
+        st.code(alters + "\n\nNOTIFY pgrst, 'reload schema';", language="sql")
+
     @classmethod
     def insert_rows(cls, table_name: str, rows: list) -> bool:
         if not rows:
             return True
         key = cls._table_key(table_name)
         try:
-            sb = get_supabase_client()
             db_rows = [cls._app_row_to_db(key, r) for r in rows]
-            chunk_size = 500
-            for i in range(0, len(db_rows), chunk_size):
-                sb.table(key).insert(db_rows[i:i+chunk_size]).execute()
+            dropped = cls._insert_chunks(key, db_rows)
+            cls._warn_missing_cols(table_name, dropped)
             cls.invalidate(table_name)
             return True
         except Exception as e:
@@ -515,27 +628,77 @@ class DBManager:
 
     @classmethod
     def _overwrite_table(cls, table_name: str, df: pd.DataFrame):
+        """Clear + insert. 🐛 FIX: කලින් delete එක මුලින්ම කරලා, insert එක fail
+        වුනොත් table එකේ data එක සම්පූර්ණයෙන් නැති වුනා. දැන් —
+          1. delete කරන්න **කලින්** column pre-flight check එකක්
+          2. insert fail වුනොත් පරණ data එක restore කරයි."""
         key = cls._table_key(table_name)
         try:
             sb = get_supabase_client()
-            sb.table(key).delete().neq('id', -1).execute()
-            cls.invalidate(table_name)
+
+            # ── STEP 1: rows build කරයි (delete කරන්න කලින්) ──
+            rows = []
             if not df.empty:
                 col_map = cls._COL_MAP.get(key, {})
-                rows = []
                 for _, row in df.iterrows():
                     db_row = {}
                     for c in df.columns:
-                        db_col = col_map.get(c, c.lower().replace(" ", "_"))
+                        db_col = col_map.get(c, str(c).lower().replace(" ", "_"))
                         val = row[c]
-                        if pd.isna(val) or str(val) in ('nan', 'None', ''):
+                        try:
+                            _na = pd.isna(val)
+                        except (TypeError, ValueError):
+                            _na = False
+                        if _na or str(val).strip() in ('', 'nan', 'None', 'NaN', 'NaT', '<NA>'):
                             db_row[db_col] = None
                         else:
                             db_row[db_col] = val
                     rows.append(db_row)
-                chunk_size = 500
-                for i in range(0, len(rows), chunk_size):
-                    sb.table(key).insert(rows[i:i+chunk_size]).execute()
+
+            # ── STEP 2: PRE-FLIGHT — DB එකේ නැති columns delete කරන්න කලින්ම හොයයි ──
+            dropped = []
+            if rows:
+                valid, dropped = cls._filter_valid_columns(key, list(rows[0].keys()))
+                if dropped:
+                    keep = set(valid)
+                    rows = [{k: v for k, v in r.items() if k in keep} for r in rows]
+
+            # ── STEP 3: පරණ data එක backup (cache එකෙන් — බොහෝ විට free) ──
+            backup_rows = []
+            try:
+                old_df = cls.read_table(table_name)
+                if not old_df.empty:
+                    backup_rows = [cls._app_row_to_db(key, r) for r in old_df.to_dict('records')]
+            except Exception:
+                backup_rows = []
+
+            # ── STEP 4: delete → insert ──
+            sb.table(key).delete().neq('id', -1).execute()
+            cls.invalidate(table_name)
+            try:
+                if rows:
+                    dropped += cls._insert_chunks(key, rows)
+            except Exception as ins_err:
+                # ── insert fail → පරණ data එක ආපහු දාන්න try කරයි ──
+                restored = 0
+                if backup_rows:
+                    try:
+                        vb, _ = cls._filter_valid_columns(key, list(backup_rows[0].keys()))
+                        kb = set(vb)
+                        cls._insert_chunks(key, [{k: v for k, v in r.items() if k in kb}
+                                                 for r in backup_rows])
+                        restored = len(backup_rows)
+                    except Exception:
+                        restored = 0
+                cls.invalidate(table_name)
+                if restored:
+                    st.error(f"❌ {table_name} insert fail වුනා — පරණ rows **{restored}** "
+                             f"restore කළා. Error: {ins_err}")
+                else:
+                    st.error(f"❌ {table_name} insert fail වුනා: {ins_err}")
+                raise
+
+            cls._warn_missing_cols(table_name, sorted(set(dropped)))
             cls.invalidate(table_name)
         except Exception as e:
             st.error(f"DB overwrite error ({table_name}): {e}")
@@ -1578,9 +1741,27 @@ if app_header():
         if lpc_file is None:
             up_c2.caption("⚠️ SC20 (Logic 1) සඳහා මෙය අවශ්‍යයි — නැත්නම් SC20 rows unmatched වේ.")
 
-        with st.expander("🗄️ inventory_status table setup (මුල් වරට පමණක් — Supabase)", expanded=False):
+        with st.expander("🗄️ inventory_status table setup / schema check", expanded=False):
             st.caption("Supabase එකේ මෙම table එක නැත්නම්, මෙම SQL එක එක් වරක් run කරන්න:")
             st.code(INVENTORY_STATUS_TABLE_SQL, language="sql")
+
+            st.markdown("---")
+            st.caption("දැනට DB එකේ මොන columns තියෙනවද කියලා check කරන්න:")
+            if st.button("🔎 Check inventory_status schema", key="chk_invstatus_schema"):
+                want = list(INVSTATUS_COL_MAP.values())
+                valid, missing = DBManager._filter_valid_columns("inventory_status", want)
+                if not missing:
+                    st.success(f"✅ සියලු columns **{len(valid)}** ම තියෙනවා — schema OK.")
+                else:
+                    st.error(f"❌ නැති columns **{len(missing)}**: {', '.join(missing)}")
+                    st.caption("Supabase → SQL Editor එකේ මේක run කරන්න:")
+                    st.code(
+                        "\n".join(
+                            f"ALTER TABLE inventory_status ADD COLUMN IF NOT EXISTS "
+                            f"{c} {MISSING_COL_TYPES.get(c, 'text')};" for c in missing
+                        ) + "\n\n-- PostgREST schema cache එක refresh කරයි:\n"
+                            "NOTIFY pgrst, 'reload schema';",
+                        language="sql")
 
         with st.expander("📂 Master Data CSV Override (Supabase connect නැත්නම්)", expanded=False):
             st.caption("Supabase ඇත්නම් upload නොකළත් හරි. CSV upload කළොත් ඒ data priority ලැබේ.")
