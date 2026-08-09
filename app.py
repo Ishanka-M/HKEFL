@@ -3149,8 +3149,44 @@ if app_header():
     elif choice == "⚙️ Admin Settings":
         st.title("⚙️ System Administration")
 
+        # ══════════════════════════════════════════════════════════════════════
+        # 🔒 ADMIN PASSWORD GATE
+        #   Password එක st.secrets["admin"]["password"] එකෙන් ගනී.
+        #   Secrets එකේ නැත්නම් default එක use වේ.
+        #   ⚠️ Code එකේ තියෙන password එකක් real security එකක් නෙවෙයි — repo එකට
+        #   access තියෙන ඕනෑම කෙනෙකුට පේනවා. Streamlit Cloud → App settings →
+        #   Secrets එකේ මේක දාන්න:
+        #       [admin]
+        #       password = "Isha@1996"
+        # ══════════════════════════════════════════════════════════════════════
+        try:
+            ADMIN_PASSWORD = st.secrets["admin"]["password"]
+        except Exception:
+            ADMIN_PASSWORD = "Isha@1996"
+
+        if not st.session_state.get('admin_unlocked', False):
+            st.warning("🔒 මෙම කොටස protected — Admin password එක ඇතුලත් කරන්න.")
+            _pw_c1, _pw_c2, _pw_c3 = st.columns([1, 1.4, 1])
+            with _pw_c2:
+                adm_pw = st.text_input("Admin Password", type="password", key="adm_pw_input")
+                if st.button("🔓 Unlock", type="primary", use_container_width=True, key="adm_unlock_btn"):
+                    if adm_pw == ADMIN_PASSWORD:
+                        st.session_state['admin_unlocked'] = True
+                        st.success("✅ Unlocked!")
+                        st.rerun()
+                    else:
+                        st.error("❌ වැරදි password එකක්!")
+            st.stop()
+
+        _lk1, _lk2 = st.columns([5, 1])
+        _lk1.caption("🔓 Admin section unlocked.")
+        if _lk2.button("🔒 Lock", use_container_width=True, key="adm_lock_btn"):
+            st.session_state['admin_unlocked'] = False
+            st.rerun()
+
         # ── Login අයින් කළ නිසා "User Management" tab එක ඉවත් කළා ──
-        adm_tab2, adm_tab3 = st.tabs(["🗄️ Database Management", "📜 Old History"])
+        adm_tab2, adm_tab3, adm_tab4 = st.tabs(
+            ["🗄️ Database Management", "📜 Old History", "⬇️ Full Data Export"])
 
         with adm_tab2:
             st.subheader("⚠️ Database Management")
@@ -3377,6 +3413,178 @@ CREATE UNIQUE INDEX idx_old_history_master_pallet ON old_history_master(pallet);
                         st.info("old_history_master records නොමැත. Upload tab හි data add කරන්න.")
                 except Exception as _oh_view_err:
                     st.warning(f"old_history_master read error: {_oh_view_err}")
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ⬇️ FULL DATA EXPORT — System DB එකේ සියලු tables එක Excel එකකට
+        # ══════════════════════════════════════════════════════════════════════
+        with adm_tab4:
+            st.subheader("⬇️ Full Database Export")
+            st.caption("System එකේ DB tables වල සම්පූර්ණ data එකක් download කරගන්න. "
+                       "Excel එකේ table එකකට sheet එකක් බැගින් එනවා.")
+
+            ALL_DB_TABLES = [
+                "master_pick_data", "master_partial_data", "load_history", "summary_data",
+                "damage_items", "vendor_maintain", "inventory_status",
+                "old_history", "old_history_master",
+            ]
+            SHEET_NAME_MAP = {
+                "master_pick_data":    "Master_Pick_Data",
+                "master_partial_data": "Master_Partial_Data",
+                "load_history":        "Load_History",
+                "summary_data":        "Summary_Data",
+                "damage_items":        "Damage_Items",
+                "vendor_maintain":     "Vendor_Maintain",
+                "inventory_status":    "Inventory_Status",
+                "old_history":         "Old_History",
+                "old_history_master":  "Old_History_Master",
+            }
+            EXCEL_ROW_LIMIT = 1_048_575        # header row එකට 1ක් අඩු කරලා
+
+            exp_c1, exp_c2 = st.columns([3, 1])
+            sel_tables = exp_c1.multiselect(
+                "Export කරන Tables:", ALL_DB_TABLES, default=ALL_DB_TABLES,
+                key="exp_tables")
+            exp_fmt = exp_c2.radio("Format", ["Excel (.xlsx)", "CSV (.zip)"], key="exp_fmt")
+
+            st.caption("⚡ Table ලොකු නම් Excel එක හදන්න වෙලාවක් යනවා — ඒ වගේ වෙලාවට "
+                       "**CSV (.zip)** වේගවත් සහ row limit එකකුත් නෑ.")
+
+            # ── Row counts (quick preview — මුළු table එක download කරන්නේ නෑ) ──
+            if st.button("🔢 Row Counts බලන්න", key="exp_counts_btn"):
+                with st.spinner("Counting..."):
+                    cnt_rows = []
+                    for t in sel_tables:
+                        try:
+                            cnt_rows.append({'Table': t,
+                                             'Rows': DBManager.count_rows(t, force=True)})
+                        except Exception as _ce:
+                            cnt_rows.append({'Table': t, 'Rows': f'error: {_ce}'})
+                if cnt_rows:
+                    cdf = pd.DataFrame(cnt_rows)
+                    st.dataframe(cdf.astype(str), use_container_width=True)
+                    try:
+                        st.metric("Total Rows", f"{int(pd.to_numeric(cdf['Rows'], errors='coerce').fillna(0).sum()):,}")
+                    except Exception:
+                        pass
+
+            st.divider()
+
+            if not sel_tables:
+                st.info("Export කරන්න table එකක් හෝ තෝරන්න.")
+            elif st.button("📦 Generate Full Export", type="primary",
+                           use_container_width=True, key="exp_gen_btn"):
+
+                exported, skipped, total_rows = {}, [], 0
+                prog = st.progress(0.0, text="Starting...")
+
+                for i, t in enumerate(sel_tables):
+                    prog.progress(i / max(len(sel_tables), 1), text=f"Reading **{t}** ...")
+                    try:
+                        # force=True → cache නොව අලුත්ම data එක
+                        df_t = DBManager.read_table(t, force=True)
+                    except Exception as _re_:
+                        skipped.append((t, str(_re_)))
+                        continue
+                    if df_t is None or df_t.empty:
+                        skipped.append((t, "empty / no rows"))
+                        continue
+                    exported[t] = df_t
+                    total_rows += len(df_t)
+
+                prog.progress(1.0, text="Building file...")
+
+                if not exported:
+                    prog.empty()
+                    st.warning("⚠️ Export කරන්න data නෑ.")
+                    if skipped:
+                        st.dataframe(pd.DataFrame(
+                            [{'Table': a, 'Reason': b} for a, b in skipped]).astype(str),
+                            use_container_width=True)
+                else:
+                    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+                    if exp_fmt.startswith("CSV"):
+                        # ── ZIP of CSVs ──
+                        import zipfile
+                        zbuf = io.BytesIO()
+                        with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                            for t, df_t in exported.items():
+                                zf.writestr(f"{t}.csv", df_t.to_csv(index=False))
+                            zf.writestr("_export_info.txt",
+                                        f"Exported: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                                        + "\n".join(f"{t}: {len(d)} rows"
+                                                    for t, d in exported.items()))
+                        prog.empty()
+                        st.success(f"✅ Tables **{len(exported)}** · Rows **{total_rows:,}** ready.")
+                        st.download_button(
+                            "⬇️ Download Full DB Export (ZIP)", data=zbuf.getvalue(),
+                            file_name=f"WMS_Full_DB_{stamp}.zip", mime="application/zip",
+                            use_container_width=True, type="primary")
+                    else:
+                        # ── Single Excel workbook, sheet per table ──
+                        xbuf = io.BytesIO()
+                        truncated = []
+                        with pd.ExcelWriter(xbuf, engine='xlsxwriter') as writer:
+                            wb_e = writer.book
+                            hdr_e = wb_e.add_format({'bold': True, 'bg_color': '#1a1a1a',
+                                                     'font_color': '#fff', 'border': 1,
+                                                     'font_size': 10})
+                            # ── Index sheet (මුලින්ම) ──
+                            ws_i = wb_e.add_worksheet('_Index')
+                            b_e = wb_e.add_format({'bold': True, 'font_size': 11})
+                            n_e = wb_e.add_format({'font_size': 11, 'num_format': '#,##0'})
+                            ws_i.set_column(0, 0, 30); ws_i.set_column(1, 1, 26)
+                            ws_i.set_column(2, 2, 14)
+                            ws_i.write(0, 0, 'Table', hdr_e)
+                            ws_i.write(0, 1, 'Sheet', hdr_e)
+                            ws_i.write(0, 2, 'Rows', hdr_e)
+                            for ri, (t, df_t) in enumerate(exported.items(), 1):
+                                ws_i.write(ri, 0, t, b_e)
+                                ws_i.write(ri, 1, SHEET_NAME_MAP.get(t, t)[:31])
+                                ws_i.write(ri, 2, len(df_t), n_e)
+                            _last = len(exported) + 2
+                            ws_i.write(_last, 0, 'Exported At', b_e)
+                            ws_i.write(_last, 1, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                            ws_i.write(_last + 1, 0, 'Total Rows', b_e)
+                            ws_i.write(_last + 1, 1, total_rows, n_e)
+
+                            for t, df_t in exported.items():
+                                sheet = re.sub(r'[\[\]\:\*\?\/\\]', '_',
+                                               SHEET_NAME_MAP.get(t, t))[:31]
+                                out_t = df_t
+                                if len(df_t) > EXCEL_ROW_LIMIT:
+                                    out_t = df_t.head(EXCEL_ROW_LIMIT)
+                                    truncated.append((t, len(df_t)))
+                                out_t.astype(str).to_excel(writer, sheet_name=sheet, index=False)
+                                ws_t = writer.sheets[sheet]
+                                for ci, cn in enumerate(out_t.columns):
+                                    ws_t.write(0, ci, str(cn), hdr_e)
+                                    ws_t.set_column(ci, ci, 16)
+                                ws_t.freeze_panes(1, 0)
+
+                        prog.empty()
+                        st.success(f"✅ Tables **{len(exported)}** · Rows **{total_rows:,}** ready.")
+                        if truncated:
+                            st.warning("⚠️ Excel එකේ sheet එකකට rows 1,048,575ක සීමාවක් තියෙනවා. "
+                                       "මේ tables truncate වුනා — සම්පූර්ණ data එකට **CSV (.zip)** "
+                                       f"use කරන්න: {', '.join(f'{a} ({b:,})' for a, b in truncated)}")
+                        st.download_button(
+                            "⬇️ Download Full DB Export (Excel)", data=xbuf.getvalue(),
+                            file_name=f"WMS_Full_DB_{stamp}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True, type="primary")
+
+                    summ_c1, summ_c2 = st.columns(2)
+                    summ_c1.dataframe(pd.DataFrame(
+                        [{'Table': t, 'Rows': len(d)} for t, d in exported.items()]).astype(str),
+                        use_container_width=True)
+                    if skipped:
+                        summ_c2.dataframe(pd.DataFrame(
+                            [{'Skipped Table': a, 'Reason': b} for a, b in skipped]).astype(str),
+                            use_container_width=True)
+                    show_confetti()
+
+
 
 
 footer_branding()
