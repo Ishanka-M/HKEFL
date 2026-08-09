@@ -113,6 +113,51 @@ VENDOR_COL_MAP = {
 }
 VENDOR_COL_MAP_REV = {v: k for k, v in VENDOR_COL_MAP.items()}
 
+# ── NEW: old_history_master — pallet reference (blank-fill source) ────────────
+OLDMASTER_COL_MAP = {
+    'Pallet': 'pallet', 'Vendor Name': 'vendor_name', 'Invoice Number': 'invoice_number',
+    'Fifo Date': 'fifo_date', 'Grn Number': 'grn_number', 'Client So': 'client_so',
+    'Supplier Hu': 'supplier_hu', 'Supplier': 'supplier', 'Lot Number': 'lot_number',
+    'Style': 'style', 'Color': 'color', 'Size': 'size', 'Client So 2': 'client_so_2',
+    'Uploaded By': 'uploaded_by', 'Uploaded At': 'uploaded_at',
+}
+OLDMASTER_COL_MAP_REV = {v: k for k, v in OLDMASTER_COL_MAP.items()}
+
+# ── NEW: old_history — deleted pick/partial archive (blank-fill source) ───────
+# මෙය කලින් DBManager._COL_MAP එකේ තිබුනේ නෑ — ඒ නිසා read_table("old_history")
+# raw snake_case columns return කළා. දැන් app headers ලෙස rename වේ.
+OLDHIST_COL_MAP = {
+    'Source Table': 'source_table', 'Deleted At': 'deleted_at', 'Deleted By': 'deleted_by',
+    'Delete Reason': 'delete_reason',
+    'Wh Id': 'wh_id', 'Client Code': 'client_code', 'Pallet': 'pallet',
+    'Invoice Number': 'invoice_number', 'Location Id': 'location_id',
+    'Item Number': 'item_number', 'Description': 'description', 'Lot Number': 'lot_number',
+    'Actual Qty': 'actual_qty', 'Unavailable Qty': 'unavailable_qty', 'Uom': 'uom',
+    'Status': 'status', 'Mlp': 'mlp', 'Stored Attribute Id': 'stored_attribute_id',
+    'Fifo Date': 'fifo_date', 'Expiration Date': 'expiration_date', 'Grn Number': 'grn_number',
+    'Gate Pass Id': 'gate_pass_id', 'Cust Dec No': 'cust_dec_no', 'Color': 'color',
+    'Size': 'size', 'Style': 'style', 'Supplier': 'supplier', 'Plant': 'plant',
+    'Client So': 'client_so', 'Client So Line': 'client_so_line', 'Po Cust Dec': 'po_cust_dec',
+    'Customer Ref Number': 'customer_ref_number', 'Item Id': 'item_id',
+    'Invoice Number 1': 'invoice_number1', 'Transaction': 'transaction', 'Order Type': 'order_type',
+    'Order Number': 'order_number', 'Store Order Number': 'store_order_number',
+    'Customer Po Number': 'customer_po_number', 'Partial Order Flag': 'partial_order_flag',
+    'Order Date': 'order_date', 'Load Id': 'load_id', 'Asn Number': 'asn_number',
+    'Po Number': 'po_number', 'Supplier Hu': 'supplier_hu', 'New Item Number': 'new_item_number',
+    'Asn Line Number': 'asn_line_number', 'Received Gross Weight': 'received_gross_weight',
+    'Current Gross Weight': 'current_gross_weight', 'Received Net Weight': 'received_net_weight',
+    'Current Net Weight': 'current_net_weight', 'Supplier Desc': 'supplier_desc', 'Cbm': 'cbm',
+    'Container Type': 'container_type', 'Display Item Number': 'display_item_number',
+    'Old Item Number': 'old_item_number', 'Inventory Type': 'inventory_type', 'Type Qc': 'type_qc',
+    'Vendor Name': 'vendor_name', 'Manufacture Date': 'manufacture_date', 'Suom': 'suom',
+    'S Qty': 's_qty', 'Pick Id': 'pick_id', 'Downloaded Date': 'downloaded_date',
+    'Batch ID': 'batch_id', 'SO Number': 'so_number', 'Generated Load ID': 'generated_load_id',
+    'Country Name': 'country_name', 'Pick Quantity': 'pick_quantity', 'Remark': 'remark',
+    'Partial Qty': 'partial_qty', 'Gen Pallet ID': 'gen_pallet_id', 'Balance Qty': 'balance_qty',
+}
+OLDHIST_COL_MAP_REV = {v: k for k, v in OLDHIST_COL_MAP.items()}
+
+
 # ── NEW: inventory_status table ────────────────────────────────────────────────
 # Uploaded Inventory එක මෙම වෙනම DB එකට save වේ. 'Status' (proc_status) column එක
 # logic වලින් 'D' ලෙස update වේ. Inventory upload කරද්දී මෙම table එක clear වේ.
@@ -130,6 +175,7 @@ INVSTATUS_COL_MAP = {
     'Destination Country': 'destination_country', 'Order NO': 'order_no',
     'ATS': 'ats', 'QC Repair': 'qc_repair', 'COO': 'coo', 'Balance Qty': 'balance_qty',
     'Status': 'proc_status', 'Row Order': 'row_order',
+    'Remark': 'remark',                       # ── FIX: Remark එක DB එකට save වුනේ නෑ ──
 }
 INVSTATUS_COL_MAP_REV = {v: k for k, v in INVSTATUS_COL_MAP.items()}
 
@@ -146,12 +192,37 @@ CREATE TABLE IF NOT EXISTS inventory_status (
     pick_quantity       numeric, allocated numeric, destination_country text,
     order_no            text, ats numeric, qc_repair numeric, coo text,
     balance_qty         numeric, proc_status text, row_order bigint,
+    remark              text,
     created_at          timestamptz DEFAULT now()
 );
+
+-- දැනටමත් table එක තියෙනවා නම් මේ දෙක පමණක් run කරන්න:
+ALTER TABLE inventory_status ADD COLUMN IF NOT EXISTS remark      text;
+ALTER TABLE inventory_status ADD COLUMN IF NOT EXISTS location_id text;
 """
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# 🐛 FIX: pandas version එක අනුව missing value එකක් str() කරද්දී 'nan', 'None',
+# 'NaT', '<NA>' යනාදී විවිධ ආකාරයෙන් එනවා. පරණ code එක check කළේ 'nan'/'None'
+# විතරයි — ඒ නිසා pandas 2.x/3.x nullable dtypes එක්ක '<NA>' කියන string එක
+# report එකේ real value එකක් විදිහට යනවා. දැන් ඔක්කොම blank ලෙස handle වේ.
+BLANK_TOKENS = {'', 'nan', 'none', 'nat', '<na>'}
+
+
+def sv(v) -> str:
+    """Safe string value — missing/NA tokens සියල්ල '' බවට පත් කරයි."""
+    if v is None:
+        return ''
+    try:
+        if pd.isna(v):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    return '' if s.lower() in BLANK_TOKENS else s
+
 
 def show_confetti():
     st.markdown("""
@@ -223,6 +294,8 @@ class DBManager:
         "users":               USERS_COL_MAP,
         "vendor_maintain":     VENDOR_COL_MAP,
         "inventory_status":    INVSTATUS_COL_MAP,
+        "old_history":         OLDHIST_COL_MAP,
+        "old_history_master":  OLDMASTER_COL_MAP,
     }
     _COL_MAP_REV = {
         "master_pick_data":    PICK_COL_MAP_REV,
@@ -233,6 +306,8 @@ class DBManager:
         "users":               USERS_COL_MAP_REV,
         "vendor_maintain":     VENDOR_COL_MAP_REV,
         "inventory_status":    INVSTATUS_COL_MAP_REV,
+        "old_history":         OLDHIST_COL_MAP_REV,
+        "old_history_master":  OLDMASTER_COL_MAP_REV,
     }
 
     @classmethod
@@ -303,8 +378,23 @@ class DBManager:
             all_records = []
             offset = 0
             page_size = 1000
+            # ── 🐛 FIX: ORDER BY නැතුව .range() pagination කරද්දී PostgreSQL row
+            #    order එක guarantee කරන්නේ නෑ → page අතර rows duplicate/missing විය හැක,
+            #    තවද "අලුත්→පරණ" order එකත් වැරදෙනවා. දැන් id අනුව ascending order කරයි,
+            #    ඒ නිසා .iloc[::-1] = නියම newest-first. (id නැති table එකකදී fallback.)
+            _use_order = True
             while True:
-                res = sb.table(key).select(select_expr).range(offset, offset + page_size - 1).execute()
+                try:
+                    q = sb.table(key).select(select_expr)
+                    if _use_order:
+                        q = q.order('id', desc=False)
+                    res = q.range(offset, offset + page_size - 1).execute()
+                except Exception:
+                    if not _use_order:
+                        raise
+                    _use_order = False          # id column නෑ → order නැතුව retry
+                    all_records, offset = [], 0
+                    continue
                 batch = res.data or []
                 all_records.extend(batch)
                 if len(batch) < page_size:
@@ -1345,15 +1435,16 @@ if app_header():
                     if df.empty:
                         continue
                     # ── ඕනෑම column එකක match වුනත් row එක ගනී ──
-                    df_str = df.astype(str)
-                    if match_mode == "Exact":
-                        mask = df_str.apply(
-                            lambda col: col.str.strip().str.lower() == term.lower()
-                        ).any(axis=1)
-                    else:
-                        mask = df_str.apply(
-                            lambda col: col.str.contains(re.escape(term), case=False, na=False)
-                        ).any(axis=1)
+                    # 🐛 FIX: df.apply(lambda col: col.str...) — duplicate column
+                    # names තිබුනොත් col එක Series නොව DataFrame වන නිසා .str crash
+                    # වෙනවා. දැන් position අනුව column එකින් එක check කරයි.
+                    mask = pd.Series(False, index=df.index)
+                    for ci in range(df.shape[1]):
+                        col_s = df.iloc[:, ci].astype(str)
+                        if match_mode == "Exact":
+                            mask |= (col_s.str.strip().str.lower() == term.lower())
+                        else:
+                            mask |= col_s.str.contains(re.escape(term), case=False, na=False)
                     hit = df[mask].reset_index(drop=True)
                     if not hit.empty:
                         results[label] = hit
@@ -1519,7 +1610,7 @@ if app_header():
                     # Helpers
                     # ════════════════════════════════════════════════════════════
                     def _is_blank(v):
-                        return v is None or str(v).strip() in ('', 'nan', 'None', 'NaN')
+                        return sv(v) == ''          # 🐛 FIX: '<NA>' / 'NaT' ද cover වේ
 
                     def _to_num(v):
                         n = pd.to_numeric(v, errors='coerce')
@@ -1591,10 +1682,10 @@ if app_header():
                                          "'Allocation' columns තිබිය යුතුය.")
                                 st.stop()
                             for _, lr in lp_data.iterrows():
-                                plate = str(lr.get(_L_PLATE, '')).strip()
-                                if not plate or plate in ('nan', 'None'):
+                                plate = sv(lr.get(_L_PLATE, ''))
+                                if not plate:
                                     continue
-                                alloc = str(lr.get(_L_ALLOC, '')).strip()
+                                alloc = sv(lr.get(_L_ALLOC, ''))
                                 # ── 'HKEFL-' කොටස අයින් කරලා Order NO ගන්නවා ──
                                 order_no = re.sub(r'^\s*HKEFL\s*-\s*', '', alloc, flags=re.IGNORECASE).strip()
                                 lp_by_plate.setdefault(plate, []).append({
@@ -1654,12 +1745,12 @@ if app_header():
                         mp_c = _col(mpd_df, 'country name', 'Country Name')
                         mp_o = _col(mpd_df, 'generated load id', 'Generated Load ID')
                         for _, r in mpd_df.iloc[::-1].iterrows():          # NEW → OLD
-                            pal = str(r.get(mp_p, '')).strip()
-                            if not pal or pal in ('nan', 'None'):
+                            pal = sv(r.get(mp_p, ''))
+                            if not pal:
                                 continue
                             mpd_pool.setdefault((pal, _qkey(r.get(mp_q, 0))), []).append({
-                                'country': str(r.get(mp_c, '')).strip(),
-                                'order':   str(r.get(mp_o, '')).strip(),
+                                'country': sv(r.get(mp_c, '')),
+                                'order':   sv(r.get(mp_o, '')),
                             })
 
                     # ── [Logic 3] master_partial_data: (gen_pallet_id, partial_qty) → queue ──
@@ -1673,15 +1764,15 @@ if app_header():
                         pgr = _col(part_df, 'grn number', 'Grn Number')
                         pv  = _col(part_df, 'vendor name', 'Vendor Name')
                         for _, r in part_df.iloc[::-1].iterrows():         # NEW → OLD
-                            gpal = str(r.get(pg, '')).strip()
-                            if not gpal or gpal in ('nan', 'None'):
+                            gpal = sv(r.get(pg, ''))
+                            if not gpal:
                                 continue
                             part_pool.setdefault((gpal, _qkey(r.get(pq, 0))), []).append({
-                                'country': str(r.get(pc, '')).strip(),
-                                'order':   str(r.get(po, '')).strip(),
-                                'invoice': str(r.get(pi, '')).strip() if pi else '',
-                                'grn':     str(r.get(pgr, '')).strip() if pgr else '',
-                                'vendor':  str(r.get(pv, '')).strip() if pv else '',
+                                'country': sv(r.get(pc, '')),
+                                'order':   sv(r.get(po, '')),
+                                'invoice': sv(r.get(pi, '')) if pi else '',
+                                'grn':     sv(r.get(pgr, '')) if pgr else '',
+                                'vendor':  sv(r.get(pv, '')) if pv else '',
                             })
 
                     # ── Order NO → Country lookup (Logic 1 Destination Country) ──
@@ -1689,9 +1780,8 @@ if app_header():
                     order_country = {}
 
                     def _reg_order_country(order_v, country_v):
-                        o = str(order_v).strip()
-                        c = str(country_v).strip()
-                        if o and o not in ('nan', 'None') and c and c not in ('nan', 'None'):
+                        o, c = sv(order_v), sv(country_v)
+                        if o and c:
                             order_country.setdefault(o.upper(), c)
 
                     if not part_df.empty:
@@ -1736,13 +1826,35 @@ if app_header():
                         damage_pallets = set(_d['_pal'])
                     if not damage_remarks:
                         damage_remarks = ['QC Repair']
+                    # 🐛 FIX: damage remark එකක් report column එකක නමට සමාන නම්
+                    # (උදා: remark = "ATS" හෝ "Remark") report_cols එකේ duplicate
+                    # column හැදිලා Excel export එක කැඩෙනවා. ඒවා rename කරයි.
+                    _reserved = {h.lower() for h in ['Vendor Name', 'Invoice Number', 'Fifo Date',
+                                 'Grn Number', 'Client So', 'Pallet', 'Supplier Hu', 'Supplier',
+                                 'Lot Number', 'Style', 'Color', 'Size', 'Client So 2',
+                                 'Inventory Type', 'Location Id', 'Actual Qty', 'Pick Quantity',
+                                 'Allocated', 'Destination Country', 'Order NO', 'ATS', 'COO',
+                                 'Remark', 'Status', 'Row Order', 'Balance Qty']}
+                    _seen_rmk, _fixed_remarks, _rmk_alias = set(), [], {}
+                    for _rk in damage_remarks:
+                        _new = _rk
+                        while _new.lower() in _reserved or _new.lower() in _seen_rmk:
+                            _new = f"{_new} (Damage)"
+                        _seen_rmk.add(_new.lower())
+                        _fixed_remarks.append(_new)
+                        _rmk_alias[_rk] = _new
+                    if _fixed_remarks != damage_remarks:
+                        st.warning("⚠️ Damage remark නමක් report column එකකට ගැටෙනවා — "
+                                   f"rename කළා: {[f'{k} → {v}' for k, v in _rmk_alias.items() if k != v]}")
+                        damage_qty = {(p, _rmk_alias.get(rk, rk)): q for (p, rk), q in damage_qty.items()}
+                        damage_remarks = _fixed_remarks
 
                     # ── Vendor → Country map (COO) ──
                     vendor_country = {}
                     if not vendor_df.empty and 'Vendor Name' in vendor_df.columns and 'Country' in vendor_df.columns:
                         for v, c in zip(vendor_df['Vendor Name'], vendor_df['Country']):
-                            if not _is_blank(v) and not _is_blank(c):
-                                vendor_country[str(v).strip().lower()] = str(c).strip()
+                            if sv(v) and sv(c):
+                                vendor_country[sv(v).lower()] = sv(c)
 
                     # ════════════════════════════════════════════════════════════
                     # STEP 5 — Row builder
@@ -1755,18 +1867,19 @@ if app_header():
                     def base_row(inv_row, pallet=None, actual_qty=None):
                         row = {}
                         for h in BASE_HEADERS:
+                            # 🐛 FIX: sv() හරහා — '<NA>'/'NaT'/'nan' report එකට යන්නේ නෑ
                             if h == 'Pallet':
-                                row[h] = pallet if pallet is not None else str(inv_row.get(_C_PALLET, '')).strip()
+                                row[h] = pallet if pallet is not None else sv(inv_row.get(_C_PALLET, ''))
                             elif h == 'Actual Qty':
                                 row[h] = actual_qty if actual_qty is not None else _to_num(inv_row.get(_C_AQTY, 0))
                             elif h == 'Client So 2':
                                 cs = _icol('client so')
-                                row[h] = str(inv_row.get(cs, '')).strip() if cs else ''
+                                row[h] = sv(inv_row.get(cs, '')) if cs else ''
                             elif h == 'Location Id':
-                                row[h] = str(inv_row.get(_C_LOC, '')).strip()
+                                row[h] = sv(inv_row.get(_C_LOC, ''))
                             else:
                                 src = _icol(h)
-                                row[h] = str(inv_row.get(src, '')).strip() if src else ''
+                                row[h] = sv(inv_row.get(src, '')) if src else ''
                         row['Pick Quantity'] = ''
                         row['Allocated'] = ''
                         row['Destination Country'] = ''
@@ -1777,7 +1890,7 @@ if app_header():
                         for rmk in damage_remarks:
                             row[rmk] = ''
                         row['Status'] = ''
-                        row['_src_pallet'] = str(inv_row.get(_C_PALLET, '')).strip()
+                        row['_src_pallet'] = sv(inv_row.get(_C_PALLET, ''))
                         row['_logic'] = ''
                         return row
 
@@ -1795,9 +1908,9 @@ if app_header():
                     # STEP 6 — Run Logic 1 → 5
                     # ════════════════════════════════════════════════════════════
                     for _, inv_row in inv_records:
-                        pallet = str(inv_row.get(_C_PALLET, '')).strip()
+                        pallet = sv(inv_row.get(_C_PALLET, ''))
                         aqty   = _to_num(inv_row.get(_C_AQTY, 0))
-                        loc    = str(inv_row.get(_C_LOC, '')).strip().upper()
+                        loc    = sv(inv_row.get(_C_LOC, '')).upper()
 
                         # ── LOGIC 4: Damage — system එකේ logic එකම, අනිත් logic වලින් අයින් ──
                         if pallet in damage_pallets:
@@ -1907,6 +2020,184 @@ if app_header():
                         out_rows.append(r)
 
                     # ════════════════════════════════════════════════════════════
+                    # STEP 6.5 — BLANK FILL
+                    #   Invoice Number / Grn Number / Supplier Hu — nan හෝ blank නම්:
+                    #     (A) Pallet එකෙන් → System DB එකේ ඕනෑම table එකකින්
+                    #     (B) හම්බුනේ නැත්නම් → master_partial_data එකේ gen_pallet_id
+                    #         එකෙන් match කරලා, ඒකට අදාළ මුල් Pallet එක අරගෙන, ඒකෙන්
+                    #     (C) Fallback → '{base}-P0001' pattern එකෙන් base pallet derive
+                    # ════════════════════════════════════════════════════════════
+                    FILL_FIELDS = ['Invoice Number', 'Grn Number', 'Supplier Hu']
+
+                    pallet_ref = {}     # pallet → {field: (value, source_table)}
+                    gen_to_base = {}    # gen_pallet_id → මුල් Pallet
+
+                    def _clean(v):
+                        return sv(v)
+
+                    def _find_col(df, name):
+                        """app header ('Invoice Number') හෝ raw db name ('invoice_number') දෙකම."""
+                        lc = {str(c).strip().lower(): str(c) for c in df.columns}
+                        n = name.strip().lower()
+                        return lc.get(n) or lc.get(n.replace(' ', '_'))
+
+                    def _absorb_ref(df, source_name, pallet_cols=('Pallet',)):
+                        """df එකෙන් pallet → invoice/grn/supplier_hu values pallet_ref එකට එකතු
+                        කරයි. කලින් source එකකින් හම්බුන value එක override වෙන්නේ නෑ (first-win)."""
+                        if df is None or df.empty:
+                            return 0
+                        f_cols = {f: _find_col(df, f) for f in FILL_FIELDS}
+                        f_cols = {f: c for f, c in f_cols.items() if c}
+                        if not f_cols:
+                            return 0
+                        p_cols = [c for c in (_find_col(df, pc) for pc in pallet_cols) if c]
+                        if not p_cols:
+                            return 0
+                        added = 0
+                        for _, r in df.iterrows():
+                            vals = {f: _clean(r.get(c, '')) for f, c in f_cols.items()}
+                            vals = {f: v for f, v in vals.items() if v}
+                            if not vals:
+                                continue
+                            for pc in p_cols:
+                                key = _clean(r.get(pc, ''))
+                                if not key:
+                                    continue
+                                slot = pallet_ref.setdefault(key, {})
+                                for f, v in vals.items():
+                                    if f not in slot:
+                                        slot[f] = (v, source_name)
+                                        added += 1
+                        return added
+
+                    def _absorb_gen(df, source_name):
+                        """gen_pallet_id → මුල් Pallet map එක."""
+                        if df is None or df.empty:
+                            return 0
+                        gc = _find_col(df, 'Gen Pallet ID')
+                        pc = _find_col(df, 'Pallet')
+                        if not gc or not pc:
+                            return 0
+                        n = 0
+                        for _, r in df.iterrows():
+                            g, p = _clean(r.get(gc, '')), _clean(r.get(pc, ''))
+                            if g and p and g != p and g not in gen_to_base:
+                                gen_to_base[g] = p
+                                n += 1
+                        return n
+
+                    ref_stats = {}
+                    with st.spinner("🔎 Blank fill sources load කරමින්..."):
+                        # ── Priority 1: upload කළ inventory එකේම අනිත් rows ──
+                        ref_stats['Uploaded Inventory'] = _absorb_ref(inv_data, 'Uploaded Inventory')
+                        # ── Priority 2: master_pick_data ──
+                        ref_stats['master_pick_data'] = _absorb_ref(mpd_df, 'master_pick_data')
+                        # ── Priority 3: master_partial_data (Pallet + Gen Pallet ID දෙකටම) ──
+                        ref_stats['master_partial_data'] = _absorb_ref(
+                            part_df, 'master_partial_data', pallet_cols=('Pallet', 'Gen Pallet ID'))
+                        _absorb_gen(part_df, 'master_partial_data')
+                        # ── Priority 4/5/6: old_history_master, old_history, inventory_status ──
+                        for _tbl, _label in [("old_history_master", "old_history_master"),
+                                             ("old_history",        "old_history"),
+                                             ("inventory_status",   "inventory_status (prev run)")]:
+                            try:
+                                _df = DBManager.read_table(_tbl)
+                            except Exception:
+                                _df = pd.DataFrame()
+                            pcols = ('Pallet', 'Gen Pallet ID') if _tbl == "old_history" else ('Pallet',)
+                            ref_stats[_label] = _absorb_ref(_df, _label, pallet_cols=pcols)
+                            if _tbl == "old_history":
+                                _absorb_gen(_df, 'old_history')
+
+                    _gen_pat = re.compile(r'^(.+)-P\d+$', re.IGNORECASE)
+
+                    def _lookup_fill(pallet_key, field):
+                        """(value, source) හෝ (None, None)."""
+                        if not pallet_key:
+                            return None, None
+                        slot = pallet_ref.get(pallet_key)
+                        if slot and field in slot:
+                            return slot[field]
+                        return None, None
+
+                    fill_log = []
+                    fill_counts = {'A-Pallet': 0, 'B-GenPallet': 0, 'C-Pattern': 0}
+
+                    for r in out_rows:
+                        need = [f for f in FILL_FIELDS if _is_blank(r.get(f))]
+                        if not need:
+                            continue
+                        rep_pal = _clean(r.get('Pallet', ''))
+                        src_pal = _clean(r.get('_src_pallet', ''))
+
+                        for f in need:
+                            val = src = None
+                            stage = None
+
+                            # ── (A) Pallet එකෙන් කෙලින්ම ──
+                            for k in (rep_pal, src_pal):
+                                if k:
+                                    val, src = _lookup_fill(k, f)
+                                    if val:
+                                        stage = 'A-Pallet'
+                                        break
+
+                            # ── (B) gen_pallet_id → මුල් Pallet ──
+                            if not val:
+                                for k in (rep_pal, src_pal):
+                                    base = gen_to_base.get(k) if k else None
+                                    if base:
+                                        val, src = _lookup_fill(base, f)
+                                        if val:
+                                            stage = 'B-GenPallet'
+                                            src = f"{src} ← gen:{k}"
+                                            break
+
+                            # ── (C) '{base}-P0001' pattern එකෙන් base pallet derive ──
+                            if not val:
+                                for k in (rep_pal, src_pal):
+                                    m = _gen_pat.match(k) if k else None
+                                    if m:
+                                        val, src = _lookup_fill(m.group(1), f)
+                                        if val:
+                                            stage = 'C-Pattern'
+                                            src = f"{src} ← base:{m.group(1)}"
+                                            break
+
+                            if val:
+                                r[f] = val
+                                fill_counts[stage] = fill_counts.get(stage, 0) + 1
+                                fill_log.append({
+                                    'Pallet': rep_pal, 'Location Id': r.get('Location Id', ''),
+                                    'Field': f, 'Filled Value': val,
+                                    'Stage': stage, 'Source': src,
+                                })
+
+                    fill_total = sum(fill_counts.values())
+                    still_blank = sum(1 for r in out_rows for f in FILL_FIELDS if _is_blank(r.get(f)))
+
+                    if fill_total:
+                        st.success(
+                            f"🔎 Blank Fill: **{fill_total}** cells පිරෙව්වා "
+                            f"(A·Pallet={fill_counts.get('A-Pallet',0)} · "
+                            f"B·GenPallet={fill_counts.get('B-GenPallet',0)} · "
+                            f"C·Pattern={fill_counts.get('C-Pattern',0)}) | තව blank: **{still_blank}**"
+                        )
+                    else:
+                        st.info(f"🔎 Blank Fill: පිරෙව්වා 0 | blank cells: **{still_blank}** "
+                                "(reference tables වල data නෑ විය හැක)")
+
+                    fill_log_df = pd.DataFrame(fill_log)
+                    with st.expander(f"🔎 Blank Fill විස්තර ({len(fill_log_df)} cells)", expanded=False):
+                        st.caption("Reference sources — first-win priority: Uploaded Inventory → "
+                                   "master_pick_data → master_partial_data → old_history_master → "
+                                   "old_history → inventory_status")
+                        rs = pd.DataFrame([{'Source Table': k, 'Reference Values Loaded': v}
+                                           for k, v in ref_stats.items()])
+                        st.dataframe(rs.astype(str), use_container_width=True)
+                        if not fill_log_df.empty:
+                            st.dataframe(fill_log_df.astype(str), use_container_width=True, height=280)
+                    # ════════════════════════════════════════════════════════════
                     # STEP 7 — Build report dataframe
                     # ════════════════════════════════════════════════════════════
                     for i, r in enumerate(out_rows):
@@ -1920,8 +2211,7 @@ if app_header():
                     for c in report_cols:
                         if c not in fmt_df.columns:
                             fmt_df[c] = ''
-                    fmt_df = fmt_df[fmt_df['Pallet'].astype(str).str.strip()
-                                    .replace({'nan': '', 'None': ''}) != ''].reset_index(drop=True)
+                    fmt_df = fmt_df[fmt_df['Pallet'].map(sv) != ''].reset_index(drop=True)
                     report_df = fmt_df[report_cols].copy()
 
                     # ════════════════════════════════════════════════════════════
@@ -2027,11 +2317,17 @@ if app_header():
                         vnd_xl   = wb.add_format({'bg_color': '#FFF9C4', 'border': 1, 'font_size': 10})
                         rmk_xl   = wb.add_format({'bg_color': '#FCE4EC', 'border': 1, 'font_size': 10, 'italic': True})
                         norm_xl  = wb.add_format({'border': 1, 'font_size': 10})
+                        # ⚡ SPEED FIX: කලින් cell එකකට report_with_total.iloc[ri-1][col]
+                        # කියලා pandas scalar lookup එකක් කළා — rows 6000ක් × cols 25ක් =
+                        # ~150k lookups → export එකට තත්පර 20+. දැන් column values එක වරක්
+                        # list එකකට convert කරලා index කරයි (~10x වේගවත්).
+                        _colvals = {c: report_with_total[c].astype(str).tolist() for c in report_cols}
                         for ci, col_name in enumerate(report_cols):
                             ws.write(0, ci, col_name, hdr_xl)
                             ws.set_column(ci, ci, 15)
+                            _vals = _colvals[col_name]
                             for ri in range(1, len(report_df) + 1):
-                                val = str(report_with_total.iloc[ri - 1][col_name])
+                                val = _vals[ri - 1]
                                 if   col_name in ['Pick Quantity', 'Destination Country', 'Order NO']: ws.write(ri, ci, val, pick_xl)
                                 elif col_name == 'Allocated': ws.write(ri, ci, val, alloc_xl)
                                 elif col_name in damage_remarks: ws.write(ri, ci, val, dmg_xl)
@@ -2042,8 +2338,9 @@ if app_header():
                         tot_idx = len(report_df) + 1
                         tot_num = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
                         tot_str = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
+                        _lastrow = report_with_total.iloc[-1]
                         for ci, col_name in enumerate(report_cols):
-                            v = report_with_total.iloc[-1][col_name]
+                            v = _lastrow[col_name]
                             try:    ws.write(tot_idx, ci, float(v) if v != '' else '', tot_num)
                             except: ws.write(tot_idx, ci, str(v), tot_str)
                         ws.freeze_panes(1, 0)
@@ -2072,6 +2369,11 @@ if app_header():
                             ('Logic 3 — Unmatched', cnt['L3x']),
                             ('Logic 4 — Damage', cnt['L4']),
                             ('Logic 5 — ATS (Others)', cnt['L5']), ('', ''),
+                            ('Blank Fill — via Pallet', fill_counts.get('A-Pallet', 0)),
+                            ('Blank Fill — via Gen Pallet ID', fill_counts.get('B-GenPallet', 0)),
+                            ('Blank Fill — via Pattern', fill_counts.get('C-Pattern', 0)),
+                            ('Blank Fill — Total Cells', fill_total),
+                            ('Still Blank Cells', still_blank), ('', ''),
                             ('Total Report Lines', len(report_df)),
                             ('Status = D Lines', d_count),
                             ('Status <> D Lines', len(report_df) - d_count),
@@ -2097,6 +2399,21 @@ if app_header():
                         else:
                             ws_u.write(0, 0, '✅ No Unmatched Rows', u_ok)
                             ws_u.set_column(0, 0, 40)
+
+                        # ── Blank_Fill sheet (Invoice / GRN / Supplier Hu audit) ──
+                        ws_f = wb.add_worksheet('Blank_Fill')
+                        f_hdr = wb.add_format({'bold': True, 'bg_color': '#2980b9', 'font_color': '#fff', 'border': 1, 'font_size': 10})
+                        f_row = wb.add_format({'border': 1, 'font_size': 10})
+                        f_ok  = wb.add_format({'bold': True, 'bg_color': '#27ae60', 'font_color': '#fff', 'font_size': 11})
+                        if not fill_log_df.empty:
+                            for ci, colf in enumerate(fill_log_df.columns):
+                                ws_f.write(0, ci, colf, f_hdr); ws_f.set_column(ci, ci, 24)
+                            for ri3, row3 in fill_log_df.iterrows():
+                                for ci3, val3 in enumerate(row3):
+                                    ws_f.write(ri3 + 1, ci3, str(val3), f_row)
+                        else:
+                            ws_f.write(0, 0, 'No blank cells were filled', f_ok)
+                            ws_f.set_column(0, 0, 44)
 
                     st.download_button("⬇️ Download Inventory Details Report", data=out_fmt.getvalue(),
                         file_name=f"Inventory_Details_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
