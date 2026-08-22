@@ -356,14 +356,18 @@ class DBManager:
 
     @classmethod
     def _app_row_to_db(cls, table_key: str, row: dict) -> dict:
+        # 🐛 FIX: කලින් `v in (None, 'nan', 'None', '')` කියලා check කළා. ඒකෙ
+        # ප්‍රශ්න දෙකක් තිබුනා —
+        #   1. v = pd.NA නම් `in` comparison එක TypeError ("boolean value of NA
+        #      is ambiguous") throw කරලා insert එකම fail වුනා.
+        #   2. v = float('nan') නම් tuple එකේ නැති නිසා NaN එහෙම්මම payload එකට
+        #      ගියා → json.dumps එකෙන් `NaN` token එකක් (invalid JSON) → PostgREST
+        #      එකෙන් 400. දැන් සියලු NA/blank tokens None බවට පත් වේ.
         col_map = cls._COL_MAP.get(table_key, {})
         out = {}
         for k, v in row.items():
             db_col = col_map.get(k, k.lower().replace(" ", "_"))
-            if v in (None, 'nan', 'None', ''):
-                out[db_col] = None
-            else:
-                out[db_col] = v
+            out[db_col] = None if sv(v) == '' else v
         return out
 
     @classmethod
@@ -598,7 +602,6 @@ class DBManager:
     def delete_match_keys(cls, table_name: str, keys: list, key_cols: list) -> int:
         if not keys:
             return 0
-        key = cls._table_key(table_name)
         try:
             df = cls.read_table(table_name, force=True)
             if df.empty:
@@ -620,18 +623,24 @@ class DBManager:
             filtered = df[~df_keys.isin(set(keys))].reset_index(drop=True)
             deleted = initial - len(filtered)
             if deleted > 0:
-                cls._overwrite_table(table_name, filtered)
+                if not cls._overwrite_table(table_name, filtered):
+                    return 0          # 🐛 FIX: write එක fail නම් 0 return කරයි
             return deleted
         except Exception as e:
             st.error(f"DB composite delete error: {e}")
             return 0
 
     @classmethod
-    def _overwrite_table(cls, table_name: str, df: pd.DataFrame):
+    def _overwrite_table(cls, table_name: str, df: pd.DataFrame) -> bool:
         """Clear + insert. 🐛 FIX: කලින් delete එක මුලින්ම කරලා, insert එක fail
         වුනොත් table එකේ data එක සම්පූර්ණයෙන් නැති වුනා. දැන් —
           1. delete කරන්න **කලින්** column pre-flight check එකක්
-          2. insert fail වුනොත් පරණ data එක restore කරයි."""
+          2. insert fail වුනොත් පරණ data එක restore කරයි.
+
+        🐛 FIX: කලින් මෙය කිසිම දෙයක් return කළේ නෑ — error එකක් ආවත් outer
+        except එකෙන් ගිල දාලා silently return වුනා. ඒ නිසා call කරන තැන්වල
+        "✅ save කළා" කියලා message එකක් පෙන්නුවා, ඇත්තටම save වෙලා නැති වුනත්.
+        දැන් success/failure එක bool එකකින් return කරයි."""
         key = cls._table_key(table_name)
         try:
             sb = get_supabase_client()
@@ -700,8 +709,10 @@ class DBManager:
 
             cls._warn_missing_cols(table_name, sorted(set(dropped)))
             cls.invalidate(table_name)
+            return True
         except Exception as e:
             st.error(f"DB overwrite error ({table_name}): {e}")
+            return False
 
     @classmethod
     def update_cell(cls, table_name: str, match_col: str, match_val, update_col: str, new_val) -> bool:
@@ -733,10 +744,10 @@ class DBManager:
 
     @classmethod
     def replace_table(cls, table_name: str, df: pd.DataFrame) -> bool:
-        """Clear a table then insert the given DataFrame (clear + bulk insert)."""
+        """Clear a table then insert the given DataFrame (clear + bulk insert).
+        Returns True only if the write really succeeded."""
         try:
-            cls._overwrite_table(table_name, df)
-            return True
+            return cls._overwrite_table(table_name, df)
         except Exception as e:
             st.error(f"DB replace error ({table_name}): {e}")
             return False
@@ -1015,7 +1026,12 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
             except (ValueError, TypeError):
                 upc = str(raw_upc).strip()
 
-            needed  = float(req['PICK QTY'])
+            # 🐛 FIX: float() එකෙන් කෙලින්ම convert කරද්දී PICK QTY එකේ "1,200"
+            # වගේ අගයක් තිබුනොත් ValueError එකෙන් මුළු batch එකම crash වුනා.
+            requested_qty = pd.to_numeric(str(req['PICK QTY']).replace(',', '').strip(),
+                                          errors='coerce')
+            requested_qty = 0.0 if pd.isna(requested_qty) else float(requested_qty)
+            needed  = requested_qty
             country = req['Country Name']
 
             if supplier_col and supplier_col in temp_inv.columns:
@@ -1073,7 +1089,11 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
 
                     pick_rows.append(p_row)
 
-                    pallet_val = str(item[pallet_col]) if pallet_col in item.index else ''
+                    # 🐛 FIX: orig_qty_map එකේ keys .str.strip() කරලා තිබුනත් මෙතන
+                    # str() විතරයි කළේ — pallet එකේ ඉස්සරහින්/පස්සෙන් space එකක්
+                    # තිබුනොත් lookup එක miss වෙලා, balance pick එක partial data
+                    # එකට වැටුනේ නෑ. දැන් දෙපැත්තම strip කරයි.
+                    pallet_val = str(item[pallet_col]).strip() if pallet_col in item.index else ''
                     orig_qty   = orig_qty_map.get(pallet_val, current_avail)
 
                     # ══════════════════════════════════════════════════════════
@@ -1134,13 +1154,16 @@ def process_picking(inv_df, req_df, batch_id, inv_original=None):
                     needed     -= take
                     picked_qty += take
 
-            variance = float(req['PICK QTY']) - picked_qty
+            variance = requested_qty - picked_qty
             summary.append({
                 'Batch ID': batch_id, 'SO Number': so_num, 'Load ID': lid,
                 'UPC': upc, 'Country': country, 'Ship Mode': ship_mode,
-                'Requested': req['PICK QTY'], 'Picked': picked_qty,
+                'Requested': requested_qty, 'Picked': picked_qty,
                 'Variance': variance,
-                'Status': 'Fully Picked' if variance == 0 else 'Shortage'
+                # 🐛 FIX: float subtraction එකෙන් 1e-13 වගේ ඉතුරුවක් එන්න පුළුවන් —
+                # `variance == 0` කියන exact check එකෙන් fully picked line එකක්
+                # වැරදියට "Shortage" ලෙස පෙන්නුවා.
+                'Status': 'Fully Picked' if abs(variance) < 1e-9 else 'Shortage'
             })
 
     PICK_REPORT_COLS = MASTER_PICK_HEADERS + ['Gen Pallet ID']
@@ -1228,6 +1251,23 @@ if app_header():
                     req = req.replace(r'^\s*$', pd.NA, regex=True)
                     req = req.dropna(subset=['Product UPC', 'PICK QTY', 'SO Number'], how='any').reset_index(drop=True)
 
+                    # ── 🐛 FIX: PICK QTY එකේ number එකක් නොවන අගයක් ("1,200", "N/A")
+                    # තිබුනොත් process_picking() එකේ float() එකෙන් ValueError එකක්
+                    # ඇවිත් මුළු batch එකම crash වුනා. දැන් ඒවා වෙන් කරලා user ට
+                    # පෙන්නලා, ඉතුරු rows එක්ක ඉදිරියට යයි. ──
+                    _qty_num = pd.to_numeric(
+                        req['PICK QTY'].astype(str).str.replace(',', '', regex=False).str.strip(),
+                        errors='coerce')
+                    _bad_qty = req[_qty_num.isna()]
+                    if not _bad_qty.empty:
+                        st.warning(f"⚠️ PICK QTY එක number එකක් නොවන rows **{len(_bad_qty)}** ක් "
+                                   "skip කළා:")
+                        st.dataframe(_bad_qty.astype(str), use_container_width=True)
+                    req = req[_qty_num.notna()].reset_index(drop=True)
+                    if req.empty:
+                        st.error("❌ Customer Requirement file එකේ process කරන්න පුළුවන් rows නෑ.")
+                        st.stop()
+
                     new_inv_cols = []
                     seen_inv = {}
                     for c in inv.columns:
@@ -1295,8 +1335,9 @@ if app_header():
 
                     req['Generated Load ID'] = req['Group'].map(load_id_map)
 
+                    hist_save_ok = True
                     if new_hist_entries:
-                        DBManager.insert_rows("load_history", new_hist_entries)
+                        hist_save_ok = DBManager.insert_rows("load_history", new_hist_entries)
 
                     inv_original = inv.copy()
                     inv = reconcile_inventory(inv)
@@ -1382,10 +1423,17 @@ if app_header():
                         pass
 
                     # ── Save to Supabase ────────────────────────────────────────
+                    # 🐛 FIX: කලින් insert_rows() එකේ return value එක බැලුවේ නෑ —
+                    # DB save එක fail වුනත් අන්තිමට "✅ Data Processed!" කියලා
+                    # පෙන්නුවා. ඒ නිසා user හිතුවේ picks save වුනා කියලා, ඇත්තටම
+                    # master_pick_data එකේ කිසිවක් තිබුනේ නෑ. දැන් fail වුනු table
+                    # ලැයිස්තුවක් තියාගෙන අන්තිමට report කරයි.
+                    save_failed = [] if hist_save_ok else ["load_history"]
                     if not pick_df.empty:
                         pick_save_df = pick_df[MASTER_PICK_HEADERS] if all(c in pick_df.columns for c in MASTER_PICK_HEADERS) else pick_df[[c for c in MASTER_PICK_HEADERS if c in pick_df.columns]]
                         rows_to_insert = pick_save_df.astype(object).where(pd.notnull(pick_save_df), None).to_dict('records')
-                        DBManager.insert_rows("master_pick_data", rows_to_insert)
+                        if not DBManager.insert_rows("master_pick_data", rows_to_insert):
+                            save_failed.append("master_pick_data")
 
                     if not part_df.empty:
                         mpd_headers = SHEET_HEADERS["Master_Partial_Data"]
@@ -1393,7 +1441,8 @@ if app_header():
                             if col not in part_df.columns:
                                 part_df[col] = None
                         rows_to_insert = part_df[mpd_headers].astype(object).where(pd.notnull(part_df[mpd_headers]), None).to_dict('records')
-                        DBManager.insert_rows("master_partial_data", rows_to_insert)
+                        if not DBManager.insert_rows("master_partial_data", rows_to_insert):
+                            save_failed.append("master_partial_data")
 
                     # Summary_Data — deduplicate by Load ID
                     existing_summ = DBManager.read_table("summary_data")
@@ -1401,7 +1450,8 @@ if app_header():
                         new_load_ids = set(summ_df['Load ID'].astype(str).tolist())
                         DBManager.delete_where("summary_data", "Load ID", list(new_load_ids))
                     if not summ_df.empty:
-                        DBManager.insert_rows("summary_data", summ_df.astype(object).where(pd.notnull(summ_df), None).to_dict('records'))
+                        if not DBManager.insert_rows("summary_data", summ_df.astype(object).where(pd.notnull(summ_df), None).to_dict('records')):
+                            save_failed.append("summary_data")
 
                     # ── Build Excel output ──────────────────────────────────────
                     output = io.BytesIO()
@@ -1491,7 +1541,13 @@ if app_header():
                     st.session_state['batch_id']          = batch_id
                     st.session_state['show_verification'] = True
                     st.session_state['cannot_pick_rows']  = cannot_pick_rows
-                    st.success(f"✅ Data Processed! (Batch ID: {batch_id})")
+                    if save_failed:
+                        st.error(f"❌ Batch **{batch_id}** — මේ tables වලට save වුනේ නෑ: "
+                                 f"**{', '.join(save_failed)}**. උඩ error බලන්න. "
+                                 "Excel report එක download කරගන්න පුළුවන්, නමුත් DB එක "
+                                 "update වුනේ නෑ — නැවත try කරන්න.")
+                    else:
+                        st.success(f"✅ Data Processed! (Batch ID: {batch_id})")
 
         if st.session_state.get('show_verification', False):
             st.divider()
@@ -1704,10 +1760,18 @@ if app_header():
                             if ok and new_status == "Cancelled":
                                 mpd = DBManager.read_table("master_pick_data")
                                 lid_col = next((c for c in mpd.columns if str(c).strip().lower() == 'load id'), None)
+                                # 🐛 FIX: overwrite එක fail වුනත් "deleted" කියලා
+                                # පෙන්නුවා. දැන් ඇත්තටම මොකද වුනේ කියලා කියයි.
+                                purged = True
                                 if not mpd.empty and lid_col:
                                     filtered_mpd = mpd[mpd[lid_col].astype(str).str.strip() != str(sel_lid).strip()]
-                                    DBManager._overwrite_table("master_pick_data", filtered_mpd)
-                                st.success(f"✅ {sel_lid} → Cancelled | Master_Pick_Data records deleted.")
+                                    if len(filtered_mpd) != len(mpd):
+                                        purged = DBManager._overwrite_table("master_pick_data", filtered_mpd)
+                                if purged:
+                                    st.success(f"✅ {sel_lid} → Cancelled | Master_Pick_Data records deleted.")
+                                else:
+                                    st.error(f"⚠️ {sel_lid} → Cancelled, නමුත් Master_Pick_Data "
+                                             "records delete වුනේ නෑ.")
                             elif ok:
                                 st.success(f"✅ {sel_lid} → {new_status}")
                             st.rerun()
@@ -1841,7 +1905,7 @@ if app_header():
                         st.stop()
                     if _C_LOC is None:
                         st.error("❌ Inventory file එකේ 'Location Id' column එක තිබිය යුතුය "
-                                 f"(SC20 / HKA වෙන් කරන්න බැහැ).")
+                                 f"({LOC_PICK} / {LOC_ALLOC} වෙන් කරන්න බැහැ).")
                         st.stop()
 
                     # ════════════════════════════════════════════════════════════
@@ -2381,6 +2445,14 @@ if app_header():
                     # ════════════════════════════════════════════════════════════
                     # STEP 7 — Build report dataframe
                     # ════════════════════════════════════════════════════════════
+                    # process කරන්න rows නැත්නම් (Pallet/Actual Qty හිස් file එකක්)
+                    # කලින් හිස් report එකක් + "Qty Match ✅" වගේ නොගැලපෙන
+                    # metrics ටිකක් generate වුනා. දැන් පැහැදිලි error එකක් දෙයි.
+                    if not out_rows:
+                        st.error("❌ Inventory file එකේ process කරන්න පුළුවන් rows නෑ "
+                                 "(Pallet / Actual Qty හිස්ද කියලා බලන්න).")
+                        st.stop()
+
                     for i, r in enumerate(out_rows):
                         r['Row Order'] = i + 1
 
@@ -2412,6 +2484,11 @@ if app_header():
                             ok = DBManager.replace_table("inventory_status", db_out)
                             if ok:
                                 st.success(f"✅ inventory_status DB clear → **{len(db_out)}** rows save කළා.")
+                            else:
+                                # 🐛 FIX: කලින් replace_table() හැම විටම True return කළ නිසා
+                                # save එක fail වුනත් "✅ save කළා" කියලා පෙන්නුවා.
+                                st.error("❌ inventory_status save fail වුනා — උඩ error එක බලන්න. "
+                                         "Report එක download කරගන්න පුළුවන්, නමුත් DB එක update වුනේ නෑ.")
                         except Exception as _dberr:
                             st.warning(f"⚠️ DB save skip කළා: {_dberr}")
 
@@ -2502,20 +2579,49 @@ if app_header():
                         # කියලා pandas scalar lookup එකක් කළා — rows 6000ක් × cols 25ක් =
                         # ~150k lookups → export එකට තත්පර 20+. දැන් column values එක වරක්
                         # list එකකට convert කරලා index කරයි (~10x වේගවත්).
-                        _colvals = {c: report_with_total[c].astype(str).tolist() for c in report_cols}
+                        #
+                        # 🐛 FIX: ඒ speed fix එකේදී .astype(str) කළ නිසා Qty columns
+                        # සියල්ලම Excel එකට **text** විදිහට ගියා ("100.0" වගේ) —
+                        # SUM/filter වැඩ කළේ නෑ, "number stored as text" warning එකත් ආවා,
+                        # තවද පහළ TOTAL row එක විතරක් number විදිහට තිබුනා. දැන් numeric
+                        # columns write_number() එකෙන්, අනිත් ඒවා string විදිහට යවයි.
+                        NUM_COLS = set(['Actual Qty', 'Pick Quantity', 'Allocated', 'ATS'] + list(damage_remarks))
+                        num_xl_cache = {}
+
+                        def _num_fmt(base_fmt_key, props):
+                            if base_fmt_key not in num_xl_cache:
+                                p2 = dict(props); p2['num_format'] = '#,##0.###'
+                                num_xl_cache[base_fmt_key] = wb.add_format(p2)
+                            return num_xl_cache[base_fmt_key]
+
+                        _fmt_props = {
+                            'pick':  {'bg_color': '#E8F5E9', 'border': 1, 'font_size': 10},
+                            'alloc': {'bg_color': '#E3F2FD', 'border': 1, 'font_size': 10, 'bold': True},
+                            'dmg':   {'bg_color': '#FFE0E0', 'border': 1, 'font_size': 10},
+                            'ats':   {'bg_color': '#FFF3CD', 'border': 1, 'font_size': 10, 'bold': True},
+                            'norm':  {'border': 1, 'font_size': 10},
+                        }
+                        _colvals = {c: report_with_total[c].tolist() for c in report_cols}
                         for ci, col_name in enumerate(report_cols):
                             ws.write(0, ci, col_name, hdr_xl)
                             ws.set_column(ci, ci, 15)
                             _vals = _colvals[col_name]
+                            if   col_name in ['Pick Quantity', 'Destination Country', 'Order NO']: cell_fmt, fkey = pick_xl,  'pick'
+                            elif col_name == 'Allocated':        cell_fmt, fkey = alloc_xl, 'alloc'
+                            elif col_name in damage_remarks:     cell_fmt, fkey = dmg_xl,   'dmg'
+                            elif col_name == 'ATS':              cell_fmt, fkey = ats_xl,   'ats'
+                            elif col_name == 'Remark':           cell_fmt, fkey = rmk_xl,   None
+                            elif col_name in ['Vendor Name', 'COO']: cell_fmt, fkey = vnd_xl, None
+                            else:                                cell_fmt, fkey = norm_xl,  'norm'
+                            is_num_col = col_name in NUM_COLS and fkey is not None
                             for ri in range(1, len(report_df) + 1):
                                 val = _vals[ri - 1]
-                                if   col_name in ['Pick Quantity', 'Destination Country', 'Order NO']: ws.write(ri, ci, val, pick_xl)
-                                elif col_name == 'Allocated': ws.write(ri, ci, val, alloc_xl)
-                                elif col_name in damage_remarks: ws.write(ri, ci, val, dmg_xl)
-                                elif col_name == 'ATS': ws.write(ri, ci, val, ats_xl)
-                                elif col_name == 'Remark': ws.write(ri, ci, val, rmk_xl)
-                                elif col_name in ['Vendor Name', 'COO']: ws.write(ri, ci, val, vnd_xl)
-                                else: ws.write(ri, ci, val, norm_xl)
+                                if is_num_col:
+                                    n = pd.to_numeric(val, errors='coerce')
+                                    if pd.notna(n):
+                                        ws.write_number(ri, ci, float(n), _num_fmt(fkey, _fmt_props[fkey]))
+                                        continue
+                                ws.write(ri, ci, sv(val), cell_fmt)
                         tot_idx = len(report_df) + 1
                         tot_num = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10, 'num_format': '#,##0'})
                         tot_str = wb.add_format({'bold': True, 'bg_color': '#1a1a1a', 'font_color': '#FFD700', 'border': 1, 'font_size': 10})
@@ -2630,9 +2736,11 @@ if app_header():
                             rows_to_add = []
                             for _, row in dmg_preview.iterrows():
                                 rows_to_add.append({
-                                    'Pallet':     str(row.get(pallet_col, '')),
-                                    'Actual Qty': str(row.get(qty_col, '')),
-                                    'Remark':     str(row.get(remark_col, '')) if remark_col else 'Damage',
+                                    # 🐛 FIX: හිස් cell එකක් str() කරද්දී 'nan' කියන
+                                    # string එක DB එකට ගියා. sv() එකෙන් blank වේ.
+                                    'Pallet':     sv(row.get(pallet_col, '')),
+                                    'Actual Qty': sv(row.get(qty_col, '')),
+                                    'Remark':     (sv(row.get(remark_col, '')) or 'Damage') if remark_col else 'Damage',
                                     'Date Added': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     'Added By':   current_user,
                                 })
@@ -2829,11 +2937,11 @@ if app_header():
                         db_row = {'source_table': source_table, 'deleted_at': deleted_at_str,
                                   'deleted_by': current_user, 'delete_reason': reason}
                         for app_col, db_col in OLD_HISTORY_COL_MAP.items():
+                            # 🐛 FIX: pandas nullable dtypes එකෙන් එන '<NA>' / 'NaT'
+                            # tokens කලින් check එකේ තිබුනේ නෑ — ඒවා archive එකට
+                            # real value විදිහට ගියා. sv() එකෙන් ඔක්කොම cover වේ.
                             val = r.get(app_col, None)
-                            if val is not None and str(val).strip() not in ('nan', 'None', ''):
-                                db_row[db_col] = val
-                            else:
-                                db_row[db_col] = None
+                            db_row[db_col] = None if sv(val) == '' else val
                         rows.append(db_row)
                     return rows
 
@@ -2933,8 +3041,13 @@ if app_header():
                             filtered_master   = master_pick_df[~mask_del]
                             deleted_count     = initial_len - len(filtered_master)
                             if deleted_count > 0:
-                                DBManager._overwrite_table("master_pick_data", filtered_master)
-                                st.success(f"✅ {deleted_count} records deleted from Master_Pick_Data!")
+                                # 🐛 FIX: write එක fail වුනොත් delete වුනේ නෑ — success
+                                # message එකක් පෙන්නන්නත්, ඒ rows archive කරන්නත් බෑ.
+                                if DBManager._overwrite_table("master_pick_data", filtered_master):
+                                    st.success(f"✅ {deleted_count} records deleted from Master_Pick_Data!")
+                                else:
+                                    deleted_pick_rows = pd.DataFrame()
+                                    st.error("❌ Master_Pick_Data delete fail වුනා — කිසිවක් වෙනස් වුනේ නෑ.")
                             else:
                                 st.warning("⚠️ Matching records not found in Master_Pick_Data.")
 
@@ -2950,8 +3063,11 @@ if app_header():
                             deleted_partial_rows = mpart_df[mpart_mask]
                             if not deleted_partial_rows.empty:
                                 filtered_mpart = mpart_df[~mpart_mask]
-                                DBManager._overwrite_table("master_partial_data", filtered_mpart)
-                                st.success(f"✅ {len(deleted_partial_rows)} records deleted from Master_Partial_Data!")
+                                if DBManager._overwrite_table("master_partial_data", filtered_mpart):
+                                    st.success(f"✅ {len(deleted_partial_rows)} records deleted from Master_Partial_Data!")
+                                else:
+                                    deleted_partial_rows = pd.DataFrame()
+                                    st.error("❌ Master_Partial_Data delete fail වුනා — කිසිවක් වෙනස් වුනේ නෑ.")
 
                         archived = _archive_to_old_history(deleted_pick_rows, deleted_partial_rows, reason="File Upload Delete")
                         if archived > 0:
@@ -2999,7 +3115,9 @@ if app_header():
                             deleted_pick_rows2 = master_pick_df[mask_lid2]
                             filtered           = master_pick_df[~mask_lid2]
                             deleted_pick2      = len(master_pick_df) - len(filtered)
-                            DBManager._overwrite_table("master_pick_data", filtered)
+                            if not DBManager._overwrite_table("master_pick_data", filtered):
+                                deleted_pick_rows2, deleted_pick2 = pd.DataFrame(), 0
+                                st.error("❌ Master_Pick_Data delete fail වුනා — කිසිවක් වෙනස් වුනේ නෑ.")
 
                         # ── Also delete from master_partial_data by Load ID ──
                         mpart_df2 = DBManager.read_table("master_partial_data", force=True)
@@ -3008,8 +3126,11 @@ if app_header():
                             mpart_mask2           = mpart_df2['Load ID'].astype(str).str.strip().isin(load_ids_to_delete)
                             deleted_partial_rows2 = mpart_df2[mpart_mask2]
                             if not deleted_partial_rows2.empty:
-                                DBManager._overwrite_table("master_partial_data", mpart_df2[~mpart_mask2])
-                                st.success(f"✅ {len(deleted_partial_rows2)} records deleted from Master_Partial_Data!")
+                                if DBManager._overwrite_table("master_partial_data", mpart_df2[~mpart_mask2]):
+                                    st.success(f"✅ {len(deleted_partial_rows2)} records deleted from Master_Partial_Data!")
+                                else:
+                                    deleted_partial_rows2 = pd.DataFrame()
+                                    st.error("❌ Master_Partial_Data delete fail වුනා — කිසිවක් වෙනස් වුනේ නෑ.")
 
                         ids_str = ', '.join(load_ids_to_delete[:3]) + ('...' if len(load_ids_to_delete) > 3 else '')
                         st.success(f"✅ Load ID(s) [{ids_str}] — {deleted_pick2} records deleted from Master_Pick_Data!")
@@ -3048,7 +3169,9 @@ if app_header():
                                 deleted_batch_pick_rows  = mpd_latest[mask_batch3]
                                 filtered_batch           = mpd_latest[~mask_batch3]
                                 deleted_batch            = len(mpd_latest) - len(filtered_batch)
-                                DBManager._overwrite_table("master_pick_data", filtered_batch)
+                                if not DBManager._overwrite_table("master_pick_data", filtered_batch):
+                                    deleted_batch_pick_rows, deleted_batch = pd.DataFrame(), 0
+                                    st.error("❌ Master_Pick_Data delete fail වුනා — කිසිවක් වෙනස් වුනේ නෑ.")
 
                             # ── Also delete from master_partial_data by Batch ID ──
                             mpart_df3 = DBManager.read_table("master_partial_data", force=True)
@@ -3057,8 +3180,11 @@ if app_header():
                                 mpart_mask3                = mpart_df3['Batch ID'].astype(str).str.strip() == str(del_batch_id).strip()
                                 deleted_batch_partial_rows = mpart_df3[mpart_mask3]
                                 if not deleted_batch_partial_rows.empty:
-                                    DBManager._overwrite_table("master_partial_data", mpart_df3[~mpart_mask3])
-                                    st.success(f"✅ {len(deleted_batch_partial_rows)} records deleted from Master_Partial_Data!")
+                                    if DBManager._overwrite_table("master_partial_data", mpart_df3[~mpart_mask3]):
+                                        st.success(f"✅ {len(deleted_batch_partial_rows)} records deleted from Master_Partial_Data!")
+                                    else:
+                                        deleted_batch_partial_rows = pd.DataFrame()
+                                        st.error("❌ Master_Partial_Data delete fail වුනා — කිසිවක් වෙනස් වුනේ නෑ.")
 
                             st.success(f"✅ Batch **{del_batch_id}** — {deleted_batch} records deleted from Master_Pick_Data!")
                             archived3 = _archive_to_old_history(deleted_batch_pick_rows, deleted_batch_partial_rows, reason=f"Delete by Batch ID: {del_batch_id}")
@@ -3107,32 +3233,49 @@ if app_header():
                             del_pallet_pick_rows    = pd.DataFrame()
                             del_pallet_partial_rows = pd.DataFrame()
 
+                            # 🐛 FIX: කලින් match වුනේ 0 rows වුනත් මුළු table එකම
+                            # delete → re-insert වුනා (අනවශ්‍ය risk එකක්). දැන්
+                            # ඇත්තටම rows match වුනොත් විතරයි rewrite කරන්නේ, තවද
+                            # write එක fail වුනොත් ඒක report වේ.
+                            def _apply_delete(table, filtered_df, deleted_n, label, matched_rows):
+                                if deleted_n <= 0:
+                                    results.append(f"{label}: 0 records")
+                                    return pd.DataFrame()
+                                if DBManager._overwrite_table(table, filtered_df):
+                                    results.append(f"{label}: {deleted_n} records")
+                                    return matched_rows
+                                results.append(f"{label}: ❌ delete failed")
+                                return pd.DataFrame()
+
                             mpd_fresh = DBManager.read_table("master_pick_data", force=True)
                             if not mpd_fresh.empty and 'Pallet' in mpd_fresh.columns:
                                 mask_p4              = mpd_fresh['Pallet'].astype(str).str.strip() == str(del_pallet).strip()
-                                del_pallet_pick_rows = mpd_fresh[mask_p4]
                                 filtered_mpd         = mpd_fresh[~mask_p4]
-                                deleted              = len(mpd_fresh) - len(filtered_mpd)
-                                DBManager._overwrite_table("master_pick_data", filtered_mpd)
-                                results.append(f"Master_Pick_Data: {deleted} records")
+                                del_pallet_pick_rows = _apply_delete(
+                                    "master_pick_data", filtered_mpd,
+                                    len(mpd_fresh) - len(filtered_mpd),
+                                    "Master_Pick_Data", mpd_fresh[mask_p4])
 
                             mpart_fresh = DBManager.read_table("master_partial_data", force=True)
                             if not mpart_fresh.empty:
-                                mask = pd.Series([True] * len(mpart_fresh))
+                                # 🐛 FIX: pd.Series([True]*n) එකට default RangeIndex
+                                # එකක් එනවා — df එකේ index එක වෙනස් නම් `&=` එකෙන්
+                                # misalign වෙලා NaN/wrong mask එකක් හැදෙනවා.
+                                mask = pd.Series(True, index=mpart_fresh.index)
                                 if 'Pallet'        in mpart_fresh.columns: mask &= mpart_fresh['Pallet'].astype(str).str.strip()        != str(del_pallet).strip()
                                 if 'Gen Pallet ID' in mpart_fresh.columns: mask &= mpart_fresh['Gen Pallet ID'].astype(str).str.strip() != str(del_pallet).strip()
-                                del_pallet_partial_rows = mpart_fresh[~mask]
                                 filtered_mpart          = mpart_fresh[mask]
-                                deleted                 = len(mpart_fresh) - len(filtered_mpart)
-                                DBManager._overwrite_table("master_partial_data", filtered_mpart)
-                                results.append(f"Master_Partial_Data: {deleted} records")
+                                del_pallet_partial_rows = _apply_delete(
+                                    "master_partial_data", filtered_mpart,
+                                    len(mpart_fresh) - len(filtered_mpart),
+                                    "Master_Partial_Data", mpart_fresh[~mask])
 
                             dmg_fresh = DBManager.read_table("damage_items", force=True)
                             if not dmg_fresh.empty and 'Pallet' in dmg_fresh.columns:
                                 filtered_dmg = dmg_fresh[dmg_fresh['Pallet'].astype(str).str.strip() != str(del_pallet).strip()]
-                                deleted = len(dmg_fresh) - len(filtered_dmg)
-                                DBManager._overwrite_table("damage_items", filtered_dmg)
-                                results.append(f"Damage_Items: {deleted} records")
+                                _apply_delete("damage_items", filtered_dmg,
+                                              len(dmg_fresh) - len(filtered_dmg), "Damage_Items",
+                                              pd.DataFrame())
 
                             archived4 = _archive_to_old_history(del_pallet_pick_rows, del_pallet_partial_rows, reason=f"Delete by Pallet: {del_pallet}")
                             if archived4 > 0:
@@ -3365,7 +3508,7 @@ CREATE UNIQUE INDEX idx_old_history_master_pallet ON old_history_master(pallet);
                                         src_col = oh_col_l.get(app_col)
                                         if src_col:
                                             val = r.get(src_col, None)
-                                            db_row[db_col] = None if (val is None or str(val).strip() in ('', 'nan', 'None')) else str(val).strip()
+                                            db_row[db_col] = sv(val) or None
                                     if db_row.get('pallet'):
                                         rows_oh.append(db_row)
 
